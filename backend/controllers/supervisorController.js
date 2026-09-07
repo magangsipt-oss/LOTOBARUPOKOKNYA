@@ -4,6 +4,78 @@ import SupervisorModel from '../models/supervisorModel.js';
  * Controller untuk mengelola Supervisor Team E-LOTO
  */
 const supervisorController = {
+  // 0a. GET /team?supervisor_sid=X&id_box=Y — Frontend compatibility
+  getTeam: async (req, res) => {
+    try {
+      const { supervisor_sid, id_box } = req.query;
+
+      if (!supervisor_sid || !id_box) {
+        return res.status(400).json({
+          success: false,
+          message: 'Parameter supervisor_sid dan id_box wajib disertakan!'
+        });
+      }
+
+      // Return team members as flat array of { sid } for frontend
+      const team = await SupervisorModel.getTeamByBox(id_box);
+      const members = team
+        .filter(m => m.supervisor_sid === supervisor_sid)
+        .map(m => ({ sid: m.mechanic_sid, id: m.id, maintenance_type: m.maintenance_type }));
+
+      return res.status(200).json({
+        success: true,
+        message: `Tim mekanik untuk ${supervisor_sid} di ${id_box} berhasil diambil`,
+        data: members
+      });
+    } catch (error) {
+      console.error('Error getTeam:', error.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Gagal mengambil data tim',
+        error: error.message
+      });
+    }
+  },
+
+  // 0b. POST /team — bulk save team members for a supervisor+box
+  saveTeam: async (req, res) => {
+    try {
+      const { supervisor_sid, id_box, maintenance_type, mechanic_sids } = req.body;
+
+      if (!supervisor_sid || !id_box) {
+        return res.status(400).json({
+          success: false,
+          message: 'supervisor_sid dan id_box wajib disertakan!'
+        });
+      }
+
+      // 1. Clear existing team for this supervisor+box
+      await SupervisorModel.deleteTeamBySupervisorAndBox(supervisor_sid, id_box);
+
+      // 2. Add new mechanics
+      const addedIds = [];
+      if (Array.isArray(mechanic_sids) && mechanic_sids.length > 0) {
+        for (const mechanicSid of mechanic_sids) {
+          const newId = await SupervisorModel.addMechanicToTeam(supervisor_sid, id_box, mechanicSid);
+          addedIds.push(newId);
+        }
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: `${addedIds.length} mekanik berhasil ditugaskan ke ${id_box}`,
+        data: { supervisor_sid, id_box, maintenance_type, mechanic_count: addedIds.length }
+      });
+    } catch (error) {
+      console.error('Error saveTeam:', error.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Gagal menyimpan tim mekanik',
+        error: error.message
+      });
+    }
+  },
+
   // 1. Mengambil seluruh supervisor team untuk box tertentu
   getTeamByBox: async (req, res) => {
     try {

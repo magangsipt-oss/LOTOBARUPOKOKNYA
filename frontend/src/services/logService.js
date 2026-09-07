@@ -12,7 +12,7 @@ const logService = {
 
   // Menghapus log aktivitas
   deleteLog: async (id) => {
-    const response = await api.delete(`/logs/audit/${id}`);
+    const response = await api.delete(`/logs/${id}`);
     return response.data;
   },
 

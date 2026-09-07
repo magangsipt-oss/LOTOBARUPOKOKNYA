@@ -50,6 +50,13 @@ const SupervisorModel = {
     const query = 'DELETE FROM supervisor_box_team WHERE id_box = ?';
     const [result] = await pool.query(query, [idBox]);
     return result.affectedRows;
+  },
+
+  // 6. Menghapus team untuk supervisor+box tertentu (bulk save support)
+  deleteTeamBySupervisorAndBox: async (supervisorSid, idBox) => {
+    const query = 'DELETE FROM supervisor_box_team WHERE supervisor_sid = ? AND id_box = ?';
+    const [result] = await pool.query(query, [supervisorSid, idBox]);
+    return result.affectedRows;
   }
 };
 

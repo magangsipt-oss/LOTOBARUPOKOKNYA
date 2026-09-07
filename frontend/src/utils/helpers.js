@@ -5,6 +5,7 @@
 export const API_SECRET_TOKEN = 'ELOTO_SECURE_KEY_2026';
 
 export const STATE_DESC = {
+  // Nama panjang (backend DB / frontend state)
   STATE_BOOT_IP: 'Menghubungkan boks ke jaringan Wi-Fi...',
   STATE_IDLE: 'Boks Standby. Tekan Tombol 1 di boks untuk memulai penguncian.',
   STATE_REGISTER_RFID: 'Mode Daftarkan Kartu Aktif! Tempelkan kartu di boks untuk membaca UID.',
@@ -34,7 +35,43 @@ export const STATE_DESC = {
   STATE_LOGOUT_SUCCESS: 'Logout berhasil sesuai urutan FIFO.',
   STATE_ALL_WORKERS_OUT: 'Semua pekerja sudah keluar dari stack.',
   STATE_UNLOCKING: 'Gembok sedang dibuka.',
-  STATE_SYSTEM_READY_FINAL: 'E-LOTO selesai dan sistem kembali siap digunakan.'
+  STATE_SYSTEM_READY_FINAL: 'E-LOTO selesai dan sistem kembali siap digunakan.',
+  // Nama abbreviated dari ESP32 (stateToString di .ino)
+  BOOT_IP: 'Menghubungkan boks ke jaringan Wi-Fi...',
+  IDLE_READY: 'Boks Standby. Tekan Tombol 1 di boks untuk memulai penguncian.',
+  START_CONFIRM: 'Konfirmasi memulai sesi penguncian.',
+  WAIT_SPV: 'Menunggu Pengawas memindai kartu untuk membuka sesi.',
+  SET_QUOTA: 'Pengawas sedang mengatur jumlah mekanik yang bekerja.',
+  MEK_IN: 'Mekanik dapat menempelkan kartu satu per satu untuk mulai bekerja.',
+  LOCKED_ACTIVE: 'Penguncian Aktif. Semua mekanik sedang bekerja.',
+  CHOOSE_ACT: 'Menu Pilihan: Keluar, Tambah Mekanik, atau Tambah Pengawas.',
+  MEK_OUT: 'Mekanik menempelkan kartu untuk keluar dari pekerjaan.',
+  SPV_OUT: 'Semua mekanik sudah keluar. Menunggu kartu Pengawas untuk menutup sesi.',
+  SPV_OUT_CONFIRM: 'Konfirmasi keluar pengawas — gembok akan dibuka.',
+  MAINT_DONE: 'Pekerjaan selesai. Unit aman digunakan.',
+  REGISTER: 'Mode Daftarkan Kartu Aktif! Tempelkan kartu baru di boks.',
+  WORKER_LIST: 'Daftar personel dalam sesi ini.',
+  WORKER_DETAIL: 'Detail data personel yang dipilih.',
+  RFID_DETECTED: 'Kartu RFID terdeteksi. Sistem sedang memeriksa identitas kartu.',
+  RFID_VALID: 'Kartu RFID valid dan akses diterima.',
+  MENU: 'Menu LOTO terbuka. Pilih tindakan dengan tombol perangkat.',
+  EVENT_LOG: 'Daftar event perangkat sedang ditampilkan.',
+  LOGOUT_DENIED: 'Logout ditolak karena kartu atau urutan stack tidak sesuai.',
+  STACK_STATUS: 'Status stack personel sedang ditampilkan.',
+  SERVER_OFFLINE: 'Server offline. Perangkat berjalan dalam mode lokal.',
+  SYSTEM_ERROR: 'Perangkat mengalami error sistem. Periksa SD card dan sensor.',
+  INITIALIZING: 'Perangkat sedang menginisialisasi ESP32, TFT, RFID, dan storage.',
+  CONNECTING: 'Perangkat sedang menghubungkan diri ke jaringan.',
+  SHOW_IP: 'IP Address ditampilkan. Hubungkan ke jaringan Wi-Fi.',
+  SYSTEM_READY: 'Perangkat siap memulai proses E-LOTO.',
+  COUNTDOWN: 'Persiapan penguncian sedang berjalan.',
+  SUPERVISOR_VALID: 'RFID pengawas valid dan dapat melanjutkan proses.',
+  MECHANIC_VALID: 'RFID mekanik valid dan terverifikasi.',
+  ALL_WORKERS_REGISTERED: 'Semua pekerja berhasil terdaftar pada sesi ini.',
+  LOGOUT_SUCCESS: 'Logout berhasil sesuai urutan FIFO.',
+  ALL_WORKERS_OUT: 'Semua pekerja sudah keluar dari stack.',
+  UNLOCKING: 'Gembok sedang dibuka.',
+  SYSTEM_READY_FINAL: 'E-LOTO selesai dan sistem kembali siap digunakan.'
 };
 
 export const safeToFixed = (val, digits = 4) => {

@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:5000/api';
+const BASE_URL = 'http://localhost:5002/api';
 
 async function runTests() {
   console.log('🧪 Memulai Pengujian Endpoint Backend ELOTO (Struktur Baru)...\n');
