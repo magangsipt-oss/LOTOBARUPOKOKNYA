@@ -1,0 +1,73 @@
+body {
+  font-family: 'Barlow', sans-serif;
+  background-image: radial-gradient(circle at 10% 0%, rgba(255, 178, 56, 0.03), transparent 40%),
+                    radial-gradient(circle at 90% 100%, rgba(77, 169, 247, 0.03), transparent 40%);
+}
+
+button,
+a,
+input,
+select,
+textarea,
+[role="button"],
+[tabindex]:not([tabindex="-1"]),
+.cursor-pointer,
+.clickable {
+  cursor: pointer;
+  pointer-events: auto !important;
+}
+
+.font-mono-tech {
+  font-family: 'Share Tech Mono', monospace;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.custom-gps-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.box-permanent-label {
+  background-color: rgba(15, 23, 42, 0.88) !important;
+  border: 1px solid #ef4444 !important;
+  color: #ffffff !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 11px !important;
+  font-weight: bold !important;
+  border-radius: 6px !important;
+  padding: 3px 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  white-space: nowrap !important;
+}
+.box-permanent-label::before {
+  border-top-color: #ef4444 !important;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.1); opacity: 0.4; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+.animate-pulse-ring {
+  animation: pulse-ring 2s infinite;
+}
+
+@media print {
+  .print-hidden {
+    display: none !important;
+  }
+  .print-show {
+    display: block !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+}
