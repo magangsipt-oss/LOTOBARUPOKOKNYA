@@ -33,7 +33,13 @@ async function runTests() {
       name: '6. Simulasi Cek Kartu RFID (POST rfid_uid)',
       url: `${BASE_URL}/users/check-card`,
       method: 'POST',
-      body: { rfid_uid: '16V4K_BFF0BE85' }
+      body: { rfid_uid: '9D88FA1200' } // UID milik SPV001 (Budi Santoso)
+    },
+    {
+      name: '7. Simulasi Login (POST sid + password)',
+      url: `${BASE_URL}/users/login`,
+      method: 'POST',
+      body: { sid: 'SPV001', password: 'SPV001' }
     }
   ];
 
