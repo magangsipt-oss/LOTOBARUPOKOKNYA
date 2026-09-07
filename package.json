@@ -1,5 +1,16 @@
 {
-	"dependencies": {
-		"sharp": "^0.35.4"
-	}
+  "name": "eloto-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel -r run dev",
+    "dev:backend": "pnpm --filter backend run dev",
+    "dev:frontend": "pnpm --filter frontend run dev",
+    "build": "pnpm --parallel -r run build",
+    "build:backend": "pnpm --filter backend run build",
+    "build:frontend": "pnpm --filter frontend run build",
+    "lint": "pnpm --parallel -r run lint",
+    "clean": "pnpm --parallel -r run clean"
+  }
 }

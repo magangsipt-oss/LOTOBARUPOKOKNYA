@@ -89,7 +89,7 @@ const Supervisors = () => {
               <div className="w-20 h-20 rounded-full bg-slate-700 border-2 border-emerald-500/40 overflow-hidden flex items-center justify-center mb-3 ring-2 ring-slate-600 shadow-md">
                 {spv.profile_photo ? (
                   <img
-                    src={`http://localhost:5002/api/users/photo/${encodeURIComponent(spv.rfid_uid || spv.rfidUid || spv.card_number || spv.sid)}`}
+                    src={`${import.meta.env.VITE_API_URL}/users/photo/${encodeURIComponent(spv.rfid_uid || spv.rfidUid || spv.card_number || spv.sid)}`}
                     alt={spv.name}
                     className="w-full h-full object-cover object-center"
                     onError={(e) => {

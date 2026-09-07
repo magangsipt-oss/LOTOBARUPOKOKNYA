@@ -241,7 +241,7 @@ const boxController = {
       return res.status(200).json({
         success: true,
         message: 'Telemetri box berhasil diperbarui',
-        data: { idBox, state, lastEvent, isOnline }
+        data: { id_box: idBox, state, last_event: lastEvent, is_online: isOnlineValue }
       });
     } catch (error) {
       console.error('Error updateTelemetry:', error.message);

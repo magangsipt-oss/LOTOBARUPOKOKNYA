@@ -210,7 +210,7 @@ const Users = () => {
                         <div className="w-10 h-10 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-600">
                           {user.profile_photo ? (
                             <img
-                              src={`http://localhost:5002/api/users/photo/${encodeURIComponent(user.rfid_uid || user.rfidUid || user.card_number || user.username || user.sid)}`}
+                              src={`${import.meta.env.VITE_API_URL}/users/photo/${encodeURIComponent(user.rfid_uid || user.rfidUid || user.card_number || user.username || user.sid)}`}
                               alt={user.name}
                               className="w-full h-full object-cover"
                               onError={(e) => {

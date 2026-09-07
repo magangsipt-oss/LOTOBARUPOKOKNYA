@@ -4,8 +4,8 @@ import axios from 'axios';
  * Konfigurasi Utama Axios Client untuk E-LOTO Platform
  */
 const api = axios.create({
-  // Alamat URL server backend Express kita
-  baseURL: 'http://localhost:5002/api',
+  // Alamat URL server backend Express kita dari environment variable
+  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5002/api',
   timeout: 10000, // Batas waktu tunggu permintaan: 10 detik
   headers: {
     'Content-Type': 'application/json',
