@@ -131,6 +131,7 @@ const logController = {
       const boxId = body.box_id || body.id_box || body.idBox || null;
       const eventType = String(body.event_type || body.eventType || (String(body.status || '').toUpperCase() === 'OUT' ? 'OUT' : 'IN')).toUpperCase();
       const eventTypeValid = ['IN', 'OUT', 'CHECK'].includes(eventType) ? eventType : 'CHECK';
+      const sessionId = body.session_id || body.sessionId || null;
 
       if (!cardNumber || !boxId) {
         return res.status(400).json({
@@ -146,13 +147,14 @@ const logController = {
         eventType: eventTypeValid,
         eventText: body.event_text || body.eventText || body.status || null,
         lat: body.lat ?? body.latitude,
-        lng: body.lng ?? body.longitude
+        lng: body.lng ?? body.longitude,
+        sessionId: sessionId
       });
 
       return res.status(201).json({
         success: true,
         message: 'Riwayat tap kartu berhasil dicatat',
-        data: { id: newId, rfid_uid: cardNumber, id_box: boxId, event_type: eventTypeValid }
+        data: { id: newId, rfid_uid: cardNumber, id_box: boxId, event_type: eventTypeValid, session_id: sessionId }
       });
     } catch (error) {
       console.error('Error createTapping:', error.message);
@@ -161,6 +163,39 @@ const logController = {
         message: 'Gagal mencatat tap kartu',
         error: error.message
       });
+    }
+  },
+
+  // 6b. Mengambil statistik tapping per session
+  getTappingStats: async (req, res) => {
+    try {
+      const { idBox } = req.query;
+      const stats = await LogModel.getTappingStats(idBox || null);
+      return res.status(200).json({
+        success: true,
+        message: 'Statistik tapping berhasil diambil',
+        data: stats
+      });
+    } catch (error) {
+      console.error('Error getTappingStats:', error.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Gagal mengambil statistik tapping',
+        error: error.message
+      });
+    }
+  },
+
+  // 6c. Auto-generate session_id untuk box
+  generateSessionId: async (req, res) => {
+    try {
+      const { idBox } = req.params;
+      if (!idBox) return res.status(400).json({ success: false, message: 'idBox wajib disertakan' });
+      const nextId = await LogModel.getNextSessionId(idBox);
+      return res.status(200).json({ success: true, data: { session_id: nextId } });
+    } catch (error) {
+      console.error('Error generateSessionId:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal generate session_id', error: error.message });
     }
   },
 

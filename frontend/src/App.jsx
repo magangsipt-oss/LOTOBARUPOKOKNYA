@@ -56,19 +56,19 @@ const resolveProfilePhotoUrl = (photo) => {
   if (!value || value === 'assets/default-avatar.png' || value.startsWith('data:') || value.startsWith('http')) {
     return value || 'assets/default-avatar.png';
   }
-  if (value.startsWith('api/uploads/')) return `http://localhost:5002/${value}`;
-  if (value.startsWith('uploads/')) return `http://localhost:5002/${value}`;
-  return `http://localhost:5002/uploads/user_profiles/${value}`;
+  if (value.startsWith('api/uploads/')) return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/${value}`;
+  if (value.startsWith('uploads/')) return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/${value}`;
+  return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/uploads/user_profiles/${value}`;
 };
 
 const resolveUserPhotoUrl = (profile, fallbackPhoto) => {
   const uid = String(profile?.rfidUid || profile?.rfid_uid || profile?.uid || '').trim();
-  if (uid) return `http://localhost:5002/api/users/photo/${encodeURIComponent(uid)}`;
+  if (uid) return `${import.meta.env.VITE_API_URL || 'http://localhost:5002/api'}/users/photo/${encodeURIComponent(uid)}`;
   return resolveProfilePhotoUrl(fallbackPhoto || profile?.foto);
 };
 
 export default function App() {
-  const API_BASE_URL = 'http://localhost:5002/api';
+  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5002/api';
   const API_SECRET_TOKEN = 'ELOTO_SECURE_KEY_2026';
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);

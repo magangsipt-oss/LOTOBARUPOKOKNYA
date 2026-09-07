@@ -1,4 +1,5 @@
 import BoxModel from '../models/boxModel.js';
+import LogModel from '../models/logModel.js';
 
 /**
  * Controller untuk mengelola alur data dan permintaan Box E-LOTO
@@ -235,6 +236,34 @@ const boxController = {
         return res.status(404).json({
           success: false,
           message: `Box dengan ID ${idBox} tidak ditemukan`
+        });
+      }
+
+      // Auto-create tapping_history jika event adalah tap (IN/OUT)
+      const isTap = body.is_tap === true || body.is_tap === 1 || body.is_tap === '1';
+      const tapEventsIn = ['SUPERVISOR_LOCK_IN', 'MECHANIC_LOG_IN', 'REFUEL_START'];
+      const tapEventsOut = ['SUPERVISOR_LOG_OUT', 'MECHANIC_LOG_OUT', 'REFUEL_END'];
+
+      if (isTap && lastUid && lastUid !== 'SYSTEM') {
+        let eventType = 'CHECK';
+        if (tapEventsIn.includes(lastEvent)) eventType = 'IN';
+        else if (tapEventsOut.includes(lastEvent)) eventType = 'OUT';
+
+        // Generate session_id: new session saat state berubah dari IDLE ke WAIT_SPV_IN
+        let sessionId = body.session_id || null;
+        if (!sessionId && state === 'WAIT_SPV_IN') {
+          sessionId = await LogModel.getNextSessionId(idBox);
+        }
+
+        await LogModel.createTappingHistory({
+          idBox,
+          rfidUid: lastUid,
+          nama: null,
+          eventType,
+          eventText: lastEvent,
+          lat: hasGpsFix && Number.isFinite(latitude) ? latitude : null,
+          lng: hasGpsFix && Number.isFinite(longitude) ? longitude : null,
+          sessionId
         });
       }
 

@@ -67,7 +67,7 @@ const LogModel = {
   // 5. Mengambil semua tapping history
   getAllTappingHistory: async () => {
     const query = `
-            SELECT t.id, t.id_box, t.rfid_uid, t.nama, t.event_type, t.event_text,
+            SELECT t.id, t.id_box, t.session_id, t.rfid_uid, t.nama, t.event_type, t.event_text,
               t.lat, t.lng, t.created_at, COALESCE(b.is_online, 0) AS is_online
             FROM tapping_history t LEFT JOIN boxes b ON b.id_box = t.id_box
             ORDER BY t.created_at DESC LIMIT 1000
@@ -79,7 +79,7 @@ const LogModel = {
   // 6. Mengambil tapping history untuk box tertentu
   getTappingHistoryByBox: async (idBox) => {
     const query = `
-            SELECT t.id, t.id_box, t.rfid_uid, t.nama, t.event_type, t.event_text,
+            SELECT t.id, t.id_box, t.session_id, t.rfid_uid, t.nama, t.event_type, t.event_text,
               t.lat, t.lng, t.created_at, COALESCE(b.is_online, 0) AS is_online
             FROM tapping_history t LEFT JOIN boxes b ON b.id_box = t.id_box
             WHERE t.id_box = ? ORDER BY t.created_at DESC LIMIT 500
@@ -88,15 +88,47 @@ const LogModel = {
     return rows;
   },
 
+  // 6b. Mengambil statistik tapping per session
+  getTappingStats: async (idBox = null) => {
+    let query = `
+      SELECT t.id_box, t.session_id,
+        COUNT(*) AS total_taps,
+        COUNT(DISTINCT t.rfid_uid) AS unique_users,
+        SUM(t.event_type = 'IN') AS total_in,
+        SUM(t.event_type = 'OUT') AS total_out,
+        MIN(t.created_at) AS session_start,
+        MAX(t.created_at) AS session_end
+      FROM tapping_history t
+      WHERE t.session_id IS NOT NULL
+    `;
+    const params = [];
+    if (idBox) {
+      query += ' AND t.id_box = ?';
+      params.push(idBox);
+    }
+    query += ' GROUP BY t.id_box, t.session_id ORDER BY t.id_box, session_start DESC';
+    const [rows] = await pool.query(query, params);
+    return rows;
+  },
+
   // 7. Menambahkan tapping history baru
   createTappingHistory: async (tapData) => {
-    const { idBox, rfidUid, nama, eventType, eventText, lat, lng } = tapData;
+    const { idBox, rfidUid, nama, eventType, eventText, lat, lng, sessionId } = tapData;
     const query = `
-      INSERT INTO tapping_history (id_box, rfid_uid, nama, event_type, event_text, lat, lng, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      INSERT INTO tapping_history (id_box, session_id, rfid_uid, nama, event_type, event_text, lat, lng, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
-    const [result] = await pool.query(query, [idBox, rfidUid, nama || null, eventType, eventText || null, lat || null, lng || null]);
+    const [result] = await pool.query(query, [idBox, sessionId || null, rfidUid, nama || null, eventType, eventText || null, lat || null, lng || null]);
     return result.insertId;
+  },
+
+  // 7b. Auto-generate next session_id for a box
+  getNextSessionId: async (idBox) => {
+    const [rows] = await pool.query(
+      'SELECT COALESCE(MAX(session_id), 0) + 1 AS next_id FROM tapping_history WHERE id_box = ?',
+      [idBox]
+    );
+    return rows[0]?.next_id || 1;
   },
 
   // 8. Menghapus tapping history

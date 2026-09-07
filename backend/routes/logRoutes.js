@@ -7,6 +7,8 @@ const router = express.Router();
 router.route('/tapping-history')
   .get(logController.getTappingHistory);
 
+router.get('/tapping-history/stats', logController.getTappingStats);
+router.get('/tapping-history/session-id/:idBox', logController.generateSessionId);
 router.delete('/tapping-history/clear', logController.clearTappingHistory);
 router.delete('/tapping-history/:id', logController.deleteTappingById);
 router.post('/tapping', logController.createTapping);
