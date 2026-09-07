@@ -27,6 +27,7 @@ export default function Dashboard() {
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     bukaModalUmum, bukaModalRadar, triggerEmergencyOverride,
     handleHapusRiwayatTapping,
+    peopleCount, peopleCountHistory,
     pemicuToast
   } = useApp();
 
@@ -48,6 +49,9 @@ export default function Dashboard() {
 
     const mapLat = (selectedBox && !isNaN(Number(selectedBox.lat)) && Number(selectedBox.lat) !== 0) ? Number(selectedBox.lat) : 2.144691;
     const mapLng = (selectedBox && !isNaN(Number(selectedBox.lng)) && Number(selectedBox.lng) !== 0) ? Number(selectedBox.lng) : 117.477526;
+
+    // Guard: skip if coordinates are still invalid
+    if (isNaN(mapLat) || isNaN(mapLng) || mapLat === 0 || mapLng === 0) return;
 
     if (!leafletMapInstanceRef.current) {
       const map = L.map(mapContainerRef.current, { center: [mapLat, mapLng], zoom: 13, zoomControl: true });
@@ -76,6 +80,7 @@ export default function Dashboard() {
       const bLat = Number(box.lat);
       const bLng = Number(box.lng || box.lon);
       if (isNaN(bLat) || isNaN(bLng) || bLat === 0 || bLng === 0) return;
+      if (!isFinite(bLat) || !isFinite(bLng)) return;
       currentMarkerKeys.add(box.id);
       const isBoxLocked = box.state && box.state !== 'STATE_IDLE' && box.state !== 'STATE_REGISTER_RFID';
       const markerColor = isBoxLocked ? '#ef4444' : (box.state === 'STATE_REGISTER_RFID' ? '#2563eb' : '#22c55e');
@@ -130,6 +135,7 @@ export default function Dashboard() {
     if (selectedBox) {
       const mapLat = !isNaN(Number(selectedBox.lat)) && Number(selectedBox.lat) !== 0 ? Number(selectedBox.lat) : 2.144691;
       const mapLng = !isNaN(Number(selectedBox.lng)) && Number(selectedBox.lng) !== 0 ? Number(selectedBox.lng) : 117.477526;
+      if (!isFinite(mapLat) || !isFinite(mapLng)) return;
       const centerNow = map.getCenter();
       const distMoved = Math.abs(centerNow.lat - mapLat) + Math.abs(centerNow.lng - mapLng);
       if (lastCenteredBoxIdRef.current !== selectedBox.id || distMoved > 0.0001) {
@@ -166,6 +172,56 @@ export default function Dashboard() {
           <div><p className="text-[9px] text-red-700 font-bold uppercase tracking-wider flex items-center gap-1">Data Pindaian <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-red-500"></i></p><h3 className="text-lg font-black font-mono-tech mt-1 text-red-700">{totalOrangMasukOtomatis} Petugas</h3></div>
           <i className="fa-solid fa-id-card-clip text-lg text-red-600"></i>
         </div>
+
+        {/* PEOPLE COUNTING CARD */}
+        <div onClick={() => {
+          const historyHtml = peopleCountHistory.length > 0
+            ? `<div class="overflow-x-auto border border-gray-200 rounded-xl max-h-64 overflow-y-auto"><table class="w-full text-left border-collapse text-xs font-mono-tech"><thead class="bg-gray-100 text-slate-800 border-b border-gray-200"><tr><th class="p-2">Waktu</th><th class="p-2 text-center">Detected</th><th class="p-2 text-center">Registered</th><th class="p-2 text-center">Status</th></tr></thead><tbody class="divide-y divide-gray-100">${peopleCountHistory.map(h => {
+              const match = h.detected_count === h.registered_count;
+              const diff = h.detected_count - h.registered_count;
+              const statusClass = match ? 'text-green-600 bg-green-50' : (diff > 0 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50');
+              const statusText = match ? 'SESUAI' : (diff > 0 ? `+${diff} EXTRA` : `${diff} KURANG`);
+              return `<tr class="hover:bg-red-50/50"><td class="p-2">${new Date(h.created_at).toLocaleTimeString('id-ID')}</td><td class="p-2 text-center font-bold">${h.detected_count}</td><td class="p-2 text-center">${h.registered_count}</td><td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-[9px] font-bold border ${statusClass}">${statusText}</span></td></tr>`;
+            }).join('')}</tbody></table></div>`
+            : '<div class="text-center py-6 text-slate-400 italic">Belum ada data counting</div>';
+
+          const diff = peopleCount.detected_count - peopleCount.registered_count;
+          const statusColor = diff === 0 ? 'text-green-600' : (diff > 0 ? 'text-amber-600' : 'text-red-600');
+          const statusText = diff === 0 ? 'SESUAI' : (diff > 0 ? `+${diff} EXTRA PERSON` : `${diff} KURANG`);
+
+          bukaModalUmum('People Counting - Realtime Monitor', 'fa-users', `
+            <div class="space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <div class="bg-green-50 border border-green-200 p-3 rounded-xl text-center">
+                  <p class="text-[10px] text-green-700 font-bold uppercase">Detected (Camera)</p>
+                  <p class="text-3xl font-black text-green-600 font-mono-tech">${peopleCount.detected_count}</p>
+                </div>
+                <div class="bg-blue-50 border border-blue-200 p-3 rounded-xl text-center">
+                  <p class="text-[10px] text-blue-700 font-bold uppercase">Registered (RFID)</p>
+                  <p class="text-3xl font-black text-blue-600 font-mono-tech">${peopleCount.registered_count}</p>
+                </div>
+              </div>
+              <div class="text-center p-2 rounded-xl border ${diff === 0 ? 'bg-green-50 border-green-200' : (diff > 0 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200')}">
+                <p class="text-sm font-bold ${statusColor}">${statusText}</p>
+              </div>
+              <p class="text-[10px] text-slate-500 font-bold uppercase">Riwayat Counting:</p>
+              ${historyHtml}
+            </div>
+          `);
+        }} className="bg-white border border-gray-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
+          <div>
+            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">People Counting <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
+            <h3 className="text-lg font-black font-mono-tech mt-1">
+              <span className="text-green-600">{peopleCount.detected_count}</span>
+              <span className="text-slate-400 mx-1">/</span>
+              <span className="text-blue-600">{peopleCount.registered_count}</span>
+            </h3>
+            <p className="text-[9px] text-slate-400">Detected / Registered</p>
+          </div>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
+            <i className={`fa-solid fa-video text-lg ${peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
+          </div>
+        </div>
       </div>
 
       {/* RADAR TARGET BAR */}
@@ -189,6 +245,33 @@ export default function Dashboard() {
           <div className="space-y-2">
             <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech"><i className="fa-solid fa-map-location-dot"></i> Peta Lokasi Alat Berat (Satelit)</div>
             <div ref={mapContainerRef} className="w-full h-[240px] sm:h-[350px] rounded-2xl border border-red-200 shadow-lg z-10" style={{ background: '#e5e7eb', minHeight: '240px' }} />
+          </div>
+
+          {/* CCTV LIVE FEED */}
+          <div className="space-y-2">
+            <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech">
+              <i className="fa-solid fa-video"></i> CCTV Live Feed
+              {selectedBox && <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">{selectedBox.id}</span>}
+              <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[9px] font-bold">LIVE</span>
+            </div>
+            <div className="relative rounded-2xl border border-red-200 shadow-lg overflow-hidden bg-black" style={{ minHeight: '200px' }}>
+              {selectedBox ? (
+                <img
+                  key={selectedBox.id}
+                  src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/${encodeURIComponent(selectedBox.id)}`}
+                  alt={`CCTV ${selectedBox.id}`}
+                  className="w-full h-auto max-h-[360px] object-contain"
+                  onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+                />
+              ) : null}
+              <div className={`${selectedBox ? 'hidden' : 'flex'} absolute inset-0 items-center justify-center bg-slate-900 text-slate-400 flex-col gap-2`}>
+                <i className="fa-solid fa-video-slash text-3xl"></i>
+                <p className="text-xs">{selectedBox ? 'RTSP belum dikonfigurasi' : 'Pilih boks terlebih dahulu'}</p>
+                <p className="text-[10px] text-slate-500">
+                  {selectedBox ? 'Atur RTSP URL di form edit boks' : 'Klik boks di daftar untuk melihat CCTV'}
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* LCD & STATUS KERJA */}
@@ -286,6 +369,7 @@ export default function Dashboard() {
                     <i className={`fa-solid ${isSyncing ? 'fa-spinner animate-spin' : 'fa-satellite-dish'}`}></i> Sync
                   </button>
                 </div>
+                <input type="text" placeholder="RTSP URL CCTV (opsional, rtsp://user:pass@ip:port/path)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.rtsp_url || ''} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, rtsp_url: e.target.value })} />
                 <div className="grid grid-cols-2 gap-2">
                   <input type="text" placeholder="Latitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lat} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lat: e.target.value })} />
                   <input type="text" placeholder="Longitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lng} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lng: e.target.value })} />

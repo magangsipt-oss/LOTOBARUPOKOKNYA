@@ -40,6 +40,17 @@ const logService = {
   deleteBuffer: async (id) => {
     const response = await api.delete(`/logs/buffer/${id}`);
     return response.data;
+  },
+
+  // People Counting
+  getLatestPeopleCount: async (idBox) => {
+    const response = await api.get(`/logs/people-counting/${encodeURIComponent(idBox)}`);
+    return response.data;
+  },
+
+  getPeopleCountHistory: async (idBox, limit = 20) => {
+    const response = await api.get(`/logs/people-counting/${encodeURIComponent(idBox)}/history`, { params: { limit } });
+    return response.data;
   }
 };
 

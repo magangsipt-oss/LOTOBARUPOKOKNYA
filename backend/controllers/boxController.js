@@ -55,7 +55,7 @@ const boxController = {
   // 3. Menambahkan unit box baru
   createBox: async (req, res) => {
     try {
-      const { unit, ip, state, lat, lng, supervisorUid } = req.body;
+      const { unit, ip, state, lat, lng, supervisorUid, rtsp_url } = req.body;
       const idBox = req.body.idBox ?? req.body.id_box;
 
       // Validasi: idBox dan unit wajib diisi
@@ -73,7 +73,8 @@ const boxController = {
         state: state || 'IDLE',
         lat: lat || 0,
         lng: lng || 0,
-        supervisorUid: supervisorUid || ''
+        supervisorUid: supervisorUid || '',
+        rtsp_url: rtsp_url || null
       });
 
       return res.status(201).json({
@@ -95,7 +96,7 @@ const boxController = {
   updateBox: async (req, res) => {
     try {
       const { idBox } = req.params;
-      const { unit, ip, lat, lng, supervisorUid } = req.body;
+      const { unit, ip, lat, lng, supervisorUid, rtsp_url } = req.body;
 
       if (!unit) {
         return res.status(400).json({
@@ -109,7 +110,8 @@ const boxController = {
         ip,
         lat,
         lng,
-        supervisorUid
+        supervisorUid,
+        rtsp_url: rtsp_url || null
       });
 
       if (!isUpdated) {
@@ -229,7 +231,9 @@ const boxController = {
         relayOpen: (body.relay_open ?? body.relayOpen) ? 1 : 0,
         uptimeMs: body.uptime_ms ?? body.uptimeMs ?? 0,
         hwData: body.hw_data ?? body.hwData ?? null,
-        isOnline: isOnlineValue === true || isOnlineValue === 1 || isOnlineValue === '1' ? 1 : 0
+        isOnline: isOnlineValue === true || isOnlineValue === 1 || isOnlineValue === '1' ? 1 : 0,
+        ssid: body.ssid ?? null,
+        ip: body.ip ?? null
       });
 
       if (!isUpdated && !(await BoxModel.getByIdBox(idBox))) {

@@ -199,6 +199,49 @@ const logController = {
     }
   },
 
+  // People Counting endpoints
+  upsertPeopleCount: async (req, res) => {
+    try {
+      const { id_box, session_id, detected_count, registered_count } = req.body;
+      if (!id_box || detected_count === undefined) {
+        return res.status(400).json({ success: false, message: 'id_box dan detected_count wajib disertakan' });
+      }
+      await LogModel.upsertPeopleCount({
+        idBox: id_box,
+        sessionId: session_id,
+        detectedCount: detected_count,
+        registeredCount: registered_count || 0
+      });
+      return res.status(200).json({ success: true, message: 'People count updated' });
+    } catch (error) {
+      console.error('Error upsertPeopleCount:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal update people count', error: error.message });
+    }
+  },
+
+  getLatestPeopleCount: async (req, res) => {
+    try {
+      const { idBox } = req.params;
+      const data = await LogModel.getLatestPeopleCount(idBox);
+      return res.status(200).json({ success: true, data: data || { detected_count: 0, registered_count: 0 } });
+    } catch (error) {
+      console.error('Error getLatestPeopleCount:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal mengambil people count', error: error.message });
+    }
+  },
+
+  getPeopleCountHistory: async (req, res) => {
+    try {
+      const { idBox } = req.params;
+      const limit = parseInt(req.query.limit) || 100;
+      const data = await LogModel.getPeopleCountHistory(idBox, limit);
+      return res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('Error getPeopleCountHistory:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal mengambil riwayat people count', error: error.message });
+    }
+  },
+
   deleteTappingById: async (req, res) => {
     try {
       const requestedIds = Array.isArray(req.body?.event_ids) ? req.body.event_ids : [req.params.id];
@@ -226,6 +269,29 @@ const logController = {
         message: 'Gagal membersihkan riwayat tap kartu',
         error: error.message
       });
+    }
+  },
+
+  // ===== RFID BUFFER =====
+  getAllBuffer: async (req, res) => {
+    try {
+      const buffer = await LogModel.getAllBuffer();
+      return res.status(200).json({ success: true, data: buffer });
+    } catch (error) {
+      console.error('Error getAllBuffer:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal mengambil buffer', error: error.message });
+    }
+  },
+
+  deleteBuffer: async (req, res) => {
+    try {
+      const { id } = req.params;
+      const deleted = await LogModel.deleteBuffer(id);
+      if (!deleted) return res.status(404).json({ success: false, message: 'Buffer tidak ditemukan' });
+      return res.status(200).json({ success: true, message: 'Buffer berhasil dihapus' });
+    } catch (error) {
+      console.error('Error deleteBuffer:', error.message);
+      return res.status(500).json({ success: false, message: 'Gagal menghapus buffer', error: error.message });
     }
   }
 };

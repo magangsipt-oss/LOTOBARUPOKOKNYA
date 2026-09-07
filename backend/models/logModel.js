@@ -149,6 +149,50 @@ const LogModel = {
     const query = 'DELETE FROM tapping_history WHERE id_box = ?';
     const [result] = await pool.query(query, [idBox]);
     return result.affectedRows;
+  },
+
+  // ===== PEOPLE COUNTING =====
+
+  upsertPeopleCount: async (data) => {
+    const { idBox, sessionId, detectedCount, registeredCount, timestamp } = data;
+    const query = `
+      INSERT INTO people_counting (id_box, session_id, detected_count, registered_count, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        detected_count = VALUES(detected_count),
+        registered_count = VALUES(registered_count),
+        created_at = VALUES(created_at)
+    `;
+    await pool.query(query, [idBox, sessionId || null, detectedCount, registeredCount || 0, timestamp || new Date()]);
+  },
+
+  getLatestPeopleCount: async (idBox) => {
+    const [rows] = await pool.query(
+      'SELECT * FROM people_counting WHERE id_box = ? ORDER BY created_at DESC LIMIT 1',
+      [idBox]
+    );
+    return rows[0] || null;
+  },
+
+  getPeopleCountHistory: async (idBox, limit = 100) => {
+    const [rows] = await pool.query(
+      'SELECT * FROM people_counting WHERE id_box = ? ORDER BY created_at DESC LIMIT ?',
+      [idBox, limit]
+    );
+    return rows;
+  },
+
+  // ===== RFID BUFFER =====
+  getAllBuffer: async () => {
+    const [rows] = await pool.query(
+      'SELECT * FROM rfid_buffer ORDER BY created_at DESC LIMIT 200'
+    );
+    return rows;
+  },
+
+  deleteBuffer: async (id) => {
+    const [result] = await pool.query('DELETE FROM rfid_buffer WHERE id = ?', [id]);
+    return result.affectedRows > 0;
   }
 };
 

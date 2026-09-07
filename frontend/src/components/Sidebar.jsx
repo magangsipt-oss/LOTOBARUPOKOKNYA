@@ -17,43 +17,52 @@ export default function Sidebar() {
     navItems.push({ id: 'profil-tab', icon: 'fa-user', label: 'Profil Saya' });
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
-    navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Home / Pantau Langsung' });
+    navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') {
-    navItems.push({ id: 'teknisi-tab', icon: 'fa-screwdriver-wrench', label: 'Form Laporan Servis' });
+    navItems.push({ id: 'teknisi-tab', icon: 'fa-screwdriver-wrench', label: 'Laporan Servis' });
   }
-  navItems.push({ id: 'riwayat-tab', icon: 'fa-clock-history', label: 'Riwayat Laporan', subTab: 'form-mekanik' });
+  navItems.push({ id: 'riwayat-tab', icon: 'fa-clock-rotate-left', label: 'Riwayat' });
   if (sessionUser?.role === 'admin') {
-    navItems.push({ id: 'admin-tab', icon: 'fa-users-gear', label: 'Kelola Personel' });
+    navItems.push({ id: 'admin-tab', icon: 'fa-users-gear', label: 'Personel' });
   }
   if (sessionUser?.role === 'pengawas') {
-    navItems.push({ id: 'team-tab', icon: 'fa-people-group', label: 'Tim Mekanik' });
+    navItems.push({ id: 'team-tab', icon: 'fa-people-group', label: 'Tim Kerja' });
   }
 
   return (
-    <aside className="w-full md:w-64 bg-red-50 border-b md:border-b-0 md:border-r border-red-100 p-4 md:p-6 flex flex-col justify-between shrink-0 backdrop-blur-sm">
-      <div className="space-y-4 md:space-y-6">
-        <div className="flex items-center gap-3 border-b border-red-200 pb-3">
-          <i className="fa-solid fa-radio text-red-600 text-xl animate-pulse"></i>
+    <aside className="w-full md:w-64 h-screen bg-white border-b md:border-b-0 md:border-r border-slate-200 flex flex-col shrink-0 shadow-lg md:shadow-none overflow-y-auto">
+      {/* Header */}
+      <div className="p-5 border-b border-slate-100 sticky top-0 bg-white z-10">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-red-700 rounded-xl flex items-center justify-center shadow-lg shadow-red-500/20">
+            <i className="fa-solid fa-shield-halved text-white text-sm"></i>
+          </div>
           <div>
-            <h2 className="font-black text-sm tracking-wider text-red-600 font-mono-tech">E-LOTO PLATFORM</h2>
-            <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold font-mono-tech">Sistem Monitoring Terpadu</p>
+            <h2 className="font-black text-sm text-slate-800 tracking-tight">E-LOTO</h2>
+            <p className="text-[9px] text-slate-400 font-medium uppercase tracking-wider">Safety System</p>
           </div>
         </div>
+      </div>
 
+      {/* User Card */}
+      <div className="p-4">
         <button
           type="button"
           onClick={() => sessionUser?.role !== 'admin' && setActiveTab('profil-tab')}
-          className={`w-full bg-white p-3 rounded-xl border border-red-200 text-center space-y-2 shadow-sm hover:border-red-500 transition-all ${sessionUser?.role === 'admin' ? 'cursor-default' : ''}`}
+          className={`w-full bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center space-y-2 hover:border-red-300 hover:bg-red-50/50 transition-all ${sessionUser?.role === 'admin' ? 'cursor-default' : ''}`}
         >
-          <Avatar profile={sessionUser} className="w-16 h-16 mx-auto" />
-          <p className="text-[10px] text-slate-500 font-bold uppercase font-mono-tech">Pengguna Aktif:</p>
-          <p className="text-xs font-bold text-slate-950 truncate">{sessionUser?.nama}</p>
-          <span className="inline-block text-[9px] bg-red-600 text-white px-2 py-0.5 rounded font-mono font-black uppercase tracking-wider font-mono-tech">{sessionUser?.role}</span>
-          {sessionUser?.role !== 'admin' && <span className="block text-[9px] text-red-600 font-mono-tech uppercase font-bold">Lihat Profil</span>}
+          <Avatar profile={sessionUser} className="w-14 h-14 mx-auto ring-2 ring-white shadow-md" />
+          <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Pengguna Aktif</p>
+          <p className="text-xs font-bold text-slate-800 truncate">{sessionUser?.nama}</p>
+          <span className="inline-block text-[9px] bg-slate-800 text-white px-2.5 py-1 rounded-full font-bold uppercase tracking-wider">{sessionUser?.role}</span>
         </button>
+      </div>
 
-        <nav className="flex flex-row md:flex-col overflow-x-auto md:overflow-visible gap-1 pb-2 md:pb-0 text-xs font-semibold text-slate-800 scrollbar-none">
+      {/* Navigation */}
+      <nav className="flex-1 px-3 pb-4">
+        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-3 mb-2">Menu</p>
+        <div className="space-y-1">
           {navItems.map((item) => (
             <button
               key={item.id}
@@ -64,25 +73,30 @@ export default function Sidebar() {
                 }
                 setActiveTab(item.id);
               }}
-              className={`whitespace-nowrap text-left flex items-center gap-2.5 p-3 rounded-xl transition-all ${
+              className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
                 activeTab === item.id
-                  ? 'bg-red-600 text-white font-bold shadow-md shadow-red-200'
-                  : 'hover:bg-red-50 text-slate-900'
+                  ? 'bg-red-600 text-white shadow-lg shadow-red-500/30'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
               }`}
             >
-              <i className={`fa-solid ${item.icon} w-4 text-center`}></i> {item.label}
+              <i className={`fa-solid ${item.icon} w-5 text-center text-sm`}></i>
+              <span>{item.label}</span>
             </button>
           ))}
-        </nav>
-      </div>
+        </div>
+      </nav>
 
-      <button
-        type="button"
-        onClick={handleLogout}
-        className="mt-4 md:mt-0 w-full flex items-center justify-center gap-2 bg-white border border-gray-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 hover:text-red-600 hover:border-red-200 transition-all font-mono-tech shadow-sm"
-      >
-        <i className="fa-solid fa-right-from-bracket"></i> KELUAR
-      </button>
+      {/* Logout */}
+      <div className="p-4 border-t border-slate-100 sticky bottom-0 bg-white">
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full flex items-center justify-center gap-2 bg-slate-100 hover:bg-red-50 border border-slate-200 hover:border-red-200 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:text-red-600 transition-all"
+        >
+          <i className="fa-solid fa-right-from-bracket"></i>
+          <span>Keluar</span>
+        </button>
+      </div>
     </aside>
   );
 }

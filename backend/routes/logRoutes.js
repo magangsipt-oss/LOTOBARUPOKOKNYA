@@ -10,11 +10,20 @@ router.route('/tapping-history')
 router.get('/tapping-history/stats', logController.getTappingStats);
 router.get('/tapping-history/session-id/:idBox', logController.generateSessionId);
 router.delete('/tapping-history/clear', logController.clearTappingHistory);
+
+// People Counting
+router.post('/people-counting', logController.upsertPeopleCount);
+router.get('/people-counting/:idBox', logController.getLatestPeopleCount);
+router.get('/people-counting/:idBox/history', logController.getPeopleCountHistory);
 router.delete('/tapping-history/:id', logController.deleteTappingById);
 router.post('/tapping', logController.createTapping);
 
 // 2. Rute Pembersihan Seluruh Log Aktivitas
 router.delete('/clear', logController.clearAllLogs);
+
+// RFID Buffer
+router.get('/buffer', logController.getAllBuffer);
+router.delete('/buffer/:id', logController.deleteBuffer);
 
 // 3. Rute Utama Log Aktivitas (Ambil semua log & Tambah log baru)
 router.route('/')

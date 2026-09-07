@@ -13,6 +13,7 @@ import refuelingRoutes from './routes/refuelingRoutes.js';
 import supervisorRoutes from './routes/supervisorRoutes.js';
 import commandRoutes from './routes/commandRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
+import streamRoutes from './routes/streamRoutes.js';
 import { testConnection } from './config/database.js';
 
 // Inisialisasi konfigurasi environment variable (.env)
@@ -27,7 +28,7 @@ const __dirname = path.dirname(__filename);
 
 // 1. Middleware Dasar
 app.use(cors()); // Mengizinkan akses dari frontend (Cross-Origin Resource Sharing)
-app.use(express.json()); // Membaca data berformat JSON dari body request
+app.use(express.json({ limit: '10mb' })); // Membaca data berformat JSON dari body request
 app.use(express.urlencoded({ extended: true })); // Membaca data form-urlencoded
 
 // 2. Middleware Static Folder untuk Foto Profil dan Dokumen
@@ -44,6 +45,7 @@ app.use('/api/refueling', refuelingRoutes);
 app.use('/api/supervisor', supervisorRoutes);
 app.use('/api/commands', commandRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/stream', streamRoutes);
 
 // 4. Rute Pemeriksaan Kesehatan Server (Health Check)
 app.get('/', (req, res) => {

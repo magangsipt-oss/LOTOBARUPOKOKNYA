@@ -35,6 +35,8 @@ export function AppProvider({ children }) {
   const [tappingHistory, setTappingHistory] = useState([]);
   const [localAuditLog, setLocalAuditLog] = useState([]);
   const [deletedAuditIds, setDeletedAuditIds] = useState([]);
+  const [peopleCount, setPeopleCount] = useState({ detected_count: 0, registered_count: 0 });
+  const [peopleCountHistory, setPeopleCountHistory] = useState([]);
 
   const [toast, setToast] = useState({ show: false, msg: '', type: '' });
   const [modalInfo, setModalInfo] = useState({ open: false, title: '', icon: '', content: null });
@@ -70,7 +72,7 @@ export function AppProvider({ children }) {
   const [tipeKerusakan, setTipeKerusakan] = useState('Mekanikal');
   const [estimasiWaktu, setEstimasiWaktu] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
-  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '' });
+  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
   const [editingBoxId, setEditingBoxId] = useState('');
   const [formAdminNewUser, setFormAdminNewUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -233,6 +235,18 @@ export function AppProvider({ children }) {
           ? historyResult
           : (Array.isArray(historyResult?.data) ? historyResult.data : []);
         setTappingHistory(normalizedHistory);
+
+        // Fetch people counting for selected box (or first box if none selected)
+        const targetBoxId = selectedBox?.id || (boxes.length > 0 ? boxes[0].id : null);
+        if (targetBoxId) {
+          const pcResult = await logService.getLatestPeopleCount(targetBoxId);
+          const pcData = pcResult.data || pcResult;
+          if (pcData && pcData.detected_count !== undefined) setPeopleCount(pcData);
+
+          const pcHistory = await logService.getPeopleCountHistory(targetBoxId, 20);
+          const pcHistoryData = pcHistory.data || pcHistory;
+          if (Array.isArray(pcHistoryData)) setPeopleCountHistory(pcHistoryData);
+        }
       } catch (err) { /* silent */ }
     };
 
@@ -241,7 +255,7 @@ export function AppProvider({ children }) {
       const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
       return () => clearInterval(intervalSync);
     }
-  }, [isLoggedIn, selectedBox?.id]);
+  }, [isLoggedIn, selectedBox?.id, boxes.length]);
 
   // Downtime timer
   useEffect(() => {
@@ -444,7 +458,7 @@ export function AppProvider({ children }) {
     const cleanIp = formAlatBerat.ip.replace(/[<>]/g, "").trim();
     const cleanLat = parseFloat(formAlatBerat.lat);
     const cleanUnitLng = parseFloat(formAlatBerat.lng);
-    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp || '192.168.1.100', lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng };
+    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp || '192.168.1.100', lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng, rtsp_url: formAlatBerat.rtsp_url || null };
     try {
       const hasil = editingBoxId
         ? await boxService.updateBox(editingBoxId, { ...newUnit, idBox: cleanId })
@@ -455,7 +469,7 @@ export function AppProvider({ children }) {
         setSelectedBox(prev => prev && String(prev.id) === String(cleanId) ? { ...prev, ...savedBox } : savedBox);
         selectedBoxIdRef.current = cleanId;
         setEditingBoxId('');
-        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '' });
+        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
         pemicuToast(editingBoxId ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
       } else { pemicuToast(hasil.message, 'fail'); }
     } catch (err) { pemicuToast("Gagal mendaftarkan unit box ke server!", "fail"); }
@@ -463,7 +477,7 @@ export function AppProvider({ children }) {
 
   const handleEditAlatBerat = (box) => {
     setEditingBoxId(box.id);
-    setFormAlatBerat({ id: box.id || '', unit: box.unit || '', ip: box.ip || '', lat: box.lat || '', lng: box.lng || box.lon || '' });
+    setFormAlatBerat({ id: box.id || '', unit: box.unit || '', ip: box.ip || '', lat: box.lat || '', lng: box.lng || box.lon || '', rtsp_url: box.rtsp_url || '' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -1004,6 +1018,7 @@ export function AppProvider({ children }) {
     logPemeliharaan, setLogPemeliharaan,
     rfidBufferList, setRfidBufferList,
     tappingHistory, setTappingHistory,
+    peopleCount, peopleCountHistory,
     localAuditLog, setLocalAuditLog,
     deletedAuditIds, setDeletedAuditIds,
     downtimeSeconds, isTrackingDowntime,
