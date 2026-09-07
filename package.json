@@ -12,5 +12,9 @@
     "build:frontend": "pnpm --filter frontend run build",
     "lint": "pnpm --parallel -r run lint",
     "clean": "pnpm --parallel -r run clean"
+  },
+  "devDependencies": {
+    "knip": "^6.34.0",
+    "madge": "^8.0.0"
   }
 }

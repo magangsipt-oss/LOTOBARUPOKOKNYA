@@ -1,406 +1,220 @@
-import React, { useState, useEffect } from 'react';
-import userService from '../services/userService';
-import { ModalConfirmDelete } from '../components/Modals';
+import React from 'react';
+import { useApp } from '../context/AppContext';
+import Avatar from '../components/Avatar';
 
 /**
- * Halaman Manajemen Pengguna E-LOTO
+ * Halaman Kelola Personel (Admin) - Daftar Akun & Buffer RFID
  */
-const Users = () => {
-  const [users, setUsers] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [roleFilter, setRoleFilter] = useState('ALL');
-
-  // State Modal Form & Hapus
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [userToDeleteId, setUserToDeleteId] = useState(null);
-
-  // State Input Form
-  const [formData, setFormData] = useState({
-    name: '',
-    username: '',
-    card_number: '',
-    role: 'WORKER',
-    department: '',
-  });
-  const [profilePhoto, setProfilePhoto] = useState(null);
-
-  // 1. Mengambil data seluruh pengguna dari backend
-  const fetchUsers = async () => {
-    try {
-      setIsLoading(true);
-      const response = await userService.getAllUsers();
-      if (response && response.success) {
-        setUsers(response.data || []);
-      }
-    } catch (error) {
-      console.error('Gagal mengambil data user:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
-  // 2. Handler Buka Modal Form (Tambah / Edit)
-  const handleOpenForm = (user = null) => {
-    if (user) {
-      setSelectedUser(user);
-      setFormData({
-        name: user.name || '',
-        username: user.username || '',
-        card_number: user.card_number || '',
-        role: user.role || 'WORKER',
-        department: user.department || '',
-      });
-    } else {
-      setSelectedUser(null);
-      setFormData({
-        name: '',
-        username: '',
-        card_number: '',
-        role: 'WORKER',
-        department: '',
-      });
-    }
-    setProfilePhoto(null);
-    setIsFormOpen(true);
-  };
-
-  // 3. Handler Simpan Data (Create / Update)
-  const handleSubmitForm = async (e) => {
-    e.preventDefault();
-    try {
-      const payload = new FormData();
-      payload.append('name', formData.name);
-      payload.append('username', formData.username);
-      payload.append('card_number', formData.card_number);
-      payload.append('role', formData.role);
-      payload.append('department', formData.department);
-
-      if (profilePhoto) {
-        payload.append('profile_photo', profilePhoto);
-      }
-
-      if (selectedUser) {
-        await userService.updateUser(selectedUser.id, payload);
-      } else {
-        await userService.createUser(payload);
-      }
-
-      setIsFormOpen(false);
-      fetchUsers();
-    } catch (error) {
-      alert('Gagal menyimpan pengguna: ' + (error.response?.data?.message || error.message));
-    }
-  };
-
-  // 4. Handler Hapus Pengguna
-  const handleConfirmDelete = async () => {
-    try {
-      if (userToDeleteId) {
-        await userService.deleteUser(userToDeleteId);
-        setIsDeleteOpen(false);
-        setUserToDeleteId(null);
-        fetchUsers();
-      }
-    } catch (error) {
-      alert('Gagal menghapus pengguna: ' + (error.response?.data?.message || error.message));
-    }
-  };
-
-  // 5. Filter Pencarian & Peran
-  const filteredUsers = users.filter((user) => {
-    const matchesSearch =
-      user.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.card_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.department?.toLowerCase().includes(searchQuery.toLowerCase());
-
-    const matchesRole = roleFilter === 'ALL' || user.role === roleFilter;
-
-    return matchesSearch && matchesRole;
-  });
+export default function Users() {
+  const {
+    userDatabase, groupPengawas, groupTeknisi, groupFuelman,
+    adminSearchTerm, setAdminSearchTerm,
+    showAddUserForm, setShowAddUserForm,
+    formAdminNewUser, setFormAdminNewUser,
+    showEditUserModal, setShowEditUserModal,
+    formEditUser, setFormEditUser,
+    rfidBufferList, subTabAdmin, setSubTabAdmin,
+    hwData, sessionUser,
+    excelFileInputRef,
+    handleIndukTambahUser, handleImportExcel,
+    handleBukaModalEditUser, handleSimpanEditUser, handleHapusUser,
+    handleHapusBuffer, handleProfilePhotoUpload,
+    setSubTabMaintenance
+  } = useApp();
 
   return (
     <div className="space-y-6">
-      {/* Baris Atas: Judul & Tombol Tambah */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-100">
-            Manajemen Pengguna & Akses RFID
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Kelola data teknisi lapangan, pengawas, dan integrasi nomor kartu RFID
-          </p>
-        </div>
-
-        <button
-          onClick={() => handleOpenForm()}
-          className="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-lg shadow-emerald-900/20"
-        >
-          <span>➕</span>
-          <span>Daftarkan Pengguna</span>
+      <div className="flex border-b border-gray-200 gap-2 font-mono-tech text-xs">
+        <button type="button" onClick={() => setSubTabAdmin('daftar-personel')} className={`px-4 py-2 border-b-2 font-bold ${subTabAdmin === 'daftar-personel' ? 'border-red-600 text-red-600 bg-red-50' : 'border-transparent text-slate-600 hover:text-slate-900'}`}>
+          📁 Daftar Akun Personel
+        </button>
+        <button type="button" onClick={() => setSubTabAdmin('buffer-rfid')} className={`px-4 py-2 border-b-2 font-bold flex items-center gap-2 ${subTabAdmin === 'buffer-rfid' ? 'border-red-600 text-red-600 bg-red-50' : 'border-transparent text-slate-600 hover:text-slate-900'}`}>
+          <span>📡 Pindaian Kartu Baru</span>
+          {rfidBufferList.length > 0 && <span className="bg-red-600 text-white px-1.5 py-0.2 rounded-full text-[9px] font-bold animate-pulse">{rfidBufferList.length}</span>}
         </button>
       </div>
 
-      {/* Filter & Pencarian */}
-      <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-3">
-        <div className="w-full md:w-80 relative">
-          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">
-            🔍
-          </span>
-          <input
-            type="text"
-            placeholder="Cari nama, kartu RFID, divisi..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <span className="text-xs text-slate-400 whitespace-nowrap">Filter Role:</span>
-          <select
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
-          >
-            <option value="ALL">Semua Peran</option>
-            <option value="WORKER">Pekerja (Worker)</option>
-            <option value="SUPERVISOR">Supervisor</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Tabel Data Pengguna */}
-      {isLoading ? (
-        <div className="text-center py-16">
-          <div className="w-10 h-10 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mx-auto mb-3"></div>
-          <p className="text-xs text-slate-400">Memuat data pengguna...</p>
-        </div>
-      ) : (
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-900/80 text-slate-400 font-semibold border-b border-slate-700 uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="px-5 py-3.5">Profil</th>
-                  <th className="px-5 py-3.5">Nama & Username</th>
-                  <th className="px-5 py-3.5">UID Kartu RFID</th>
-                  <th className="px-5 py-3.5">Peran (Role)</th>
-                  <th className="px-5 py-3.5">Departemen</th>
-                  <th className="px-5 py-3.5 text-right">Aksi</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700/60">
-                {filteredUsers.length === 0 ? (
-                  <tr>
-                    <td colSpan="6" className="text-center py-12 text-slate-500">
-                      Tidak ada data pengguna yang sesuai.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredUsers.map((user) => (
-                    <tr key={user.id} className="hover:bg-slate-700/30 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="w-10 h-10 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-600">
-                          {user.profile_photo ? (
-                            <img
-                              src={`${import.meta.env.VITE_API_URL}/users/photo/${encodeURIComponent(user.rfid_uid || user.rfidUid || user.card_number || user.username || user.sid)}`}
-                              alt={user.name}
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                e.target.onerror = null;
-                                e.target.src = 'https://via.placeholder.com/100?text=User';
-                              }}
-                            />
-                          ) : (
-                            <span className="text-base">👤</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-5 py-3">
-                        <p className="font-semibold text-slate-100">{user.name}</p>
-                        <p className="text-[11px] text-slate-400">@{user.username || '-'}</p>
-                      </td>
-                      <td className="px-5 py-3 font-mono font-bold text-slate-200">
-                        💳 {user.card_number}
-                      </td>
-                      <td className="px-5 py-3">
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
-                            user.role === 'SUPERVISOR'
-                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                              : 'bg-blue-500/15 text-blue-400 border-blue-500/30'
-                          }`}
-                        >
-                          {user.role}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-slate-300">
-                        {user.department || '-'}
-                      </td>
-                      <td className="px-5 py-3 text-right space-x-2">
-                        <button
-                          onClick={() => handleOpenForm(user)}
-                          className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-[11px] font-medium transition-colors"
-                        >
-                          ✏️ Edit
-                        </button>
-                        <button
-                          onClick={() => {
-                            setUserToDeleteId(user.id);
-                            setIsDeleteOpen(true);
-                          }}
-                          className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg text-[11px] font-medium transition-colors"
-                        >
-                          🗑️ Hapus
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Form Tambah / Edit Pengguna */}
-      {isFormOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-700">
-              <h3 className="text-lg font-bold text-slate-100">
-                {selectedUser ? '✏️ Edit Data Pengguna' : '➕ Daftarkan Pengguna Baru'}
-              </h3>
-              <button
-                onClick={() => setIsFormOpen(false)}
-                className="text-slate-400 hover:text-slate-200 text-lg p-1"
-              >
-                ✕
+      {subTabAdmin === 'daftar-personel' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-200 pb-2">
+            <h3 className="text-base font-bold text-red-600 font-mono-tech">Daftar Akun Personel & Karyawan</h3>
+            <div className="flex items-center gap-2">
+              <input type="file" ref={excelFileInputRef} accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportExcel} />
+              <button type="button" onClick={() => excelFileInputRef.current && excelFileInputRef.current.click()} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold font-mono-tech uppercase flex items-center gap-1.5 shadow-sm active:scale-95 transition-all">
+                <i className="fa-solid fa-file-excel"></i> Impor Excel / CSV
+              </button>
+              <button type="button" onClick={() => setShowAddUserForm(!showAddUserForm)} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold font-mono-tech uppercase shadow-sm active:scale-95 transition-all">
+                {showAddUserForm ? 'Tutup Form' : 'Tambah Karyawan'}
               </button>
             </div>
+          </div>
 
-            <form onSubmit={handleSubmitForm} className="mt-4 space-y-3.5 text-sm">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Nama Lengkap <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: John Doe"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"
-                />
+          {rfidBufferList.length > 0 && (
+            <div className="bg-blue-50 border border-blue-300 p-3 rounded-xl flex items-center justify-between gap-2 text-blue-900 font-mono-tech text-xs">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-satellite-dish text-blue-600 animate-pulse text-sm"></i>
+                <span>Ada <b>{rfidBufferList.length} Kartu Baru</b> terdeteksi dari pindaian boks!</span>
               </div>
+              <button type="button" onClick={() => setSubTabAdmin('buffer-rfid')} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-[10px] font-bold uppercase">Lihat Kartu</button>
+            </div>
+          )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Username
-                </label>
-                <input
-                  type="text"
-                  placeholder="Contoh: johndoe"
-                  value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"
-                />
+          {showAddUserForm && (
+            <form onSubmit={handleIndukTambahUser} className="bg-gray-50 p-5 rounded-2xl border border-gray-200 space-y-4 text-xs font-mono-tech">
+              <div className="text-xs font-bold text-red-600 uppercase border-b pb-2">
+                <i className="fa-solid fa-user-plus mr-1"></i> Form Pendaftaran Karyawan Baru
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  UID Kartu RFID <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: 1234567890"
-                  value={formData.card_number}
-                  onChange={(e) => setFormData({ ...formData, card_number: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Peran (Role)
-                  </label>
-                  <select
-                    value={formData.role}
-                    onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"
-                  >
-                    <option value="WORKER">WORKER</option>
-                    <option value="SUPERVISOR">SUPERVISOR</option>
+                  <label className="block text-slate-700 mb-1 font-bold">ID Karyawan (SID)</label>
+                  <input type="text" required placeholder="Contoh: FP3US-001" className="w-full bg-white border p-2.5 rounded-lg" value={formAdminNewUser.sid} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, sid: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-slate-700 mb-1 font-bold">Nama Lengkap</label>
+                  <input type="text" required placeholder="Masukkan Nama..." className="w-full bg-white border p-2.5 rounded-lg" value={formAdminNewUser.nama} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, nama: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-slate-700 mb-1 font-bold">Jabatan</label>
+                  <select className="w-full bg-white border p-2.5 rounded-lg font-bold" value={formAdminNewUser.role} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, role: e.target.value })}>
+                    <option value="teknisi">TEKNISI / MEKANIK</option>
+                    <option value="pengawas">PENGAWAS K3 (SUPERVISOR)</option>
+                    <option value="fuelman">PETUGAS BBM (FUELMAN)</option>
                   </select>
                 </div>
-
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Departemen
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Contoh: Mekanik"
-                    value={formData.department}
-                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"
-                  />
+                  <label className="block text-slate-700 mb-1 font-bold">Kode Kartu RFID</label>
+                  <div className="flex gap-1">
+                    <input type="text" placeholder="UID Kartu..." className="w-full bg-white border p-2.5 rounded-lg uppercase" value={formAdminNewUser.rfidUid} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, rfidUid: e.target.value })} />
+                    <button type="button" onClick={() => setFormAdminNewUser({ ...formAdminNewUser, rfidUid: (hwData.last_uid && hwData.last_uid !== '—' && hwData.last_uid !== 'SYSTEM') ? hwData.last_uid : '' })} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 px-2.5 rounded-lg font-bold text-xs shadow-sm">Ambil</button>
+                  </div>
+                </div>
+                <div className="sm:col-span-2 md:col-span-4">
+                  <label className="block text-slate-700 mb-1 font-bold">Foto Profil (URL atau Upload)</label>
+                  <input type="url" placeholder="https://... atau assets/foto.jpg" className="w-full bg-white border p-2.5 rounded-lg text-slate-900 focus:outline-none focus:border-red-500" value={formAdminNewUser.foto && !formAdminNewUser.foto.startsWith('data:') ? formAdminNewUser.foto : ''} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, foto: e.target.value })} />
+                  <input type="file" accept="image/*" className="w-full mt-2 text-[10px]" onChange={(e) => handleProfilePhotoUpload(e, setFormAdminNewUser)} />
+                  {formAdminNewUser.foto && formAdminNewUser.foto.startsWith('data:') && <div className="mt-2 flex justify-center"><div className="rounded-full bg-white p-1.5 shadow-md ring-2 ring-red-100"><Avatar profile={{ nama: formAdminNewUser.nama, foto: formAdminNewUser.foto }} className="w-20 h-20" /></div></div>}
                 </div>
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Foto Profil (Opsional)
-                </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setProfilePhoto(e.target.files[0])}
-                  className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-700 file:text-slate-200 hover:file:bg-slate-600"
-                />
-              </div>
-
-              <div className="flex gap-3 pt-4 border-t border-slate-700">
-                <button
-                  type="button"
-                  onClick={() => setIsFormOpen(false)}
-                  className="flex-1 py-2.5 px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-colors"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold transition-colors shadow-lg shadow-emerald-900/20"
-                >
-                  {selectedUser ? 'Simpan' : 'Daftarkan'}
-                </button>
+              <div className="flex justify-end pt-2 border-t">
+                <button type="submit" className="bg-red-600 text-white font-bold px-6 py-2.5 rounded-xl uppercase">Simpan Akun</button>
               </div>
             </form>
+          )}
+
+          <div className="bg-white border border-gray-200 p-2.5 rounded-xl shadow-sm flex items-center gap-2 max-w-md">
+            <i className="fa-solid fa-magnifying-glass text-slate-400 text-xs"></i>
+            <input type="text" placeholder="Cari nama atau ID karyawan..." className="w-full bg-transparent text-xs focus:outline-none font-sans" value={adminSearchTerm} onChange={(e) => setAdminSearchTerm(e.target.value)} />
+            {adminSearchTerm && <button type="button" onClick={() => setAdminSearchTerm('')} className="text-slate-400 hover:text-red-600 text-[10px] uppercase font-bold font-mono-tech">Clear</button>}
+          </div>
+
+          {/* 3 KOLOM KELOMPOK DIVISI PERSONEL */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 font-mono-tech text-xs">
+            {/* PENGAWAS K3 */}
+            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
+              <h5 className="font-bold text-red-600 border-b pb-2">👮 PENGAWAS K3 ({groupPengawas.length})</h5>
+              {groupPengawas.map(u => (
+                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
+                  <Avatar profile={u} className="w-9 h-9" />
+                  <div className="truncate flex-1 pl-2">
+                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
+                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* TEKNISI / MEKANIK */}
+            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
+              <h5 className="font-bold text-red-600 border-b pb-2">🔧 TEKNISI / MEKANIK ({groupTeknisi.length})</h5>
+              {groupTeknisi.map(u => (
+                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
+                  <Avatar profile={u} className="w-9 h-9" />
+                  <div className="truncate flex-1 pl-2">
+                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
+                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* PETUGAS BBM */}
+            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
+              <h5 className="font-bold text-red-600 border-b pb-2">⛽ PETUGAS BBM ({groupFuelman.length})</h5>
+              {groupFuelman.map(u => (
+                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
+                  <Avatar profile={u} className="w-9 h-9" />
+                  <div className="truncate flex-1 pl-2">
+                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
+                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Modal Hapus */}
-      <ModalConfirmDelete
-        isOpen={isDeleteOpen}
-        onClose={() => {
-          setIsDeleteOpen(false);
-          setUserToDeleteId(null);
-        }}
-        onConfirm={handleConfirmDelete}
-        itemName={`Pengguna ID #${userToDeleteId}`}
-      />
+      {/* BUFFER RFID */}
+      {subTabAdmin === 'buffer-rfid' && (
+        <div className="space-y-4 font-mono-tech">
+          <div className="flex justify-between items-center border-b pb-2">
+            <div>
+              <h3 className="text-base font-bold text-blue-700 uppercase flex items-center gap-2">
+                <i className="fa-solid fa-satellite-dish text-blue-600 animate-pulse"></i>
+                <span>Pindaian Kartu Baru yang Belum Terdaftar</span>
+              </h3>
+              <p className="text-xs text-slate-600 font-sans mt-0.5">Daftar kartu RFID fisik yang ditempelkan di boks dan siap ditautkan ke akun karyawan.</p>
+            </div>
+            <span className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-bold uppercase">{rfidBufferList.length} Kartu Terbaca</span>
+          </div>
+
+          {rfidBufferList.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-2">
+              {rfidBufferList.map((item) => (
+                <div key={item.id} className="bg-white border-2 border-blue-200 p-3.5 rounded-2xl flex items-center justify-between shadow-sm hover:border-blue-500 transition-colors">
+                  <div>
+                    <p className="font-black text-blue-900 text-sm">{item.rfid_uid}</p>
+                    <p className="text-[10px] text-slate-500 font-sans mt-0.5">Unit: {item.id_box}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => {
+                      const target = userDatabase.find(u => !u.rfidUid);
+                      if (target) {
+                        setFormEditUser({ sid: target.sid, nama: target.nama, role: target.role, rfidUid: item.rfid_uid, foto: target.foto });
+                        setShowEditUserModal(true);
+                      } else {
+                        window.dispatchEvent(new CustomEvent('eloto-toast', { detail: { msg: 'Pilih karyawan di daftar personel untuk menautkan kartu ini!', type: 'ok' } }));
+                        setSubTabAdmin('daftar-personel');
+                      }
+                    }} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold uppercase">Tautkan</button>
+                    <button type="button" onClick={() => handleHapusBuffer(item.id)} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-colors" title="Hapus">
+                      <i className="fa-solid fa-trash-can"></i>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-white border border-gray-200 p-12 rounded-2xl text-center space-y-2">
+              <i className="fa-solid fa-id-card text-slate-300 text-4xl"></i>
+              <p className="text-sm font-bold text-slate-700">Belum Ada Kartu Baru yang Terbaca</p>
+              <p className="text-xs text-slate-500 font-sans">Tekan Tombol 3 di boks untuk membaca kartu RFID fisik baru.</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
-};
-
-export default Users;
+}
