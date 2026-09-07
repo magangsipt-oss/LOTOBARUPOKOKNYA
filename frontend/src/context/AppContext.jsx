@@ -350,10 +350,11 @@ export function AppProvider({ children }) {
 
           if (canProbeDevice) {
             try {
-              const targetIp = configuredIp.startsWith('http') ? configuredIp : `http://${configuredIp}`;
+              // Probe via backend proxy (aman, gak perlu CORS langsung ke ESP32)
+              const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/proxy/${encodeURIComponent(bId)}`;
               const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 2500);
-              const locRes = await fetch(`${targetIp}/status`, { signal: controller.signal, mode: 'cors' });
+              const timeoutId = setTimeout(() => controller.abort(), 4000);
+              const locRes = await fetch(proxyUrl, { signal: controller.signal });
               clearTimeout(timeoutId);
               if (locRes.ok) {
                 const locData = await locRes.json();
@@ -522,12 +523,13 @@ export function AppProvider({ children }) {
         if (!isNaN(validLat) && !isNaN(validLng) && validLat !== 0 && validLng !== 0) { latHasil = validLat; lngHasil = validLng; }
       }
     } catch (err) {}
-    if ((!latHasil || !lngHasil) && formAlatBerat.ip) {
+    if ((!latHasil || !lngHasil) && formAlatBerat.id) {
       try {
-        const targetUrl = formAlatBerat.ip.startsWith('http') ? formAlatBerat.ip : `http://${formAlatBerat.ip}`;
+        // Probe GPS via backend proxy
+        const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/proxy/${encodeURIComponent(formAlatBerat.id)}`;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        const responseLoc = await fetch(`${targetUrl}/status`, { signal: controller.signal });
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const responseLoc = await fetch(proxyUrl, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (responseLoc.ok) {
           const dataEsps = await responseLoc.json();

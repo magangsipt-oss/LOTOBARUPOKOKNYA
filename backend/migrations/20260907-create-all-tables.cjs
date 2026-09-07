@@ -19,6 +19,7 @@ module.exports = {
       id_box: { type: Sequelize.STRING(50), primaryKey: true, allowNull: false },
       unit: { type: Sequelize.STRING(100), allowNull: false },
       ip: { type: Sequelize.STRING(50), allowNull: false, defaultValue: '0.0.0.0' },
+      rtsp_url: { type: Sequelize.STRING(255), allowNull: true },
       ssid: { type: Sequelize.STRING(100), allowNull: true },
       lat: { type: Sequelize.DECIMAL(10, 6), allowNull: false, defaultValue: 0 },
       lng: { type: Sequelize.DECIMAL(10, 6), allowNull: false, defaultValue: 0 },

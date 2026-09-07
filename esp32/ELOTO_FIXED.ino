@@ -812,6 +812,16 @@ String normalizeUserRole(String role) {
     return "MEKANIK";
 }
 
+// Escape karakter khusus untuk JSON string (anti payload broken)
+String escapeJsonString(String input) {
+    input.replace("\\", "\\\\");
+    input.replace("\"", "\\\"");
+    input.replace("\n", "\\n");
+    input.replace("\r", "\\r");
+    input.replace("\t", "\\t");
+    return input;
+}
+
 void feedGPS() {
     while (gpsSerial.available() > 0) {
         char c = gpsSerial.read();
@@ -1322,7 +1332,11 @@ void syncDatabaseToSDCard() {
                         String name = u.containsKey("nama") ? u["nama"].as<String>() : "UNKNOWN";
                         String role = u.containsKey("role") ? u["role"].as<String>() : "MEKANIK";
                         name.replace(",", " ");
+                        name.replace("\r", "");
+                        name.replace("\n", "");
                         role.replace(",", " ");
+                        role.replace("\r", "");
+                        role.replace("\n", "");
                         role.toUpperCase();
                         bool isSpv = checkIsSupervisorRole(role);
                         

@@ -1,4 +1,7 @@
 import pool from '../config/database.js';
+import bcrypt from 'bcryptjs';
+
+const SALT_ROUNDS = 10;
 
 /**
  * Model untuk mengelola tabel users di database MySQL
@@ -20,9 +23,28 @@ const UserModel = {
   },
 
   authenticate: async (sid, password) => {
-    const query = 'SELECT sid, nama, role, rfid_uid, fp_id, foto, created_at FROM users WHERE sid = ? AND password = ?';
-    const [rows] = await pool.query(query, [sid, password]);
-    return rows[0] || null;
+    // 1. Cari user berdasarkan sid
+    const [rows] = await pool.query(
+      'SELECT sid, nama, role, rfid_uid, fp_id, password, foto, created_at FROM users WHERE sid = ?',
+      [sid]
+    );
+    const user = rows[0];
+    if (!user) return null;
+
+    // 2. Coba bcrypt compare dulu
+    const storedPassword = user.password || '';
+    if (storedPassword.startsWith('$2')) {
+      // Password di-hash dengan bcrypt
+      const match = await bcrypt.compare(String(password), storedPassword);
+      if (!match) return null;
+    } else {
+      // Legacy: password plaintext — cocokkan langsung
+      if (storedPassword !== String(password)) return null;
+    }
+
+    // 3. Return tanpa field password
+    const { password: _, ...safeUser } = user;
+    return safeUser;
   },
 
   // 3. Mengambil pengguna berdasarkan nomor kartu RFID (rfid_uid)
@@ -78,6 +100,7 @@ const UserModel = {
     const finalRole = role || 'WORKER';
     const finalRfid = rfidUid || rfid_uid || null;
     const finalPassword = password || finalSid;
+    const hashedPassword = await bcrypt.hash(String(finalPassword), SALT_ROUNDS);
     const finalFoto = foto || profile_photo || null;
 
     const query = `
@@ -90,7 +113,7 @@ const UserModel = {
       finalRole,
       finalRfid,
       fpId || null,
-      finalPassword,
+      hashedPassword,
       finalFoto
     ]);
     return finalSid;

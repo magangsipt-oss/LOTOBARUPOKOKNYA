@@ -100,11 +100,16 @@ const EventModel = {
   // 10. Clear semua audit logs lebih lama dari N hari
   deleteOldAuditLogs: async (days = 30) => {
     const query = `
-      DELETE FROM audit_logs 
+      DELETE FROM audit_logs
       WHERE tanggal < DATE_SUB(NOW(), INTERVAL ? DAY)
     `;
     const [result] = await pool.query(query, [days]);
     return result.affectedRows;
+  },
+
+  // 11. Clear semua audit logs
+  clearAllAuditLogs: async () => {
+    await pool.query('DELETE FROM audit_logs');
   }
 };
 

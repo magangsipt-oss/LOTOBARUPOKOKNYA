@@ -1,65 +1,25 @@
 import pool from '../config/database.js';
 
 /**
- * Model untuk mengelola tabel audit_logs dan tapping_history
+ * Model untuk mengelola tapping_history, people_counting, dan rfid_buffer.
+ *
+ * Catatan: audit_logs ditangani oleh EventModel — tidak perlu duplikasi di sini.
  */
 const LogModel = {
-  // ===== AUDIT LOGS =====
-
-  getAll: async () => LogModel.getAllAuditLogs(),
+  // Legacy alias — arahkan ke EventModel
+  getAll: async () => {
+    const { default: EventModel } = await import('./eventModel.js');
+    return EventModel.getAllAuditLogs();
+  },
 
   delete: async (id) => {
-    const [result] = await pool.query('DELETE FROM audit_logs WHERE id = ?', [id]);
-    return result.affectedRows > 0;
+    const { default: EventModel } = await import('./eventModel.js');
+    return EventModel.deleteAuditLog(id);
   },
 
   clearAll: async () => {
-    await pool.query('DELETE FROM audit_logs');
-  },
-
-  // 1. Mengambil semua audit logs
-  getAllAuditLogs: async () => {
-    const query = `
-            SELECT a.id, a.id_box, a.event, a.rfid_uid, a.lat, a.lng, a.tanggal,
-              COALESCE(b.is_online, 0) AS is_online
-            FROM audit_logs a LEFT JOIN boxes b ON b.id_box = a.id_box
-            ORDER BY a.tanggal DESC LIMIT 1000
-    `;
-    const [rows] = await pool.query(query);
-    return rows;
-  },
-
-  // 2. Mengambil audit logs untuk box tertentu
-  getAuditLogsByBox: async (idBox) => {
-    const query = `
-            SELECT a.id, a.id_box, a.event, a.rfid_uid, a.lat, a.lng, a.tanggal,
-              COALESCE(b.is_online, 0) AS is_online
-            FROM audit_logs a LEFT JOIN boxes b ON b.id_box = a.id_box
-            WHERE a.id_box = ? ORDER BY a.tanggal DESC LIMIT 500
-    `;
-    const [rows] = await pool.query(query, [idBox]);
-    return rows;
-  },
-
-  // 3. Menambahkan audit log baru (dari hardware)
-  createAuditLog: async (logData) => {
-    const { idBox, event, rfidUid, lat, lng } = logData;
-    const query = `
-      INSERT INTO audit_logs (id_box, event, rfid_uid, lat, lng, tanggal)
-      VALUES (?, ?, ?, ?, ?, NOW())
-    `;
-    const [result] = await pool.query(query, [idBox, event, rfidUid || '—', lat, lng]);
-    return result.insertId;
-  },
-
-  // 4. Menghapus audit logs lama (cleanup)
-  deleteOldAuditLogs: async (days = 30) => {
-    const query = `
-      DELETE FROM audit_logs 
-      WHERE tanggal < DATE_SUB(NOW(), INTERVAL ? DAY)
-    `;
-    const [result] = await pool.query(query, [days]);
-    return result.affectedRows;
+    const { default: EventModel } = await import('./eventModel.js');
+    return EventModel.clearAllAuditLogs();
   },
 
   // ===== TAPPING HISTORY =====
