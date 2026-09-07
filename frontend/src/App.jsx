@@ -20,14 +20,22 @@ function LoginForm() {
   const { handleLogin } = useAuth();
   const [formData, setFormData] = useState({ sid: '', password: '' });
   const [isLoading, setIsLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
 
   const onSubmit = async (e) => {
     e.preventDefault();
+    if (isLoading) return;
+    setLoginError('');
     setIsLoading(true);
-    handleLogin(formData.sid.trim(), formData.password, (msg, type) => {
-      window.dispatchEvent(new CustomEvent('eloto-toast', { detail: { msg, type } }));
+    try {
+      await handleLogin(formData.sid.trim(), formData.password, (msg, type) => {
+        if (type === 'fail') setLoginError(msg);
+      });
+    } catch {
+      setLoginError('Login gagal. Silakan coba lagi.');
+    } finally {
       setIsLoading(false);
-    });
+    }
   };
 
   return (
@@ -59,6 +67,11 @@ function LoginForm() {
           </div>
 
           <form onSubmit={onSubmit} className="space-y-4">
+            {loginError && (
+              <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {loginError}
+              </p>
+            )}
             <div className="space-y-1">
               <label className="block text-slate-700 text-xs font-semibold">ID Karyawan / SID</label>
               <div className="relative">
