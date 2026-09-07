@@ -1,3 +1,6 @@
 packages:
   - 'backend'
   - 'frontend'
+
+overrides:
+  'sequelize>uuid': 11.1.1

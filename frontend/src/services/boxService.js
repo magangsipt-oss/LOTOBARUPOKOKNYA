@@ -18,13 +18,13 @@ const boxService = {
 
   // Memperbarui data box
   updateBox: async (idBox, boxData) => {
-    const response = await api.put(`/boxes/${idBox}`, boxData);
+    const response = await api.put(`/boxes/${encodeURIComponent(idBox)}`, boxData);
     return response.data;
   },
 
   // Menghapus box
   deleteBox: async (idBox) => {
-    const response = await api.delete(`/boxes/${idBox}`);
+    const response = await api.delete(`/boxes/${encodeURIComponent(idBox)}`);
     return response.data;
   },
 

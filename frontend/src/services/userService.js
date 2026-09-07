@@ -18,7 +18,7 @@ const userService = {
 
   // Mengambil detail pengguna berdasarkan SID
   getUserBySid: async (sid) => {
-    const response = await api.get(`/users/${sid}`);
+    const response = await api.get(`/users/${encodeURIComponent(sid)}`);
     return response.data;
   },
 
@@ -38,13 +38,13 @@ const userService = {
     const config = isFormData
       ? { headers: { 'Content-Type': 'multipart/form-data' } }
       : {};
-    const response = await api.put(`/users/${sid}`, userData, config);
+    const response = await api.put(`/users/${encodeURIComponent(sid)}`, userData, config);
     return response.data;
   },
 
   // Menghapus data pengguna
   deleteUser: async (sid) => {
-    const response = await api.delete(`/users/${sid}`);
+    const response = await api.delete(`/users/${encodeURIComponent(sid)}`);
     return response.data;
   },
 

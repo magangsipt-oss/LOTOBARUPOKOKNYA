@@ -6,7 +6,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js",
+    "migrate": "node scripts/migrate.js",
+    "bootstrap-admin": "node scripts/bootstrap-admin.js",
+    "reset-password": "node scripts/reset-password.js",
+    "provision-device": "node scripts/provision-device.js"
   },
   "packageManager": "pnpm@11.25.0",
   "dependencies": {

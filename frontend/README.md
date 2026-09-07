@@ -1,16 +1,21 @@
-# React + Vite
+# Frontend E-LOTO
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Dashboard React + Vite untuk backend E-LOTO. Panduan proyek lengkap ada di [README utama](../README.md) dan [indeks dokumentasi](../docs/README.md).
 
-Currently, two official plugins are available:
+Dari root repository:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+pnpm install --frozen-lockfile
+pnpm --parallel -r run dev
+```
 
-## React Compiler
+Frontend tersedia di `http://localhost:3000`. Vite meneruskan `/api` ke backend `127.0.0.1:5002`, yang membutuhkan MySQL dan migrasi. Untuk menjalankan frontend saja: `pnpm --filter frontend run dev`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+pnpm --filter frontend lint
+pnpm --filter frontend build
+```
 
-## Expanding the Oxlint configuration
+Hasil build berada di `frontend/dist/`. `VITE_API_URL` default `/api`; jangan masukkan rahasia ke environment Vite. Autentikasi menggunakan cookie server dan CSRF, dengan pemulihan sesi melalui `/api/users/me`.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Direktori `src/pages` berisi halaman, `src/components` komponen UI, `src/context` state aplikasi/autentikasi, `src/services` client API, dan `src/utils` helper. Lihat [panduan deployment](../docs/DEPLOYMENT.md) untuk penyajian SPA, HTTPS, dan proxy stream.

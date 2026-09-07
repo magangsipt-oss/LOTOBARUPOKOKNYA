@@ -1,7 +1,7 @@
 import React from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 import Avatar from '../components/Avatar';
-import { STATE_DESC, formatWaktuDowntime, safeToFixed } from '../utils/helpers';
+import { formatWaktuDowntime, safeToFixed } from '../utils/helpers';
 
 /**
  * Halaman Riwayat Laporan - Maintenance, Status Realtime, Pindaian Kartu
@@ -10,27 +10,27 @@ export default function Logs() {
   const {
     activeTab, subTabMaintenance, setSubTabMaintenance,
     boxes, selectedBox, isHwOnline, hwData, downtimeSeconds, isTrackingDowntime,
-    logPemeliharaan, filteredMaintenanceLogs,
-    tappingHistory, filteredTappingData, filteredSessionHistory,
+     filteredMaintenanceLogs,
+     filteredTappingData,
     totalOrangMasukOtomatis,
     maintenanceSearchTerm, setMaintenanceSearchTerm,
     maintenanceTypeFilter, setMaintenanceTypeFilter,
     tappingSearchTerm, setTappingSearchTerm,
     terjemahkanIdKeNamaLengkap, isAdminUid,
-    printActiveLog, setPrintActiveLog,
+     setPrintActiveLog,
     handleSimpanKerusakan, handleHapusLogPemeliharaan,
-    handleHapusRiwayatTapping, triggerSimulasiExcel,
-    pemicuToast,
+     triggerSimulasiExcel,
+
     // Form states for teknisi-tab
     formDeskripsi, setFormDeskripsi, tipeKerusakan, setTipeKerusakan,
     estimasiWaktu, setEstimasiWaktu, manualMekanik, setManualMekanik,
-    pengawasLoto, setPengawasLoto, photoBase64, setPhotoBase64,
-    userDatabase, dapatkanMekanikDariAntreanLoto, dapatkanPengawasDariLoto,
-    handleCaptureKamera, handleSelectBox, sessionUser,
-    formAlatBerat, setFormAlatBerat, editingBoxId, setEditingBoxId,
-    handleTambahAlatBerat, handleEditAlatBerat, handleBatalEditAlatBerat,
-    handleHapusAlatBerat, handleAutoGps, isSyncing,
-    boxSearchTerm, setBoxSearchTerm, filteredBoxes,
+    pengawasLoto, setPengawasLoto, photoBase64,
+     dapatkanMekanikDariAntreanLoto, dapatkanPengawasDariLoto,
+    handleCaptureKamera,  sessionUser,
+
+
+
+
     handleSelectBox: doSelectBox
   } = useApp();
 

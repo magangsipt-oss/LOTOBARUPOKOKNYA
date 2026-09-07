@@ -2,20 +2,24 @@
 
 module.exports = {
   async up(queryInterface, Sequelize) {
+    if (process.env.NODE_ENV === 'production' || process.env.ALLOW_DEMO_SEED !== '1') throw new Error('Demo seeding is disabled');
+    const password = process.env.DEMO_PASSWORD;
+    if (!password || password.length < 12 || Buffer.byteLength(password) > 72) throw new Error('Set a strong DEMO_PASSWORD');
+    const hash = await require('bcryptjs').hash(password, 12);
     const now = new Date();
 
     // Users
     await queryInterface.bulkInsert('users', [
-      { sid: 'Admin', nama: 'Master Administrator', role: 'ADMIN', rfid_uid: '0000', password: 'Admin', foto: null, created_at: now },
-      { sid: 'SPV001', nama: 'Budi Santoso', role: 'PENGAWAS', rfid_uid: '9D88FA1200', password: 'SPV001', foto: null, created_at: now },
-      { sid: 'SPV002', nama: 'Eltha Putri', role: 'PENGAWAS', rfid_uid: '3C001E9494', password: 'SPV002', foto: null, created_at: now },
-      { sid: 'MEK001', nama: 'Agus Prayitno', role: 'WORKER', rfid_uid: '1A2B3C4D5E', password: 'MEK001', foto: null, created_at: now },
-      { sid: 'MEK002', nama: 'Rahmat Hidayat', role: 'WORKER', rfid_uid: 'F4E5D6C7B8', password: 'MEK002', foto: null, created_at: now },
-      { sid: 'MEK003', nama: 'Joko Widodo', role: 'WORKER', rfid_uid: 'A1B2C3D4E5', password: 'MEK003', foto: null, created_at: now },
-      { sid: 'MEK004', nama: 'Andi Saputra', role: 'WORKER', rfid_uid: '3E0028F54F', password: 'MEK004', foto: null, created_at: now },
-      { sid: 'MEK005', nama: 'Rizki Pratama', role: 'WORKER', rfid_uid: '3D001266BB', password: 'MEK005', foto: null, created_at: now },
-      { sid: 'FUL001', nama: 'Dedi Kurniawan', role: 'FUELMAN', rfid_uid: '3C00035095', password: 'FUL001', foto: null, created_at: now },
-      { sid: 'FUL002', nama: 'Hendra Wijaya', role: 'FUELMAN', rfid_uid: '3E0027D5B2', password: 'FUL002', foto: null, created_at: now }
+      { sid: 'Admin', nama: 'Master Administrator', role: 'ADMIN', rfid_uid: '0000', password: hash, foto: null, created_at: now },
+      { sid: 'SPV001', nama: 'Budi Santoso', role: 'PENGAWAS', rfid_uid: '9D88FA1200', password: hash, foto: null, created_at: now },
+      { sid: 'SPV002', nama: 'Eltha Putri', role: 'PENGAWAS', rfid_uid: '3C001E9494', password: hash, foto: null, created_at: now },
+      { sid: 'MEK001', nama: 'Agus Prayitno', role: 'WORKER', rfid_uid: '1A2B3C4D5E', password: hash, foto: null, created_at: now },
+      { sid: 'MEK002', nama: 'Rahmat Hidayat', role: 'WORKER', rfid_uid: 'F4E5D6C7B8', password: hash, foto: null, created_at: now },
+      { sid: 'MEK003', nama: 'Joko Widodo', role: 'WORKER', rfid_uid: 'A1B2C3D4E5', password: hash, foto: null, created_at: now },
+      { sid: 'MEK004', nama: 'Andi Saputra', role: 'WORKER', rfid_uid: '3E0028F54F', password: hash, foto: null, created_at: now },
+      { sid: 'MEK005', nama: 'Rizki Pratama', role: 'WORKER', rfid_uid: '3D001266BB', password: hash, foto: null, created_at: now },
+      { sid: 'FUL001', nama: 'Dedi Kurniawan', role: 'FUELMAN', rfid_uid: '3C00035095', password: hash, foto: null, created_at: now },
+      { sid: 'FUL002', nama: 'Hendra Wijaya', role: 'FUELMAN', rfid_uid: '3E0027D5B2', password: hash, foto: null, created_at: now }
     ]);
 
     // Boxes

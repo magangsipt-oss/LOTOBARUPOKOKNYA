@@ -25,3 +25,11 @@ Thumbs.db
 *.log
 backend/uploads/*
 !backend/uploads/.gitkeep
+
+graphify-out/
+
+# Local Python artifacts and device credentials
+__pycache__/
+*.pyc
+esp32/config.txt
+esp32/server_ca.pem

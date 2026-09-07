@@ -1,0 +1,4 @@
+SSID=your-wifi-network
+PASS=your-wifi-password
+SERVER=https://eloto.example.com
+TOKEN=replace-with-a-random-device-token-at-least-32-characters

@@ -38,8 +38,8 @@ const UserModel = {
       const match = await bcrypt.compare(String(password), storedPassword);
       if (!match) return null;
     } else {
-      // Legacy: password plaintext — cocokkan langsung
-      if (storedPassword !== String(password)) return null;
+      // Legacy plaintext accounts must be migrated before login is enabled.
+      return null;
     }
 
     // 3. Return tanpa field password
@@ -99,7 +99,8 @@ const UserModel = {
     const finalNama = nama || name || 'New User';
     const finalRole = role || 'WORKER';
     const finalRfid = rfidUid || rfid_uid || null;
-    const finalPassword = password || finalSid;
+    if (typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72) throw new Error('Invalid password');
+    const finalPassword = password;
     const hashedPassword = await bcrypt.hash(String(finalPassword), SALT_ROUNDS);
     const finalFoto = foto || profile_photo || null;
 
@@ -140,7 +141,7 @@ const UserModel = {
     if (finalFoto) {
       const query = `
         UPDATE users 
-        SET nama = ?, role = ?, rfid_uid = ?, fp_id = ?, foto = ?
+        SET nama = ?, role = ?, rfid_uid = ?, fp_id = COALESCE(?, fp_id), foto = ?
         WHERE sid = ?
       `;
       const [result] = await pool.query(query, [finalNama, finalRole, finalRfid, fpId || null, finalFoto, sid]);
@@ -149,19 +150,44 @@ const UserModel = {
 
     const query = `
       UPDATE users 
-      SET nama = ?, role = ?, rfid_uid = ?, fp_id = ?
+      SET nama = ?, role = ?, rfid_uid = ?, fp_id = COALESCE(?, fp_id)
       WHERE sid = ?
     `;
     const [result] = await pool.query(query, [finalNama, finalRole, finalRfid, fpId || null, sid]);
     return result.affectedRows > 0;
   },
 
+  changePassword: async (sid, hash) => {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query('UPDATE users SET password = ? WHERE sid = ?', [hash, sid]);
+      await connection.query('DELETE FROM web_sessions WHERE sid = ?', [sid]);
+      await connection.commit();
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  },
+
   // 7. Menghapus data pengguna
   delete: async (sid) => {
-    const query = 'DELETE FROM users WHERE sid = ?';
-    const [result] = await pool.query(query, [sid]);
-    return result.affectedRows > 0;
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [admins] = await c.query("SELECT sid FROM users WHERE UPPER(role) = 'ADMIN' FOR UPDATE");
+      const [users] = await c.query('SELECT sid, rfid_uid, role FROM users WHERE sid = ? FOR UPDATE', [sid]);
+      if (!users.length) { await c.rollback(); return false; }
+      if (String(users[0].role).toUpperCase() === 'ADMIN' && admins.length <= 1) throw Object.assign(new Error('Administrator terakhir tidak boleh dihapus'), { status: 409 });
+      const uid = users[0].rfid_uid;
+      const [active] = await c.query('SELECT id FROM queue WHERE rfid_uid = ? LIMIT 1', [uid]);
+      const [supervisor] = await c.query('SELECT id_box FROM boxes WHERE active_session_id IS NOT NULL AND supervisor_uid = ? LIMIT 1', [uid]);
+      if (active.length || supervisor.length) throw Object.assign(new Error('Personel masih tercatat dalam sesi aktif'), { status: 409 });
+      await c.query('DELETE FROM web_sessions WHERE sid = ?', [sid]);
+      await c.query('DELETE FROM supervisor_box_team WHERE supervisor_sid = ? OR mechanic_sid = ?', [sid, sid]);
+      await c.query('DELETE FROM users WHERE sid = ?', [sid]);
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
   }
 };
-
 export default UserModel;

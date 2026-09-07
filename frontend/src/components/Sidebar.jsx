@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import Avatar from './Avatar';
 
 export default function Sidebar() {
@@ -13,7 +13,7 @@ export default function Sidebar() {
 
   const navItems = [];
 
-  if (sessionUser?.role !== 'admin') {
+  if (sessionUser) {
     navItems.push({ id: 'profil-tab', icon: 'fa-user', label: 'Profil Saya' });
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
@@ -49,7 +49,7 @@ export default function Sidebar() {
       <div className="p-4">
         <button
           type="button"
-          onClick={() => sessionUser?.role !== 'admin' && setActiveTab('profil-tab')}
+          onClick={() => setActiveTab('profil-tab')}
           className={`w-full bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center space-y-2 hover:border-red-300 hover:bg-red-50/50 transition-all ${sessionUser?.role === 'admin' ? 'cursor-default' : ''}`}
         >
           <Avatar profile={sessionUser} className="w-14 h-14 mx-auto ring-2 ring-white shadow-md" />

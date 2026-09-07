@@ -32,7 +32,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil data tim',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -49,29 +49,22 @@ const supervisorController = {
         });
       }
 
-      // 1. Clear existing team for this supervisor+box
-      await SupervisorModel.deleteTeamBySupervisorAndBox(supervisor_sid, id_box);
-
-      // 2. Add new mechanics
-      const addedIds = [];
-      if (Array.isArray(mechanic_sids) && mechanic_sids.length > 0) {
-        for (const mechanicSid of mechanic_sids) {
-          const newId = await SupervisorModel.addMechanicToTeam(supervisor_sid, id_box, mechanicSid);
-          addedIds.push(newId);
-        }
+      if (!Array.isArray(mechanic_sids) || mechanic_sids.length > 100 || mechanic_sids.some(s => typeof s !== 'string' || !s || s.length > 50) || !['Mekanikal', 'Elektrikal', 'Hidrolik', 'Mekanikal & Elektrikal'].includes(maintenance_type || 'Mekanikal')) {
+        return res.status(400).json({ success: false, message: 'Daftar mekanik atau jenis pemeliharaan tidak valid.' });
       }
+      const count = await SupervisorModel.replaceTeam(supervisor_sid, id_box, [...new Set(mechanic_sids)], maintenance_type || 'Mekanikal');
 
       return res.status(201).json({
         success: true,
-        message: `${addedIds.length} mekanik berhasil ditugaskan ke ${id_box}`,
-        data: { supervisor_sid, id_box, maintenance_type, mechanic_count: addedIds.length }
+        message: `${count} mekanik berhasil ditugaskan ke ${id_box}`,
+        data: { supervisor_sid, id_box, maintenance_type, mechanic_count: count }
       });
     } catch (error) {
       console.error('Error saveTeam:', error.message);
-      return res.status(500).json({
+      return res.status(error.status || 500).json({
         success: false,
         message: 'Gagal menyimpan tim mekanik',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -99,7 +92,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil supervisor team',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -127,7 +120,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil supervisor team',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -161,7 +154,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menambahkan mekanik ke team pengawas',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -196,7 +189,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus mekanik dari team pengawas',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -225,7 +218,7 @@ const supervisorController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus team box',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   }

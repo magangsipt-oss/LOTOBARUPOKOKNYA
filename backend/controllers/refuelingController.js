@@ -18,7 +18,7 @@ const refuelingController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil data refueling logs',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -46,7 +46,7 @@ const refuelingController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil refueling logs',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -90,7 +90,7 @@ const refuelingController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal memulai sesi refueling',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -125,7 +125,7 @@ const refuelingController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengakhiri sesi refueling',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -160,7 +160,7 @@ const refuelingController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus refueling log',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   }

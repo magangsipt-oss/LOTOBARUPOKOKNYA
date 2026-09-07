@@ -1,109 +1,26 @@
 import CommandModel from '../models/commandModel.js';
-
-/**
- * Controller untuk mengelola Command Queue & Device Commands
- */
-const commandController = {
-  // 1. Set/Queue command untuk box
-  setCommand: async (req, res) => {
+export default {
+  async setCommand(req, res, next) {
     try {
-      const { idBox, command, parameter } = req.body;
-
-      if (!idBox || !command) {
-        return res.status(400).json({
-          success: false,
-          message: 'idBox dan command wajib disertakan!'
-        });
+      const { idBox, command, parameter = '' } = req.body || {};
+      // Only firmware-supported, non-actuating operations may be queued remotely.
+      if (typeof idBox !== 'string' || !idBox || idBox.length > 50 || command !== 'SYNC_USERS' || parameter !== '') {
+        return res.status(400).json({ success: false, message: 'Perintah tidak didukung. Hanya SYNC_USERS tanpa parameter yang tersedia.' });
       }
-
-      const isSet = await CommandModel.setCommand(idBox, command, parameter || '');
-
-      if (!isSet) {
-        return res.status(404).json({
-          success: false,
-          message: `Box dengan ID ${idBox} tidak ditemukan`
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: `Perintah ${command} berhasil dikirim ke antrean box ${idBox}`,
-        data: { idBox, command, parameter }
-      });
-    } catch (error) {
-      console.error('Error setCommand:', error.message);
-      return res.status(500).json({
-        success: false,
-        message: 'Gagal mengirim perintah',
-        error: error.message
-      });
-    }
+      const id = await CommandModel.setCommand(idBox, command, parameter);
+      if (!id) return res.status(404).json({ success: false, message: 'Boks tidak ditemukan.' });
+      res.status(201).json({ success: true, data: { id, idBox, command } });
+    } catch (error) { next(error); }
   },
-
-  // 2. Ambil pending command (digunakan device saat sync)
-  getPendingCommand: async (req, res) => {
-    try {
-      const { idBox } = req.params;
-
-      if (!idBox) {
-        return res.status(400).json({
-          success: false,
-          message: 'Parameter idBox wajib disertakan!'
-        });
-      }
-
-      const command = await CommandModel.getPendingCommand(idBox);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Pending command berhasil diambil',
-        data: command
-      });
-    } catch (error) {
-      console.error('Error getPendingCommand:', error.message);
-      return res.status(500).json({
-        success: false,
-        message: 'Gagal mengambil pending command',
-        error: error.message
-      });
-    }
+  async getPendingCommand(req, res, next) {
+    try { res.json({ success: true, data: await CommandModel.getPendingCommand(req.params.idBox) }); } catch (error) { next(error); }
   },
-
-  // 3. Clear/consume command setelah device mengambilnya
-  clearPendingCommand: async (req, res) => {
+  async clearPendingCommand(req, res, next) {
     try {
-      const { idBox } = req.params;
-
-      if (!idBox) {
-        return res.status(400).json({
-          success: false,
-          message: 'Parameter idBox wajib disertakan!'
-        });
-      }
-
-      const isCleared = await CommandModel.clearPendingCommand(idBox);
-
-      if (!isCleared) {
-        return res.status(404).json({
-          success: false,
-          message: `Box dengan ID ${idBox} tidak ditemukan`
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: 'Pending command berhasil dibersihkan',
-        data: { idBox }
-      });
-    } catch (error) {
-      console.error('Error clearPendingCommand:', error.message);
-      return res.status(500).json({
-        success: false,
-        message: 'Gagal membersihkan pending command',
-        error: error.message
-      });
-    }
+      const id = req.body?.commandId;
+      if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) return res.status(400).json({ success: false, message: 'commandId wajib diisi.' });
+      const cleared = await CommandModel.clearPendingCommand(req.params.idBox, id);
+      res.status(cleared ? 200 : 404).json({ success: cleared });
+    } catch (error) { next(error); }
   }
 };
-
-export default commandController;

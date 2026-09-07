@@ -1,15 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import 'cropperjs/dist/cropper.css';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { AppProvider, useApp } from './context/AppContext';
+import { AuthProvider } from './context/AuthContext';
+import { useAuth } from './context/useAuth';
+import { AppProvider } from './context/AppContext';
+import { useApp } from './context/useApp';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
 import { ModalUmum, ModalRadar, ModalCropPhoto, ModalEditUser, PrintDocument } from './components/Modals';
-import Dashboard from './pages/Dashboard';
-import Profile from './pages/Profile';
-import Supervisors from './pages/Supervisors';
-import Logs from './pages/Logs';
-import Users from './pages/Users';
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Profile = lazy(() => import('./pages/Profile'));
+const Supervisors = lazy(() => import('./pages/Supervisors'));
+const Logs = lazy(() => import('./pages/Logs'));
+const Users = lazy(() => import('./pages/Users'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -176,8 +178,9 @@ function AppContent() {
         <Sidebar />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <Suspense fallback={<p role="status">Memuat halaman…</p>}>
           {/* TAB: PROFIL SAYA */}
-          {activeTab === 'profil-tab' && sessionUser?.role !== 'admin' && <Profile />}
+          {activeTab === 'profil-tab' && <Profile />}
 
           {/* TAB: TIM MEKANIK (PENGAWAS) */}
           {activeTab === 'team-tab' && sessionUser?.role === 'pengawas' && <Supervisors />}
@@ -193,6 +196,7 @@ function AppContent() {
 
           {/* TAB: KELOLA PERSONEL (ADMIN) */}
           {activeTab === 'admin-tab' && sessionUser?.role === 'admin' && <Users />}
+        </Suspense>
         </main>
 
         <PrintDocument printActiveLog={printActiveLog} />
@@ -205,12 +209,7 @@ function AppContent() {
 /*  Root                                                               */
 /* ------------------------------------------------------------------ */
 export default function App() {
-  const [isProtocolValid, setIsProtocolValid] = useState(true);
-
-  useEffect(() => {
-    if (window.location.protocol === 'file:') setIsProtocolValid(false);
-    else setIsProtocolValid(true);
-  }, []);
+  const isProtocolValid = window.location.protocol !== 'file:';
 
   if (!isProtocolValid) {
     return (
@@ -234,9 +233,12 @@ export default function App() {
 
   return (
     <AuthProvider>
-      <AppProvider>
-        <AppContent />
-      </AppProvider>
+      <SessionApp />
     </AuthProvider>
   );
+}
+
+function SessionApp() {
+  const { sessionUser } = useAuth();
+  return <AppProvider key={sessionUser?.sid || 'anonymous'}><AppContent /></AppProvider>;
 }

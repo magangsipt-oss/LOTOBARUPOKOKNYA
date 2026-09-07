@@ -5,7 +5,9 @@ import upload from '../middleware/fileUploader.js';
 const router = express.Router();
 
 // 1. Rute autentikasi, kartu RFID & supervisor
-router.post('/login', userController.login);
+router.get('/me', userController.me);
+router.post('/logout', userController.logout);
+router.post('/password', userController.changePassword);
 router.post('/check-card', userController.checkCard);
 router.get('/supervisors', userController.getSupervisors);
 router.get('/photo/:uid', userController.getPhoto);

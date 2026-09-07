@@ -10,7 +10,7 @@ const EventModel = {
   getAllRfidBuffer: async () => {
     const query = `
       SELECT id, id_box, rfid_uid, created_at 
-      FROM rfid_buffer ORDER BY created_at DESC
+      FROM rfid_buffer ORDER BY created_at DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query);
     return rows;
@@ -20,7 +20,7 @@ const EventModel = {
   getBufferByBox: async (idBox) => {
     const query = `
       SELECT id, id_box, rfid_uid, created_at 
-      FROM rfid_buffer WHERE id_box = ? ORDER BY created_at DESC
+      FROM rfid_buffer WHERE id_box = ? ORDER BY created_at DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query, [idBox]);
     return rows;
@@ -86,7 +86,7 @@ const EventModel = {
       INSERT INTO audit_logs (id_box, event, rfid_uid, lat, lng, tanggal)
       VALUES (?, ?, ?, ?, ?, NOW())
     `;
-    const [result] = await pool.query(query, [idBox, event, rfidUid, lat || null, lng || null]);
+    const [result] = await pool.query(query, [idBox, event, rfidUid, lat ?? 0, lng ?? 0]);
     return result.insertId;
   },
 

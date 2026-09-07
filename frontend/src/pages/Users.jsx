@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 import Avatar from '../components/Avatar';
 
 /**
@@ -11,15 +11,14 @@ export default function Users() {
     adminSearchTerm, setAdminSearchTerm,
     showAddUserForm, setShowAddUserForm,
     formAdminNewUser, setFormAdminNewUser,
-    showEditUserModal, setShowEditUserModal,
-    formEditUser, setFormEditUser,
+     setShowEditUserModal,
+     setFormEditUser,
     rfidBufferList, subTabAdmin, setSubTabAdmin,
-    hwData, sessionUser,
+    hwData,
     excelFileInputRef,
     handleIndukTambahUser, handleImportExcel,
-    handleBukaModalEditUser, handleSimpanEditUser, handleHapusUser,
+    handleBukaModalEditUser,  handleHapusUser,
     handleHapusBuffer, handleProfilePhotoUpload,
-    setSubTabMaintenance
   } = useApp();
 
   return (
@@ -89,8 +88,9 @@ export default function Users() {
                   </div>
                 </div>
                 <div className="sm:col-span-2 md:col-span-4">
-                  <label className="block text-slate-700 mb-1 font-bold">Foto Profil (URL atau Upload)</label>
-                  <input type="url" placeholder="https://... atau assets/foto.jpg" className="w-full bg-white border p-2.5 rounded-lg text-slate-900 focus:outline-none focus:border-red-500" value={formAdminNewUser.foto && !formAdminNewUser.foto.startsWith('data:') ? formAdminNewUser.foto : ''} onChange={(e) => setFormAdminNewUser({ ...formAdminNewUser, foto: e.target.value })} />
+                  <label className="block text-slate-700 mb-1 font-bold">Kata sandi awal (minimal 12 karakter)</label>
+                  <input type="password" required minLength={12} autoComplete="new-password" className="w-full bg-white border p-2.5 rounded-lg mb-3" value={formAdminNewUser.password} onChange={e => setFormAdminNewUser({ ...formAdminNewUser, password: e.target.value })} />
+                  <label className="block text-slate-700 mb-1 font-bold">Foto Profil</label>
                   <input type="file" accept="image/*" className="w-full mt-2 text-[10px]" onChange={(e) => handleProfilePhotoUpload(e, setFormAdminNewUser)} />
                   {formAdminNewUser.foto && formAdminNewUser.foto.startsWith('data:') && <div className="mt-2 flex justify-center"><div className="rounded-full bg-white p-1.5 shadow-md ring-2 ring-red-100"><Avatar profile={{ nama: formAdminNewUser.nama, foto: formAdminNewUser.foto }} className="w-20 h-20" /></div></div>}
                 </div>

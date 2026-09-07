@@ -7,11 +7,10 @@
     "dev": "pnpm --parallel -r run dev",
     "dev:backend": "pnpm --filter backend run dev",
     "dev:frontend": "pnpm --filter frontend run dev",
-    "build": "pnpm --parallel -r run build",
-    "build:backend": "pnpm --filter backend run build",
+    "build": "npm run build --prefix frontend",
     "build:frontend": "pnpm --filter frontend run build",
-    "lint": "pnpm --parallel -r run lint",
-    "clean": "pnpm --parallel -r run clean"
+    "lint": "npm run lint --prefix frontend",
+    "test": "npm test --prefix backend"
   },
   "devDependencies": {
     "knip": "^6.34.0",

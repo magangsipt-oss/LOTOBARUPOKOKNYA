@@ -14,10 +14,7 @@
     "dialect": "mysql"
   },
   "production": {
-    "username": "root",
-    "password": "",
-    "database": "eloto_db",
-    "host": "localhost",
+    "use_env_variable": "DATABASE_URL",
     "dialect": "mysql"
   }
 }

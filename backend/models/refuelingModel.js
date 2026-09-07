@@ -11,7 +11,7 @@ const RefuelingModel = {
     const query = `
       SELECT id, id_box, fuelman_uid, fuelman_name, start_time, end_time, 
              duration_seconds, latitude, longitude, is_loto_active 
-      FROM refueling_logs ORDER BY start_time DESC
+      FROM refueling_logs ORDER BY start_time DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query);
     return rows;
@@ -22,7 +22,7 @@ const RefuelingModel = {
     const query = `
       SELECT id, id_box, fuelman_uid, fuelman_name, start_time, end_time, 
              duration_seconds, latitude, longitude, is_loto_active 
-      FROM refueling_logs WHERE id_box = ? ORDER BY start_time DESC
+      FROM refueling_logs WHERE id_box = ? ORDER BY start_time DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query, [idBox]);
     return rows;
@@ -53,7 +53,7 @@ const RefuelingModel = {
       UPDATE refueling_logs 
       SET end_time = NOW(), 
           duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
-      WHERE id = ?
+      WHERE id = ? AND end_time IS NULL
     `;
     const [result] = await pool.query(query, [id]);
     return result.affectedRows > 0;

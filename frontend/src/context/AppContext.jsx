@@ -1,15 +1,16 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useMemo } from 'react';
-import api from '../services/api';
+import { escapeHtml, safeCsvCell } from '../utils/helpers';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+
 import userService from '../services/userService';
 import boxService from '../services/boxService';
 import logService from '../services/logService';
-import { useAuth } from './AuthContext';
+import { useAuth } from './useAuth';
 import {
   getUserProfile, isSystemUid, isAdminUid, normalizeUserRole,
   terjemahkanIdKeNamaLengkap
 } from '../utils/helpers';
 
-const AppContext = createContext(null);
+import { AppContext } from './AppState';
 
 export function AppProvider({ children }) {
   const { isLoggedIn, sessionUser, activeTab, setActiveTab } = useAuth();
@@ -25,17 +26,14 @@ export function AppProvider({ children }) {
     lat: '', lon: '', lng: '', ssid: '—'
   });
 
-  const [downtimeSeconds, setDowntimeSeconds] = useState(0);
-  const [isTrackingDowntime, setIsDowntimeTracking] = useState(false);
-  const [userDatabase, setUserDatabase] = useState([
-    { sid: 'Admin', nama: 'Master Administrator', role: 'admin', rfidUid: '0000', password: 'Admin', foto: 'assets/default-avatar.png' }
-  ]);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [userDatabase, setUserDatabase] = useState([]);
   const [logPemeliharaan, setLogPemeliharaan] = useState([]);
   const [rfidBufferList, setRfidBufferList] = useState([]);
   const [tappingHistory, setTappingHistory] = useState([]);
   const [localAuditLog, setLocalAuditLog] = useState([]);
   const [deletedAuditIds, setDeletedAuditIds] = useState([]);
-  const [peopleCount, setPeopleCount] = useState({ detected_count: 0, registered_count: 0 });
+  const [peopleCount, setPeopleCount] = useState({ detected_count: null, registered_count: null, stale: true });
   const [peopleCountHistory, setPeopleCountHistory] = useState([]);
 
   const [toast, setToast] = useState({ show: false, msg: '', type: '' });
@@ -55,12 +53,11 @@ export function AppProvider({ children }) {
   // Refs
   const mapContainerRef = useRef(null);
   const leafletMapInstanceRef = useRef(null);
-  const markersRef = useRef({});
-  const geoAddressCacheRef = useRef({});
+  const markersRef = useRef(Object.create(null));
+  const geoAddressCacheRef = useRef(Object.create(null));
   const lastProcessedEventRef = useRef({ event: '', uid: '' });
   const lastCenteredBoxIdRef = useRef(null);
   const lastKnownCoordsRef = useRef({});
-  const overrideLockoutRef = useRef(false);
   const excelFileInputRef = useRef(null);
   const selectedBoxIdRef = useRef(null);
   const isFetchingRef = useRef(false);
@@ -91,7 +88,8 @@ export function AppProvider({ children }) {
 
   // Team management (pengawas)
   const [selectedMechanicSids, setSelectedMechanicSids] = useState([]);
-  const [teamBoxId, setTeamBoxId] = useState('');
+  const [chosenTeamBoxId, setTeamBoxId] = useState('');
+  const teamBoxId = chosenTeamBoxId || String(boxes[0]?.id || '');
   const [teamMaintenanceType, setTeamMaintenanceType] = useState('Mekanikal');
 
   // Toast helper
@@ -197,26 +195,28 @@ export function AppProvider({ children }) {
 
   // Load user database
   useEffect(() => {
+    if (!isLoggedIn) return;
     const muatUserDatabaseGlobal = async () => {
       try {
         const result = await userService.getAllUsers();
         const dataUsers = result.data || result;
-        const masterAdmin = { sid: 'Admin', nama: 'Master Administrator', role: 'admin', rfidUid: '0000', password: 'Admin', foto: 'assets/default-avatar.png' };
         const dataSteril = Array.isArray(dataUsers)
           ? dataUsers.map(u => ({
             ...u,
             role: normalizeUserRole(u.role),
             rfidUid: u.rfid_uid || u.rfidUid || '',
             foto: u.foto || 'assets/default-avatar.png'
-          })).filter(u => u.sid !== 'Admin')
+          }))
           : [];
-        setUserDatabase([masterAdmin, ...dataSteril]);
-      } catch (err) { /* silent */ }
+        setUserDatabase(dataSteril);
+      } catch { /* silent */ }
     };
     muatUserDatabaseGlobal();
     const intervalUser = setInterval(muatUserDatabaseGlobal, 5000);
     return () => clearInterval(intervalUser);
-  }, []);
+  }, [isLoggedIn]);
+
+  const reportBoxId = selectedBox?.id || boxes[0]?.id || null;
 
   // Load maintenance, buffer, tapping history
   useEffect(() => {
@@ -237,7 +237,7 @@ export function AppProvider({ children }) {
         setTappingHistory(normalizedHistory);
 
         // Fetch people counting for selected box (or first box if none selected)
-        const targetBoxId = selectedBox?.id || (boxes.length > 0 ? boxes[0].id : null);
+        const targetBoxId = reportBoxId;
         if (targetBoxId) {
           const pcResult = await logService.getLatestPeopleCount(targetBoxId);
           const pcData = pcResult.data || pcResult;
@@ -247,7 +247,7 @@ export function AppProvider({ children }) {
           const pcHistoryData = pcHistory.data || pcHistory;
           if (Array.isArray(pcHistoryData)) setPeopleCountHistory(pcHistoryData);
         }
-      } catch (err) { /* silent */ }
+      } catch { /* silent */ }
     };
 
     if (isLoggedIn) {
@@ -255,39 +255,18 @@ export function AppProvider({ children }) {
       const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
       return () => clearInterval(intervalSync);
     }
-  }, [isLoggedIn, selectedBox?.id, boxes.length]);
+  }, [isLoggedIn, reportBoxId]);
 
-  // Downtime timer
+  // Elapsed time is derived from the server's actual session start, not fabricated tap times.
+  const sessionStartMs = Date.parse(selectedBox?.session_started_at || '');
+  const isTrackingDowntime = Boolean(selectedBox?.active_session_id) && Number.isFinite(sessionStartMs);
+  const downtimeSeconds = isTrackingDowntime ? Math.max(0, Math.floor((clockNow - sessionStartMs) / 1000)) : 0;
   useEffect(() => {
-    if (!selectedBox) return undefined;
-    const resetTimer = () => {
-      setIsDowntimeTracking(false);
-      setDowntimeSeconds(0);
-      localStorage.removeItem(`downtime_${selectedBox.id}`);
-    };
-    const lockStates = ['STATE_WAIT_SPV_IN', 'STATE_MEKANIK_IN', 'STATE_LOTO_LOCKED_ACTIVE', 'STATE_CHOOSE_ACTION', 'STATE_ALL_WORKERS_REGISTERED'];
-    const timerShouldRun = isHwOnline && lockStates.includes(hwData.state);
-    if (!timerShouldRun) { resetTimer(); return undefined; }
+    if (!isTrackingDowntime) return;
+    const timer = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [isTrackingDowntime]);
 
-    const savedDowntime = localStorage.getItem(`downtime_${selectedBox.id}`);
-    setDowntimeSeconds(savedDowntime ? Number(savedDowntime) || 0 : 0);
-    setIsDowntimeTracking(true);
-
-    const intervalId = setInterval(() => {
-      setDowntimeSeconds(prev => {
-        const nextValue = prev + 1;
-        localStorage.setItem(`downtime_${selectedBox.id}`, String(nextValue));
-        return nextValue;
-      });
-    }, 1000);
-    return () => clearInterval(intervalId);
-  }, [hwData.state, isHwOnline, selectedBox?.id]);
-
-  // Supervisor team loading
-  useEffect(() => {
-    if (sessionUser?.role !== 'pengawas' || boxes.length === 0) return;
-    setTeamBoxId(current => current || String(boxes[0].id));
-  }, [sessionUser?.role, boxes]);
 
   useEffect(() => {
     if (sessionUser?.role !== 'pengawas' || !teamBoxId) return;
@@ -297,7 +276,7 @@ export function AppProvider({ children }) {
         const team = result.data || result;
         setSelectedMechanicSids(Array.isArray(team) ? team.map(m => m.sid) : []);
         if (Array.isArray(team) && team[0]?.maintenance_type) setTeamMaintenanceType(team[0].maintenance_type);
-      } catch (error) { setSelectedMechanicSids([]); }
+      } catch { setSelectedMechanicSids([]); }
     };
     loadSupervisorTeam();
   }, [sessionUser?.sid, sessionUser?.role, teamBoxId]);
@@ -307,7 +286,7 @@ export function AppProvider({ children }) {
     if (!isLoggedIn) return;
 
     const muatDataOperasionalMesin = async () => {
-      if (overrideLockoutRef.current || isFetchingRef.current) return;
+      if (isFetchingRef.current) return;
       isFetchingRef.current = true;
       try {
         const resultAset = await boxService.getAllBoxes();
@@ -316,7 +295,7 @@ export function AppProvider({ children }) {
           ? dataAset.map(b => {
             const id_box = b.id_box || b.id;
             let extraHw = {};
-            if (b.hw_data) { try { extraHw = typeof b.hw_data === 'string' ? JSON.parse(b.hw_data) : b.hw_data; } catch (e) {} }
+            if (b.hw_data) { try { extraHw = typeof b.hw_data === 'string' ? JSON.parse(b.hw_data) : b.hw_data; } catch {} }
             const realLat = (b.lat && !isNaN(Number(b.lat)) && Number(b.lat) !== 0) ? Number(b.lat) : (extraHw.lat ? Number(extraHw.lat) : 2.144691);
             const realLng = (b.lng && !isNaN(Number(b.lng)) && Number(b.lng) !== 0) ? Number(b.lng) : ((b.lon && !isNaN(Number(b.lon)) && Number(b.lon) !== 0) ? Number(b.lon) : (extraHw.lng || extraHw.lon ? Number(extraHw.lng || extraHw.lon) : 117.477526));
             if (realLat !== 0 && realLng !== 0) {
@@ -351,15 +330,15 @@ export function AppProvider({ children }) {
           if (canProbeDevice) {
             try {
               // Probe via backend proxy (aman, gak perlu CORS langsung ke ESP32)
-              const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/proxy/${encodeURIComponent(bId)}`;
+              const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/proxy/${encodeURIComponent(bId)}`;
               const controller = new AbortController();
               const timeoutId = setTimeout(() => controller.abort(), 4000);
-              const locRes = await fetch(proxyUrl, { signal: controller.signal });
+              const locRes = await fetch(proxyUrl, { signal: controller.signal, credentials: 'include' });
               clearTimeout(timeoutId);
               if (locRes.ok) {
                 const locData = await locRes.json();
-                isDeviceActive = true;
-                boksTerbaru.is_online = 1;
+                isDeviceActive = Number(locData.is_online) === 1;
+                boksTerbaru.is_online = locData.is_online;
                 boksTerbaru.lcd0 = locData.lcd0 || boksTerbaru.lcd0;
                 boksTerbaru.lcd1 = locData.lcd1 || boksTerbaru.lcd1;
                 boksTerbaru.state = locData.state || boksTerbaru.state;
@@ -373,13 +352,11 @@ export function AppProvider({ children }) {
                 boksTerbaru.last_event = locData.last_event || boksTerbaru.last_event;
                 lastSeenOnlineRef.current[bId] = Date.now();
               }
-            } catch (e) { /* fallback database */ }
+            } catch { /* fallback database */ }
           } else {
             isDeviceActive = Number(boksTerbaru.is_online) === 1;
           }
-
-          const lastSeen = lastSeenOnlineRef.current[bId] || 0;
-          const isSmoothOnline = canProbeDevice ? isDeviceActive : (isDeviceActive && Date.now() - lastSeen < 15000);
+          const isSmoothOnline = isDeviceActive;
           if (isDeviceActive) {
             const directIp = boksTerbaru.ip || '';
             if (directIp && directIp !== '192.168.1.100') {
@@ -392,9 +369,10 @@ export function AppProvider({ children }) {
 
           let queueFinal = [];
           if (Array.isArray(boksTerbaru.queue)) { queueFinal = boksTerbaru.queue; }
-          else if (typeof boksTerbaru.queue === 'string') { try { queueFinal = JSON.parse(boksTerbaru.queue); } catch (e) {} }
+          else if (typeof boksTerbaru.queue === 'string') { try { queueFinal = JSON.parse(boksTerbaru.queue); } catch {} }
 
           setHwData({
+            id_box: bId,
             lcd0: boksTerbaru.lcd0 || '  SISTEM READY',
             lcd1: boksTerbaru.lcd1 || 'TEKAN 1 UTK MULAI',
             state: boksTerbaru.state || 'STATE_IDLE',
@@ -415,7 +393,7 @@ export function AppProvider({ children }) {
             ssid: boksTerbaru.ssid || 'Wi-Fi Hotspot'
           });
         }
-      } catch (err) {} finally { isFetchingRef.current = false; }
+      } catch { setIsHwOnline(false); setPeopleCount(prev => ({ ...prev, stale: true })); } finally { isFetchingRef.current = false; }
     };
 
     muatDataOperasionalMesin();
@@ -433,12 +411,14 @@ export function AppProvider({ children }) {
       lat: selectedBox ? parseFloat(selectedBox.lat) : 2.144691,
       lon: selectedBox ? parseFloat(selectedBox.lng) : 117.477526,
       isLocal: true
-    }, ...prev]);
-  }, [hwData.last_event, hwData.last_uid, hwData.last_event_ok, isHwOnline, selectedBox?.id]);
+    }, ...prev].slice(0, 500));
+  }, [hwData.last_event, hwData.last_uid, hwData.last_event_ok, isHwOnline, selectedBox]);
 
   // ==================== HANDLERS ====================
 
-  const handleSelectBox = (box) => {
+  const handleSelectBox = useCallback((box) => {
+    setPeopleCount({ detected_count: null, registered_count: null, stale: true });
+    setPeopleCountHistory([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
     const clickLat = Number(box.lat);
@@ -450,7 +430,7 @@ export function AppProvider({ children }) {
       }, 500);
     }
     lastCenteredBoxIdRef.current = box.id;
-  };
+  }, []);
 
   const handleTambahAlatBerat = async (e) => {
     e.preventDefault();
@@ -473,7 +453,7 @@ export function AppProvider({ children }) {
         setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
         pemicuToast(editingBoxId ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
       } else { pemicuToast(hasil.message, 'fail'); }
-    } catch (err) { pemicuToast("Gagal mendaftarkan unit box ke server!", "fail"); }
+    } catch { pemicuToast("Gagal mendaftarkan unit box ke server!", "fail"); }
   };
 
   const handleEditAlatBerat = (box) => {
@@ -500,7 +480,7 @@ export function AppProvider({ children }) {
           }
           pemicuToast(hasil.message || 'Boks dihapus', "ok");
         } else { pemicuToast(hasil.message, "fail"); }
-      } catch (err) { pemicuToast("Gagal terhubung ke API hapus unit.", "fail"); }
+      } catch { pemicuToast("Gagal terhubung ke API hapus unit.", "fail"); }
     }
   };
 
@@ -522,14 +502,14 @@ export function AppProvider({ children }) {
         const validLng = parseFloat(boksTarget.lng || boksTarget.lon);
         if (!isNaN(validLat) && !isNaN(validLng) && validLat !== 0 && validLng !== 0) { latHasil = validLat; lngHasil = validLng; }
       }
-    } catch (err) {}
+    } catch {}
     if ((!latHasil || !lngHasil) && formAlatBerat.id) {
       try {
         // Probe GPS via backend proxy
-        const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/proxy/${encodeURIComponent(formAlatBerat.id)}`;
+        const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/proxy/${encodeURIComponent(formAlatBerat.id)}`;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000);
-        const responseLoc = await fetch(proxyUrl, { signal: controller.signal });
+        const responseLoc = await fetch(proxyUrl, { signal: controller.signal, credentials: 'include' });
         clearTimeout(timeoutId);
         if (responseLoc.ok) {
           const dataEsps = await responseLoc.json();
@@ -537,7 +517,7 @@ export function AppProvider({ children }) {
           const vLng = parseFloat(dataEsps.lon || dataEsps.lng);
           if (!isNaN(vLat) && !isNaN(vLng) && vLat !== 0 && vLng !== 0) { latHasil = vLat; lngHasil = vLng; }
         }
-      } catch (e) {}
+      } catch {}
     }
     if (latHasil && lngHasil) {
       setFormAlatBerat(prev => ({ ...prev, lat: latHasil.toFixed(6), lng: lngHasil.toFixed(6) }));
@@ -595,16 +575,16 @@ export function AppProvider({ children }) {
     const cleanNama = formAdminNewUser.nama.replace(/[<>]/g, "").trim();
     const cleanRfid = formAdminNewUser.rfidUid.replace(/[<>]/g, "").trim();
     if (!cleanSid || !cleanNama) { alert("Mohon lengkapi ID Karyawan (SID) dan Nama Lengkap!"); return; }
-    const dataKaryawanBaru = { sid: cleanSid, nama: cleanNama, role: formAdminNewUser.role, rfidUid: cleanRfid, password: cleanSid, foto: formAdminNewUser.foto || 'assets/default-avatar.png' };
+    const dataKaryawanBaru = { sid: cleanSid, nama: cleanNama, role: formAdminNewUser.role, rfidUid: cleanRfid, password: formAdminNewUser.password, foto: formAdminNewUser.foto || 'assets/default-avatar.png' };
     try {
       const hasil = await userService.createUser(dataKaryawanBaru);
       if (hasil.success || hasil.status === 'success') {
-        setUserDatabase([...userDatabase, { ...dataKaryawanBaru }]);
+        setUserDatabase([...userDatabase, { ...hasil.data, role: normalizeUserRole(hasil.data.role) }]);
         setFormAdminNewUser({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
         setShowAddUserForm(false);
         pemicuToast(` ✓ ${hasil.message || 'Karyawan didaftarkan'}`, "ok");
       } else { pemicuToast(hasil.message, "fail"); }
-    } catch (err) { pemicuToast("Gagal mendaftarkan personel ke database!", "fail"); }
+    } catch { pemicuToast("Gagal mendaftarkan personel ke database!", "fail"); }
   };
 
   const handleImportExcel = async (e) => {
@@ -623,11 +603,12 @@ export function AppProvider({ children }) {
         pemicuToast(`Mengimpor ${jsonRows.length} data karyawan...`, "ok");
         let suksesCount = 0;
         for (const row of jsonRows) {
-          let sidVal = '', namaVal = '', roleVal = 'teknisi', rfidVal = '';
+          let sidVal = '', namaVal = '', roleVal = 'teknisi', rfidVal = '', passwordVal = '';
           Object.keys(row).forEach(key => {
             const kLower = key.toLowerCase().trim();
             const val = String(row[key] || '').trim();
-            if (kLower.includes('sid') || kLower.includes('id')) { if (!sidVal && val) sidVal = val; }
+            if (['sid', 'id', 'id karyawan'].includes(kLower)) { if (!sidVal && val) sidVal = val; }
+            if (kLower === 'password' || kLower === 'kata sandi') passwordVal = val;
             if (kLower.includes('nama')) { if (!namaVal && val) namaVal = val; }
             if (kLower.includes('role') || kLower.includes('jabatan')) {
               if (val) {
@@ -639,22 +620,21 @@ export function AppProvider({ children }) {
             }
             if (kLower.includes('rfid')) { if (val) rfidVal = val.toUpperCase(); }
           });
-          if (sidVal && namaVal) {
+          if (sidVal && namaVal && passwordVal.length >= 12) {
             try {
-              const resJson = await userService.createUser({ sid: sidVal, nama: namaVal, role: roleVal, rfidUid: rfidVal, password: sidVal, foto: 'assets/default-avatar.png' });
+              const resJson = await userService.createUser({ sid: sidVal, nama: namaVal, role: roleVal, rfidUid: rfidVal, password: passwordVal, foto: 'assets/default-avatar.png' });
               if (resJson.success || resJson.status === 'success') suksesCount++;
-            } catch (err) {}
+            } catch {}
           }
         }
         // Refresh user database
         const resultUsers = await userService.getAllUsers();
         const dataUsers = resultUsers.data || resultUsers;
-        const masterAdmin = { sid: 'Admin', nama: 'Master Administrator', role: 'admin', rfidUid: '0000', password: 'Admin', foto: 'assets/default-avatar.png' };
-        const dataSteril = Array.isArray(dataUsers) ? dataUsers.map(u => ({ ...u, role: normalizeUserRole(u.role), rfidUid: u.rfid_uid || u.rfidUid || '', foto: u.foto || 'assets/default-avatar.png' })).filter(u => u.sid !== 'Admin') : [];
-        setUserDatabase([masterAdmin, ...dataSteril]);
-        pemicuToast(` ✓ Berhasil mengimpor ${suksesCount} data karyawan ke MySQL!`, "ok");
+        const dataSteril = Array.isArray(dataUsers) ? dataUsers.map(u => ({ ...u, role: normalizeUserRole(u.role), rfidUid: u.rfid_uid || u.rfidUid || '', foto: u.foto || 'assets/default-avatar.png' })) : [];
+        setUserDatabase(dataSteril);
+        pemicuToast(`Berhasil: ${suksesCount}; gagal/dilewati: ${jsonRows.length - suksesCount}. Kolom password wajib minimal 12 karakter.`, "ok");
         e.target.value = '';
-      } catch (err) { pemicuToast("Gagal memproses berkas Excel!", "fail"); }
+      } catch { pemicuToast("Gagal memproses berkas Excel!", "fail"); }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -670,7 +650,7 @@ export function AppProvider({ children }) {
     const cleanNama = formEditUser.nama.trim();
     const cleanRfid = formEditUser.rfidUid.trim().toUpperCase();
     if (!cleanSid || !cleanNama) { pemicuToast("SID dan Nama Karyawan Wajib Diisi!", "fail"); return; }
-    const payloadUser = { sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid, password: cleanSid, foto: formEditUser.foto || 'assets/default-avatar.png' };
+    const payloadUser = { sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid, foto: formEditUser.foto || 'assets/default-avatar.png' };
     try {
       const hasil = await userService.updateUser(cleanSid, payloadUser);
       if (hasil.success || hasil.status === 'success') {
@@ -679,7 +659,7 @@ export function AppProvider({ children }) {
         setShowEditUserModal(false);
         pemicuToast(` ✓ Data ${cleanNama} berhasil diperbarui!`, "ok");
       } else { pemicuToast(hasil.message || "Gagal memperbarui data personel!", "fail"); }
-    } catch (err) { pemicuToast("Gagal terhubung ke database!", "fail"); }
+    } catch { pemicuToast("Gagal terhubung ke database!", "fail"); }
   };
 
   const handleHapusUser = async (sidUser) => {
@@ -691,7 +671,7 @@ export function AppProvider({ children }) {
           setUserDatabase(userDatabase.filter(u => u.sid !== sidUser));
           pemicuToast(hasil.message || "Pengguna berhasil dihapus", "ok");
         }
-      } catch (err) { pemicuToast("Gagal menghapus data dari database.", "fail"); }
+      } catch { pemicuToast("Gagal menghapus data dari database.", "fail"); }
     }
   };
 
@@ -703,7 +683,7 @@ export function AppProvider({ children }) {
           setRfidBufferList(prev => prev.filter(item => item.id !== idBuffer));
           pemicuToast(" ✓ " + (hasil.message || "Berhasil"), "ok");
         } else { pemicuToast(hasil.message || "Gagal menghapus kartu!", "fail"); }
-      } catch (err) { pemicuToast("Gagal terhubung ke API buffer", "fail"); }
+      } catch { pemicuToast("Gagal terhubung ke API buffer", "fail"); }
     }
   };
 
@@ -711,7 +691,8 @@ export function AppProvider({ children }) {
     e.preventDefault();
     const mekanikFinal = manualMekanik.trim() || dapatkanMekanikDariAntreanLoto();
     if (!mekanikFinal || mekanikFinal.startsWith("TIDAK ADA MEKANIK")) { pemicuToast("GAGAL: Nama mekanik penanggung jawab wajib diisi atau di-tap!", "fail"); return; }
-    const pengawasFinal = pengawasLoto.trim() || dapatkanPengawasDariLoto() || 'Diverifikasi RFID LOTO';
+    const pengawasFinal = pengawasLoto.trim() || dapatkanPengawasDariLoto();
+    if (!selectedBox || !pengawasFinal) { pemicuToast('Pilih boks dan isi nama pengawas.', 'fail'); return; }
     const cleanDeskripsi = formDeskripsi.replace(/[<>]/g, "").trim();
     const cleanEstimasi = estimasiWaktu.replace(/[<>]/g, "").trim();
     const statusKerjaAktif = (manualMekanik.trim() || (isHwOnline && hwData.queue && hwData.queue.length > 0)) ? 'PROSES' : 'SELESAI';
@@ -724,12 +705,12 @@ export function AppProvider({ children }) {
     try {
       const hasil = await boxService.createMaintenance(dataLaporanBaru);
       if (hasil.success || hasil.status === 'success') {
-        setLogPemeliharaan(prev => [dataLaporanBaru, ...prev]);
+        setLogPemeliharaan(prev => [{ ...dataLaporanBaru, id: hasil.data.id }, ...prev]);
         setFormDeskripsi(''); setEstimasiWaktu(''); setPhotoBase64('');
         setManualMekanik(''); setPengawasLoto('');
         pemicuToast(hasil.message || "Tersimpan", "ok");
       } else { pemicuToast(hasil.message || "Gagal menyimpan laporan!", "fail"); }
-    } catch (err) { pemicuToast("Gagal menyimpan laporan kerusakan ke MySQL!", "fail"); }
+    } catch { pemicuToast("Gagal menyimpan laporan kerusakan ke MySQL!", "fail"); }
   };
 
   const handleHapusLogPemeliharaan = async (idLog) => {
@@ -740,7 +721,7 @@ export function AppProvider({ children }) {
           setLogPemeliharaan(logPemeliharaan.filter(log => log.id !== idLog));
           pemicuToast(hasil.message || "Terhapus", "ok");
         } else { pemicuToast(hasil.message, "fail"); }
-      } catch (err) { pemicuToast("Gagal menghubungi server hapus log.", "fail"); }
+      } catch { pemicuToast("Gagal menghubungi server hapus log.", "fail"); }
     }
   };
 
@@ -752,7 +733,7 @@ export function AppProvider({ children }) {
         setTappingHistory(prev => prev.filter(entry => !eventIds.includes(Number(entry.id))));
         pemicuToast(hasil.message || "Sesi Dihapus", "ok");
       } else { pemicuToast(hasil.message || "Gagal menghapus riwayat tapping.", "fail"); }
-    } catch (err) { pemicuToast("Gagal terhubung ke server hapus riwayat.", "fail"); }
+    } catch { pemicuToast("Gagal terhubung ke server hapus riwayat.", "fail"); }
   };
 
   const handleHapusAudit = async (idLog) => {
@@ -764,36 +745,37 @@ export function AppProvider({ children }) {
         setLocalAuditLog(prev => prev.filter(log => Number(log.id) !== Number(idLog)));
         pemicuToast(hasil.message || "Terhapus", "ok");
       } else { pemicuToast(hasil.message || "Gagal menghapus log aktivitas.", "fail"); }
-    } catch (err) { pemicuToast("Gagal terhubung ke server hapus log.", "fail"); }
+    } catch { pemicuToast("Gagal terhubung ke server hapus log.", "fail"); }
   };
 
   const triggerSimulasiExcel = (logItem) => {
     pemicuToast(" ⚡ Memproses Format Excel K3 + Injeksi Foto...", "ok");
     setTimeout(() => {
-      const fotoContent = logItem.foto ? `<img src="${logItem.foto}" onerror="this.onerror=null;this.src='assets/default-avatar.png';" style="max-width:140px; max-height:100px; display:block; border:1px solid #cbd5e1;" />` : "Tidak Ada Lampiran Foto Bukti";
+      const fotoContent = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(logItem.foto || '') ? `<img src="${escapeHtml(logItem.foto)}" onerror="this.onerror=null;this.src='assets/default-avatar.png';" style="max-width:140px; max-height:100px; display:block; border:1px solid #cbd5e1;" />` : "Tidak Ada Lampiran Foto Bukti";
       const excelTemplate = `
         <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
         <head><style>table { border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; } th { background-color: #dc2626; color: white; font-weight: bold; font-size: 13px; text-align: center; padding: 12px; border: 1px solid #94a3b8; } td { padding: 8px; border: 1px solid #cbd5e1; font-size: 12px; vertical-align: middle; } .lbl-header { background-color: #f1f5f9; font-weight: bold; color: #334155; }</style></head>
         <body><table><thead><tr><th colspan="2">DOKUMEN MANIFES K3 INDUSTRI - EKSPOR LAPORAN LOTO</th></tr></thead>
         <tbody>
-          <tr><td class="lbl-header" width="180">Waktu Laporan</td><td>${logItem.waktu}</td></tr>
-          <tr><td class="lbl-header">ID Smart Box / Mesin</td><td style="font-weight: bold; color: #b91c1c;">${logItem.mesin}</td></tr>
-          <tr><td class="lbl-header">Teknisi PIC</td><td>${logItem.teknisi}</td></tr>
-          <tr><td class="lbl-header">Pengawas K3</td><td>${logItem.pengawas || "—"}</td></tr>
-          <tr><td class="lbl-header">Klasifikasi Gangguan</td><td>${logItem.jenis}</td></tr>
-          <tr><td class="lbl-header">Estimasi Downtime</td><td>${logItem.estimasi}</td></tr>
-          <tr><td class="lbl-header">Rincian Deskripsi K3</td><td>${logItem.deskripsi || "-"}</td></tr>
-          <tr><td class="lbl-header">Status Akhir Sesi</td><td style="font-weight:bold; color:${logItem.status === 'PROSES' ? '#d97706' : '#15803d'}">${logItem.status}</td></tr>
+          <tr><td class="lbl-header" width="180">Waktu Laporan</td><td>${escapeHtml(logItem.waktu)}</td></tr>
+          <tr><td class="lbl-header">ID Smart Box / Mesin</td><td style="font-weight: bold; color: #b91c1c;">${escapeHtml(logItem.mesin)}</td></tr>
+          <tr><td class="lbl-header">Teknisi PIC</td><td>${escapeHtml(logItem.teknisi)}</td></tr>
+          <tr><td class="lbl-header">Pengawas K3</td><td>${escapeHtml(logItem.pengawas || "—")}</td></tr>
+          <tr><td class="lbl-header">Klasifikasi Gangguan</td><td>${escapeHtml(logItem.jenis)}</td></tr>
+          <tr><td class="lbl-header">Estimasi Downtime</td><td>${escapeHtml(logItem.estimasi)}</td></tr>
+          <tr><td class="lbl-header">Rincian Deskripsi K3</td><td>${escapeHtml(logItem.deskripsi || "-")}</td></tr>
+          <tr><td class="lbl-header">Status Akhir Sesi</td><td style="font-weight:bold; color:${logItem.status === 'PROSES' ? '#d97706' : '#15803d'}">${escapeHtml(logItem.status)}</td></tr>
           <tr style="height: 110px;"><td class="lbl-header">Bukti Visual Kerusakan</td><td>${fotoContent}</td></tr>
         </tbody></table></body></html>`;
       const blob = new Blob([excelTemplate], { type: "application/vnd.ms-excel;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `Manifes_K3_LOTO_${logItem.mesin}_${logItem.id || 'Arsip'}.xls`;
+      link.download = `Manifes_K3_LOTO_${escapeHtml(logItem.mesin)}_${logItem.id || 'Arsip'}.xls`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }, 600);
   };
 
@@ -803,7 +785,7 @@ export function AppProvider({ children }) {
     const rows = logsYgDitampilkan.map(log => {
       const waktu = log.ts ? new Date(Number(log.ts)).toLocaleTimeString('id-ID') : 'T - ' + Math.max(0, Math.round((hwData.uptime_ms - log.ts) / 1000)) + 's';
       const namaPersonel = terjemahkanIdKeNamaLengkapLocal(log.uid).replace(/,/g, "");
-      return `${waktu},${log.event},${namaPersonel},"${(Number(log.lat) || 0).toFixed(4)}, ${(Number(log.lon || log.lng) || 0).toFixed(4)}"`;
+      return [waktu, log.event, namaPersonel, `${(Number(log.lat) || 0).toFixed(4)}, ${(Number(log.lon || log.lng) || 0).toFixed(4)}`].map(safeCsvCell).join(',');
     }).join("\n");
     const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent(headers + rows);
     const link = document.createElement("a");
@@ -812,20 +794,6 @@ export function AppProvider({ children }) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  const triggerEmergencyOverride = () => {
-    const konfirmasi = window.confirm(" ⚠ PERINGATAN BUKA PAKSA K3 ⚠ \n\nApakah Anda yakin ingin membuka paksa antrean gembok untuk keperluan darurat?");
-    if (!konfirmasi) return;
-    const passwordConfirm = window.prompt("Masukkan Kata Sandi Administrator untuk verifikasi:");
-    if (passwordConfirm !== 'Admin') { pemicuToast("Kata sandi salah!", "fail"); return; }
-    pemicuToast("Mengirim sinyal buka paksa...", "ok");
-    overrideLockoutRef.current = true;
-    setHwData(prev => ({ ...prev, state: 'STATE_MAINTENANCE_DONE', queue: [], lcd0: 'OVERRIDE DARURAT', lcd1: 'ANTREAN BYPASS OK' }));
-    setIsDowntimeTracking(false);
-    if (selectedBox) localStorage.removeItem(`downtime_${selectedBox.id}`);
-    pemicuToast(" 🚨 Antrean Berhasil Dikosongkan!", "ok");
-    setTimeout(() => { overrideLockoutRef.current = false; }, 15000);
   };
 
   // ==================== DERIVED DATA ====================
@@ -867,7 +835,7 @@ export function AppProvider({ children }) {
     String(log.uid || '').toLowerCase().includes(auditSearchTerm.toLowerCase())
   );
 
-  const dataTappingProcessed = useMemo(() => {
+  const dataTappingProcessed = (() => {
     const results = [];
     const queueList = Array.isArray(hwData.queue) ? hwData.queue : [];
     const latestTappingByPerson = new Map();
@@ -884,7 +852,7 @@ export function AppProvider({ children }) {
       });
       latestTappingByPerson.forEach(({ entry, uid, eventType, index }) => {
         const isOut = eventType === 'OUT';
-        const isIn = eventType === 'IN' && isHwOnline;
+        const isIn = eventType === 'IN' && isHwOnline && String(entry.id_box) === String(selectedBox?.id) && queueList.some(item => String(typeof item === 'string' ? item : item.uid) === uid);
         results.push({
           id: `history-row-${entry.id || index}-${uid}`, uid, nama: entry.nama || getUserProfileLocal(uid).nama,
           foto: getUserProfileLocal(uid).foto, status: isOut ? 'SUDAH KELUAR' : (isIn ? 'SESI AKTIF' : (entry.event_text || 'TERCATAT')),
@@ -904,7 +872,7 @@ export function AppProvider({ children }) {
         id: `active-${uid}-${idx}`, uid, nama: getUserProfileLocal(uid).nama, foto: getUserProfileLocal(uid).foto,
         status: isSpv ? 'PENGAWAS (IN)' : 'MEKANIK (IN)',
         badgeColor: isSpv ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-green-50 text-green-700 border-green-200',
-        waktuMasuk: new Date(Date.now() - (queueList.length - idx) * 45000).toLocaleTimeString('id-ID'), waktuKeluar: '— (Sedang di Dalam)', isInside: true
+        waktuMasuk: 'Tidak tercatat', waktuKeluar: '— (Sedang di Dalam)', isInside: true
       });
     });
     if (hwData.active_fuelman && hwData.active_fuelman !== '' && !isAdminUidLocal(hwData.active_fuelman)) {
@@ -912,7 +880,7 @@ export function AppProvider({ children }) {
         id: 'fuelman-active', uid: hwData.active_fuelman, nama: getUserProfileLocal(hwData.active_fuelman).nama,
         foto: getUserProfileLocal(hwData.active_fuelman).foto, status: 'PENGISIAN BBM',
         badgeColor: 'bg-amber-50 text-amber-800 border-amber-300 animate-pulse',
-        waktuMasuk: new Date(Date.now() - 120000).toLocaleTimeString('id-ID'), waktuKeluar: '— (Sedang di Lokasi)', isInside: true
+        waktuMasuk: 'Tidak tercatat', waktuKeluar: '— (Sedang di Lokasi)', isInside: true
       });
     }
     logsYgDitampilkan.forEach((l, i) => {
@@ -921,7 +889,7 @@ export function AppProvider({ children }) {
       if (!isValidTappingEvent || isAdminUidLocal(l.uid)) return;
       const isOut = eventLower.includes('out') || eventLower.includes('keluar');
       const isIn = eventLower.includes('in') || eventLower.includes('masuk');
-      const tLog = l.ts ? new Date(Number(l.ts)).toLocaleTimeString('id-ID') : new Date().toLocaleTimeString('id-ID');
+      const tLog = l.ts ? new Date(Number(l.ts)).toLocaleTimeString('id-ID') : 'Tidak tercatat';
       if (!results.some(r => r.uid === l.uid && r.isInside)) {
         results.push({
           id: `history-${l.id || i}-${l.uid}`, uid: l.uid, nama: getUserProfileLocal(l.uid).nama,
@@ -932,13 +900,13 @@ export function AppProvider({ children }) {
       }
     });
     return results;
-  }, [hwData.queue, hwData.active_fuelman, hwData.supervisor_uid, logsYgDitampilkan, tappingHistory, userDatabase]);
+  })();
 
   const filteredTappingData = dataTappingProcessed.filter(row =>
     row.nama.toLowerCase().includes(tappingSearchTerm.toLowerCase()) || row.uid.toLowerCase().includes(tappingSearchTerm.toLowerCase()) || row.status.toLowerCase().includes(tappingSearchTerm.toLowerCase())
   );
 
-  const sessionHistoryRows = useMemo(() => {
+  const sessionHistoryRows = (() => {
     const rawHistory = Array.isArray(tappingHistory) ? tappingHistory : [];
     const rows = [];
     const latestByPerson = new Map();
@@ -957,8 +925,8 @@ export function AppProvider({ children }) {
         id: `session-${entry.id || index}`, deleteId: entry.id, deleteIds: eventIds, id_box: boxId,
         sessionDate: String(eventTime || '').slice(0, 10) || 'tanpa-tanggal',
         sessionStart: eventType === 'IN' ? eventTime : null,
-        sessionEnd: eventType === 'OUT' || (eventType === 'IN' && !isHwOnline) ? eventTime : null,
-        participants: [{ uid, nama: entry.nama || getUserProfileLocal(uid).nama, status: eventType === 'OUT' || !isHwOnline ? 'KELUAR' : 'MASUK' }],
+        sessionEnd: eventType === 'OUT' ? eventTime : null,
+        participants: [{ uid, nama: entry.nama || getUserProfileLocal(uid).nama, status: eventType === 'OUT' ? 'KELUAR' : eventType === 'IN' ? 'MASUK (TERAKHIR)' : 'TERCATAT' }],
         totalPersonel: 1, eventText: entry.event_text || `TAPPING_${eventType || 'CHECK'}`
       });
     });
@@ -979,13 +947,13 @@ export function AppProvider({ children }) {
       } else {
         rows.unshift({
           id: `live-session-${selectedBox.id}`, deleteId: null, deleteIds: [], id_box: selectedBox.id,
-          sessionDate: new Date().toISOString().slice(0, 10), sessionStart: new Date().toISOString(), sessionEnd: null,
+          sessionDate: 'Tidak tercatat', sessionStart: null, sessionEnd: null,
           participants: liveParticipants, totalPersonel: liveParticipants.length, eventText: 'SESI AKTIF DARI PERANGKAT'
         });
       }
     }
     return rows;
-  }, [tappingHistory, hwData.id_box, hwData.queue, selectedBox?.id]);
+  })();
 
   const filteredSessionHistory = sessionHistoryRows.filter(session => {
     const participants = session.participants.map(item => `${item.nama} ${item.uid}`).join(' ');
@@ -993,12 +961,12 @@ export function AppProvider({ children }) {
     return searchText.includes(tappingSearchTerm.toLowerCase());
   });
 
-  const totalOrangMasukOtomatis = useMemo(() => {
+  const totalOrangMasukOtomatis = (() => {
     let count = 0;
     if (Array.isArray(hwData.queue)) count += hwData.queue.filter(item => !isAdminUidLocal(typeof item === 'string' ? item : item.uid)).length;
     if (hwData.active_fuelman && hwData.active_fuelman !== '' && !isAdminUidLocal(hwData.active_fuelman)) count += 1;
     return count;
-  }, [hwData.queue, hwData.active_fuelman]);
+  })();
 
   const filteredMaintenanceLogs = Array.isArray(logPemeliharaan)
     ? logPemeliharaan.filter(log => (
@@ -1071,14 +1039,8 @@ export function AppProvider({ children }) {
     handleBukaModalEditUser, handleSimpanEditUser, handleHapusUser,
     handleHapusBuffer, handleSimpanKerusakan,
     handleHapusLogPemeliharaan, handleHapusRiwayatTapping, handleHapusAudit,
-    triggerSimulasiExcel, exportAuditTrailToCSV, triggerEmergencyOverride
+    triggerSimulasiExcel, exportAuditTrailToCSV
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
-}
-
-export function useApp() {
-  const context = useContext(AppContext);
-  if (!context) throw new Error('useApp must be used within an AppProvider');
-  return context;
 }

@@ -1,77 +1,45 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
+import api, { setCsrfToken } from '../services/api';
 import userService from '../services/userService';
 import { normalizeUserRole } from '../utils/helpers';
-
-const AuthContext = createContext(null);
-
+import { AuthContext } from './AuthState';
+const normalize = user => ({ ...user, rfidUid: user.rfid_uid || '', role: normalizeUserRole(user.role) });
 export function AuthProvider({ children }) {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [sessionUser, setSessionUser] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
-
-  // Restore session from sessionStorage on mount
+  const isLoggedIn = sessionUser !== null;
   useEffect(() => {
-    const sesiTersimpan = sessionStorage.getItem('eloto_industrial_session');
-    if (sesiTersimpan) {
-      try {
-        const userAktif = JSON.parse(sesiTersimpan);
-        setSessionUser(userAktif);
-        setIsLoggedIn(true);
-        if (userAktif.role === 'teknisi' || userAktif.role === 'mekanik') setActiveTab('teknisi-tab');
-        else setActiveTab('dashboard');
-      } catch (e) {
-        sessionStorage.removeItem('eloto_industrial_session');
+    let active = true;
+    sessionStorage.removeItem('eloto_industrial_session');
+    const expire = () => { setSessionUser(null); setCsrfToken(''); };
+    window.addEventListener('eloto-session-expired', expire);
+    api.get('/users/me').then(({ data }) => {
+      if (active && data.success) {
+        setCsrfToken(data.csrfToken);
+        const user = normalize(data.data);
+        setSessionUser(user);
+        setActiveTab(user.role === 'teknisi' ? 'teknisi-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
       }
-    }
+    }).catch(() => {});
+    return () => { active = false; window.removeEventListener('eloto-session-expired', expire); };
   }, []);
-
-  const handleLogin = async (sid, password, pemicuToast) => {
-    if (!sid || !password) return;
+  const handleLogin = async (sid, password, toast) => {
     try {
       const result = await userService.login(sid, password);
-      if (!result.success || !result.data) {
-        pemicuToast(result.message || "ID Karyawan (SID) atau Kata Sandi Salah!", "fail");
-        return;
-      }
-      const role = normalizeUserRole(result.data.role);
-      const user = {
-        ...result.data,
-        rfidUid: result.data.rfid_uid || result.data.rfidUid || '',
-        foto: result.data.foto || 'assets/default-avatar.png',
-        role
-      };
+      const user = normalize(result.data);
+      setCsrfToken(result.csrfToken);
       setSessionUser(user);
-      setIsLoggedIn(true);
-      sessionStorage.setItem('eloto_industrial_session', JSON.stringify(user));
-      pemicuToast(`Selamat Datang: ${user.nama}`, 'ok');
-      if (user.role === 'teknisi' || user.role === 'mekanik') setActiveTab('teknisi-tab');
-      else setActiveTab('dashboard');
-    } catch (error) {
-      pemicuToast("Gagal terhubung ke server login!", "fail");
-    }
+      setActiveTab(user.role === 'teknisi' ? 'teknisi-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
+      toast(`Selamat Datang: ${user.nama}`, 'ok');
+    } catch (error) { toast(error.response?.data?.message || 'Gagal terhubung ke server login.', 'fail'); }
   };
-
-  const handleLogout = (pemicuToast) => {
-    setIsLoggedIn(false);
-    setSessionUser(null);
-    sessionStorage.removeItem('eloto_industrial_session');
-    pemicuToast("Sesi kerja berhasil ditutup.", "ok");
+  const handleLogout = async toast => {
+    try {
+      await api.post('/users/logout');
+      setSessionUser(null);
+      setCsrfToken('');
+      toast('Sesi kerja berhasil ditutup.', 'ok');
+    } catch { toast('Logout gagal. Coba lagi agar sesi server ditutup.', 'fail'); }
   };
-
-  return (
-    <AuthContext.Provider value={{
-      isLoggedIn, setIsLoggedIn,
-      sessionUser, setSessionUser,
-      activeTab, setActiveTab,
-      handleLogin, handleLogout
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within an AuthProvider');
-  return context;
+  return <AuthContext.Provider value={{ isLoggedIn, sessionUser, setSessionUser, activeTab, setActiveTab, handleLogin, handleLogout }}>{children}</AuthContext.Provider>;
 }

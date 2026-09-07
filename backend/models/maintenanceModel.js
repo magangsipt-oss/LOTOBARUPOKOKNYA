@@ -8,7 +8,7 @@ const MaintenanceModel = {
   getAll: async () => {
     const query = `
       SELECT id, waktu, id_box, mesin, jenis, estimasi, teknisi, pengawas, deskripsi, status, foto 
-      FROM maintenance_logs ORDER BY waktu DESC
+      FROM maintenance_logs ORDER BY waktu DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query);
     return rows;
@@ -18,7 +18,7 @@ const MaintenanceModel = {
   getByIdBox: async (idBox) => {
     const query = `
       SELECT id, waktu, id_box, mesin, jenis, estimasi, teknisi, pengawas, deskripsi, status, foto 
-      FROM maintenance_logs WHERE id_box = ? ORDER BY waktu DESC
+      FROM maintenance_logs WHERE id_box = ? ORDER BY waktu DESC LIMIT 1000
     `;
     const [rows] = await pool.query(query, [idBox]);
     return rows;

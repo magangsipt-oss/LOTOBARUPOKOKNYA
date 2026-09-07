@@ -9,9 +9,10 @@ const BoxModel = {
   getAll: async () => {
     const query = `
             SELECT id_box, unit, ip, rtsp_url, ssid, state, lat, lng, lcd0, lcd1, relay_open,
-              supervisor_uid, active_fuelman, last_uid, last_event, uptime_ms,
+              hw_data, supervisor_uid, active_fuelman, last_uid, last_event, uptime_ms,
               CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 15 SECOND THEN 1 ELSE 0 END AS is_online,
-              last_ping, updated_at
+              last_ping, updated_at, active_session_id,
+              (SELECT MIN(t.created_at) FROM tapping_history t WHERE t.id_box = boxes.id_box AND t.session_id = boxes.active_session_id) AS session_started_at
       FROM boxes ORDER BY id_box ASC
     `;
     const [rows] = await pool.query(query);
@@ -31,7 +32,7 @@ const BoxModel = {
     const query = `
       INSERT INTO boxes (id_box, unit, ip, rtsp_url, state, lat, lng, supervisor_uid,
                         last_event, last_uid, relay_open, uptime_ms, is_online, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 1, NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 0, NOW())
     `;
     await pool.query(query, [idBox, unit, ip, rtsp_url || null, state || 'IDLE', lat, lng, supervisorUid]);
     return idBox;
@@ -42,18 +43,27 @@ const BoxModel = {
     const { unit, ip, lat, lng, supervisorUid, rtsp_url } = boxData;
     const query = `
       UPDATE boxes
-      SET unit = ?, ip = ?, lat = ?, lng = ?, supervisor_uid = ?, rtsp_url = ?, updated_at = NOW()
+      SET unit = ?, ip = ?, lat = ?, lng = ?, supervisor_uid = COALESCE(?, supervisor_uid), rtsp_url = ?, updated_at = NOW()
       WHERE id_box = ?
     `;
-    const [result] = await pool.query(query, [unit, ip, lat, lng, supervisorUid, rtsp_url || null, idBox]);
+    const [result] = await pool.query(query, [unit, ip || '0.0.0.0', lat === '' || lat == null ? null : lat, lng === '' || lng == null ? null : lng, supervisorUid ?? null, rtsp_url || null, idBox]);
     return result.affectedRows > 0;
   },
 
   // 5. Menghapus box
   delete: async (idBox) => {
-    const query = 'DELETE FROM boxes WHERE id_box = ?';
-    const [result] = await pool.query(query, [idBox]);
-    return result.affectedRows > 0;
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [rows] = await c.query('SELECT active_session_id, is_online FROM boxes WHERE id_box = ? FOR UPDATE', [idBox]);
+      if (!rows.length) { await c.rollback(); return false; }
+      if (rows[0].active_session_id != null) throw Object.assign(new Error('Boks masih memiliki sesi aktif'), { status: 409 });
+      await c.query('DELETE FROM device_commands WHERE id_box = ?', [idBox]);
+      await c.query('DELETE FROM supervisor_box_team WHERE id_box = ?', [idBox]);
+      await c.query('DELETE FROM boxes WHERE id_box = ?', [idBox]);
+      await c.commit(); return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
   },
 
   // 6. Memperbarui state box

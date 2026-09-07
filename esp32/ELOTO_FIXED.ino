@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <time.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -71,9 +73,11 @@
 // ============================================================================
 // KONFIGURASI JARINGAN & SERVER (DIBACA DARI SD CARD NANTINYA)
 // ============================================================================
-String wifi_ssid        = "vivoV29";
-String wifi_password    = "112233445566";
-String server_host      = "192.168.137.1:5002";
+String wifi_ssid        = "";
+String wifi_password    = "";
+String server_host      = "";
+String device_token = "";
+String server_ca = "";
 const char* SERVER_PROJECT_PATH  = "";
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 800;
@@ -83,11 +87,11 @@ const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 String getServerBaseUrl() {
     String host = server_host;
     host.trim();
-    if (host.length() == 0) host = WiFi.gatewayIP().toString();
+    if (host.length() == 0 || host.startsWith("http://")) return "";
     if (host.startsWith("http://") || host.startsWith("https://")) {
         return host + SERVER_PROJECT_PATH + "/";
     }
-    return "http://" + host + SERVER_PROJECT_PATH + "/";
+    return "https://" + host + SERVER_PROJECT_PATH + "/";
 }
 
 String getApiUrl(const char* endpoint) {
@@ -158,8 +162,9 @@ struct AuditEntry {
 };
 
 struct NetworkJob {
-    char event[32];
-    char uid[16];
+    char event[101];
+    char uid[51];
+    char eventId[33];
 };
 
 const uint8_t MAX_RAM_USERS = 50;
@@ -241,9 +246,9 @@ unsigned long lastScannedRfidTime = 0;
 // ============================================================================
 void processRfidLogic(String uid);
 String checkRfidSensor();
-void syncDatabaseToSDCard();
+bool syncDatabaseToSDCard();
 WorkerInfo searchUserFromSDCard(String uid);
-void saveOfflineLogToSDCard(String event, String uid);
+void saveOfflineLogToSDCard(String event, String uid, String eventId);
 void uploadOfflineLogsSDCard();
 void saveSessionToSD();
 void clearSessionFromSD();
@@ -335,6 +340,9 @@ uint8_t getDebouncedKey() {
 // ============================================================================
 void loadConfigFromSD() {
     if (!sdCardMounted) return;
+    if (!SD.exists("/users.csv") && SD.exists("/users.bak")) SD.rename("/users.bak", "/users.csv");
+    File caFile = SD.open("/server_ca.pem", FILE_READ);
+    if (caFile) { server_ca = caFile.readString(); caFile.close(); }
 
     if (SD.exists("/config.txt")) {
         File configFile = SD.open("/config.txt", FILE_READ);
@@ -345,6 +353,7 @@ void loadConfigFromSD() {
                 if (line.startsWith("SSID=")) wifi_ssid = line.substring(5);
                 else if (line.startsWith("PASS=")) wifi_password = line.substring(5);
                 else if (line.startsWith("SERVER=")) server_host = line.substring(7);
+                else if (line.startsWith("TOKEN=")) device_token = line.substring(6);
             }
             configFile.close();
             Serial.println("[CONFIG] Berhasil memuat konfigurasi dari SD Card.");
@@ -355,6 +364,7 @@ void loadConfigFromSD() {
             configFile.println("SSID=" + wifi_ssid);
             configFile.println("PASS=" + wifi_password);
             configFile.println("SERVER=" + server_host);
+            configFile.println("TOKEN=" + device_token);
             configFile.close();
             Serial.println("[CONFIG] File config.txt baru dibuat di SD Card.");
         }
@@ -699,10 +709,11 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
 
     // 1. Jika belum ada di SD, download via HTTP
     if (!photoExists && WiFi.status() == WL_CONNECTED) {
-        WiFiClient client; client.setTimeout(600); 
+        WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
         HTTPClient http;
         String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
         http.begin(client, url);
+        http.addHeader("X-Device-Token", device_token);
         http.addHeader("Accept", "image/jpeg");
         http.setTimeout(1000); 
         
@@ -1299,13 +1310,15 @@ int findWorkerIndex(String uid) {
     return -1;
 }
 
-void syncDatabaseToSDCard() {
-    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
-    if (ESP.getFreeHeap() < 30000) return;
+bool syncDatabaseToSDCard() {
+    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return false;
+    if (ESP.getFreeHeap() < 30000) return false;
     
-    WiFiClient client; client.setTimeout(2500);
+    bool synced = false;
+    WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2500);
     HTTPClient http;
     http.begin(client, getApiUrl("users"));
+        http.addHeader("X-Device-Token", device_token);
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
     http.setTimeout(3500);
     
@@ -1319,8 +1332,9 @@ void syncDatabaseToSDCard() {
         if (!err && !arr.isNull()) {
             if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
                 digitalWrite(TFT_CS_PIN, HIGH);
-                if (SD.exists("/users.csv")) SD.remove("/users.csv");
-                File userFile = SD.open("/users.csv", FILE_WRITE);
+                SD.remove("/users.tmp");
+                File userFile = SD.open("/users.tmp", FILE_WRITE);
+                bool cacheWriteOk = true;
                 if (userFile) {
                     for (JsonObject u : arr) {
                         String uid = "";
@@ -1341,10 +1355,16 @@ void syncDatabaseToSDCard() {
                         bool isSpv = checkIsSupervisorRole(role);
                         
                         if (uid != "" && uid != "NULL") {
-                            userFile.println(uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0));
+                            if (!userFile.println(uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0))) cacheWriteOk = false;
                         }
                     }
                     userFile.close();
+                    if (cacheWriteOk) {
+                        SD.remove("/users.bak");
+                        if (SD.exists("/users.csv")) SD.rename("/users.csv", "/users.bak");
+                        if (!SD.rename("/users.tmp", "/users.csv")) SD.rename("/users.bak", "/users.csv");
+                        else synced = true;
+                    }
                 }
                 digitalWrite(SD_CS_PIN, HIGH);
                 xSemaphoreGive(sdMutex);
@@ -1353,6 +1373,7 @@ void syncDatabaseToSDCard() {
         }
     }
     http.end();
+    return synced;
 }
 
 WorkerInfo searchUserFromSDCard(String uid) {
@@ -1400,7 +1421,7 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-void saveOfflineLogToSDCard(String event, String uid) {
+void saveOfflineLogToSDCard(String event, String uid, String eventId) {
     if (!sdCardMounted || sdMutex == NULL) return;
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
@@ -1408,7 +1429,7 @@ void saveOfflineLogToSDCard(String event, String uid) {
         if (logFile) {
             String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
             String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-            logFile.println(String(millis()) + "," + event + "," + uid + "," + latitude + "," + longitude);
+            logFile.println(eventId + "," + event + "," + uid + "," + latitude + "," + longitude);
             logFile.close();
         } 
         digitalWrite(SD_CS_PIN, HIGH);
@@ -1442,11 +1463,13 @@ void uploadOfflineLogsSDCard() {
                             }
                             uid.trim(); latitude.trim(); longitude.trim();
                             
-                            WiFiClient client; client.setTimeout(2000);
+                            WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2000);
                             HTTPClient http;
                             http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+        http.addHeader("X-Device-Token", device_token);
                             http.addHeader("Content-Type", "application/json");
                             DynamicJsonDocument doc(512);
+                            doc["event_id"] = line.substring(0, p1); doc["replay"] = true;
                             doc["id_box"] = getDeviceId(); doc["event"] = event; doc["uid"] = uid;
                             doc["is_tap"] = isTapEventName(event);
                             doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
@@ -1505,10 +1528,11 @@ WorkerInfo fetchCardDataAPI(String uid) {
     }
     
     if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 30000) {
-        WiFiClient client; client.setTimeout(600); 
+        WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
         HTTPClient http;
         String url = getApiUrl("users/check-card");
         http.begin(client, url);
+        http.addHeader("X-Device-Token", device_token);
         http.addHeader("Content-Type", "application/json");
         http.setTimeout(800);
         DynamicJsonDocument requestDoc(256);
@@ -1601,10 +1625,11 @@ void precacheNextWorkerPhoto() {
     if (ESP.getFreeHeap() < 40000) return; // jaga-jaga heap sempit
 
     // 2) Belum ada -> download dari server
-    WiFiClient client; client.setTimeout(600);
+    WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
     HTTPClient http;
     String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
     http.begin(client, url);
+        http.addHeader("X-Device-Token", device_token);
     http.addHeader("Accept", "image/jpeg");
     http.setTimeout(3000);
 
@@ -1631,6 +1656,28 @@ void precacheNextWorkerPhoto() {
     http.end();
 }
 
+void pollDeviceCommand() {
+    if (WiFi.status() != WL_CONNECTED || device_token.length() < 32 || server_ca.length() == 0) return;
+    WiFiClientSecure client; client.setCACert(server_ca.c_str());
+    HTTPClient http;
+    http.begin(client, getApiUrl("commands/") + getDeviceIdPath() + "/pending");
+    http.addHeader("X-Device-Token", device_token);
+    http.setTimeout(5000);
+    if (http.GET() == 200) {
+        DynamicJsonDocument doc(1024);
+        if (!deserializeJson(doc, http.getString()) && doc["data"]["pending_cmd"] == "SYNC_USERS") {
+            String id = doc["data"]["id"].as<String>();
+            http.end();
+            if (!syncDatabaseToSDCard()) return; // Retry until cache refresh succeeds.
+            http.begin(client, getApiUrl("commands/") + getDeviceIdPath() + "/clear");
+            http.addHeader("X-Device-Token", device_token);
+            http.addHeader("Content-Type", "application/json");
+            http.PATCH("{\"commandId\":\"" + id + "\"}");
+        }
+    }
+    http.end();
+}
+
 void networkTaskCore0(void * pvParameters) {
     unsigned long lastWifiCheckTask = 0;
     unsigned long lastHeartbeatTask = 0;
@@ -1641,14 +1688,16 @@ void networkTaskCore0(void * pvParameters) {
         NetworkJob job;
         if (xQueueReceive(networkQueue, &job, pdMS_TO_TICKS(50)) == pdTRUE) {
             if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 25000) {
-                WiFiClient client; client.setTimeout(2000);
+                WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2000);
                 HTTPClient http;
                 http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+        http.addHeader("X-Device-Token", device_token);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
                 http.setTimeout(3000);
                 
                 DynamicJsonDocument doc(2048);
+                doc["event_id"] = String(job.eventId);
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
                 doc["last_uid"]       = String(job.uid); doc["uid"] = String(job.uid);
                 doc["is_tap"]         = isTapEventName(String(job.event));
@@ -1675,10 +1724,10 @@ void networkTaskCore0(void * pvParameters) {
                 }
                 String jsonPayload; serializeJson(doc, jsonPayload);
                 int httpCode = http.POST(jsonPayload);
-                if (httpCode < 200 || httpCode >= 300) saveOfflineLogToSDCard(String(job.event), String(job.uid));
+                if (httpCode < 200 || httpCode >= 300) saveOfflineLogToSDCard(String(job.event), String(job.uid), String(job.eventId));
                 http.end();
-            } else if (WiFi.status() != WL_CONNECTED) {
-                saveOfflineLogToSDCard(String(job.event), String(job.uid));
+            } else {
+                saveOfflineLogToSDCard(String(job.event), String(job.uid), String(job.eventId));
             }
         }
         
@@ -1703,6 +1752,7 @@ void networkTaskCore0(void * pvParameters) {
         if (millis() - lastHeartbeatTask > 8000) {
             lastHeartbeatTask = millis(); 
             logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
+            pollDeviceCommand();
         }
 
         precacheNextWorkerPhoto(); // aman dipanggil tiap putaran, ada jeda & syarat internal sendiri
@@ -1712,9 +1762,13 @@ void networkTaskCore0(void * pvParameters) {
 
 void logAuditAsync(String event, String uid) {
     NetworkJob job; memset(&job, 0, sizeof(NetworkJob));
+    snprintf(job.eventId, sizeof(job.eventId), "%08lx%08lx%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random());
     event.toCharArray(job.event, sizeof(job.event)); 
     uid.toCharArray(job.uid, sizeof(job.uid));
-    xQueueSend(networkQueue, &job, 0);
+    if (xQueueSend(networkQueue, &job, 0) != pdTRUE) {
+        saveOfflineLogToSDCard(event, uid, String(job.eventId));
+        Serial.println("[AUDIT] Network queue full; event sent to offline storage");
+    }
     
     AuditEntry &slot = auditRing[auditHead];
     slot.event = event; slot.uid = uid; slot.ok = true; slot.ts = millis();
@@ -1874,6 +1928,7 @@ void connectWiFiRoutine() {
     WiFi.disconnect();
     delay(40);
     WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
     
     unsigned long startConn = millis();
     unsigned long lastScreenUpdate = 0;
@@ -2719,6 +2774,7 @@ void drawScreen() {
 }
 
 void handleStatus() {
+    if (device_token.length() < 32 || server.header("X-Device-Token") != device_token) { server.send(401, "application/json", "{\"success\":false}"); return; }
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     server.sendHeader("Access-Control-Allow-Headers", "*");
@@ -2834,6 +2890,8 @@ void setup() {
     
     WiFi.mode(WIFI_STA); 
     WiFi.disconnect(); 
+    const char* authHeaders[] = { "X-Device-Token" };
+    server.collectHeaders(authHeaders, 1);
     server.on("/status", HTTP_GET, handleStatus);
     server.on("/status", HTTP_OPTIONS, handleOptions);
     server.onNotFound(handleNotFound); 

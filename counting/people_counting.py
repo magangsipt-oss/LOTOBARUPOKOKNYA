@@ -5,7 +5,7 @@ import threading
 import time
 import requests
 from io import BytesIO
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from ultralytics import YOLO
 
 # RTSP capture options
@@ -17,8 +17,9 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp|fflags;nobuffe
 BACKEND_URL = os.environ.get("ELOTO_API_URL", "http://localhost:5002/api")
 BOX_ID = os.environ.get("ELOTO_BOX_ID", "BOX ELOTO 1")
 HEADLESS = os.environ.get("ELOTO_HEADLESS", "1") == "1"
-SYNC_INTERVAL = int(os.environ.get("ELOTO_SYNC_INTERVAL", "5"))
-RTSP_URL = os.environ.get("ELOTO_RTSP_URL", "rtsp://admin:Simas123@192.168.1.131:554/onvif1")
+SYNC_INTERVAL = max(2, int(os.environ.get("ELOTO_SYNC_INTERVAL", "5")))
+RTSP_URL = os.environ.get("ELOTO_RTSP_URL", "")
+DEVICE_TOKEN = os.environ.get("ELOTO_DEVICE_TOKEN", "")
 MODEL_PATH = os.environ.get("ELOTO_MODEL", "yolo11n.pt")
 CONF_THRESHOLD = float(os.environ.get("ELOTO_CONF", "0.5"))
 MJPEG_PORT = int(os.environ.get("ELOTO_MJPEG_PORT", "8081"))
@@ -44,6 +45,7 @@ class RTSPVideoStream:
         self.frame = None
         self.stopped = False
         self.lock = threading.Lock()
+        self.last_frame = 0
         self._connect()
 
     def _connect(self):
@@ -51,7 +53,10 @@ class RTSPVideoStream:
             self.cap.release()
         self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.grabbed, self.frame = self.cap.read()
+        grabbed, frame = self.cap.read()
+        with self.lock:
+            self.grabbed, self.frame = grabbed, frame
+            self.last_frame = time.monotonic() if grabbed else 0
 
     def start(self):
         t = threading.Thread(target=self.update, daemon=True)
@@ -81,10 +86,11 @@ class RTSPVideoStream:
             with self.lock:
                 self.grabbed = grabbed
                 self.frame = frame
+                self.last_frame = time.monotonic()
 
     def read(self):
         with self.lock:
-            if self.frame is not None:
+            if self.frame is not None and time.monotonic() - self.last_frame < 5:
                 return self.grabbed, self.frame.copy()
             return False, None
 
@@ -168,10 +174,10 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 
 def start_mjpeg_server():
     """Start MJPEG HTTP server di thread terpisah."""
-    server = HTTPServer(('0.0.0.0', MJPEG_PORT), MJPEGHandler)
+    server = ThreadingHTTPServer(('127.0.0.1', MJPEG_PORT), MJPEGHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    print(f"[MJPEG] Server aktif di port {MJPEG_PORT} — stream: http://0.0.0.0:{MJPEG_PORT}/stream")
+    print(f"[MJPEG] Server aktif di port {MJPEG_PORT} — stream: http://127.0.0.1:{MJPEG_PORT}/stream")
     return server
 
 
@@ -181,6 +187,7 @@ class BackendSync:
         self.box_id = box_id
         self.api_url = api_url
         self.current_count = 0
+        self.last_detection = 0
         self.registered_count = 0
         self.session_id = None
         self.lock = threading.Lock()
@@ -190,6 +197,7 @@ class BackendSync:
     def update_count(self, detected):
         with self.lock:
             self.current_count = detected
+            self.last_detection = time.monotonic()
 
     def _get_session_from_backend(self):
         """Ambil session info dari backend."""
@@ -197,6 +205,7 @@ class BackendSync:
             resp = requests.get(
                 f"{self.api_url}/logs/tapping-history/stats",
                 params={"id_box": self.box_id},
+                headers={"X-Device-Token": DEVICE_TOKEN},
                 timeout=5
             )
             if resp.ok:
@@ -205,20 +214,24 @@ class BackendSync:
                 if stats:
                     latest = stats[0]
                     with self.lock:
-                        self.registered_count = latest.get("unique_users", 0)
+                        self.registered_count = int(latest.get("active_users", 0))
                         self.session_id = latest.get("session_id")
                     self.connected = True
                 else:
                     with self.lock:
                         self.registered_count = 0
+                        self.session_id = None
             else:
                 self.connected = False
-        except requests.exceptions.RequestException:
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError):
             self.connected = False
 
     def _send_count(self):
         """Kirim jumlah orang terdeteksi ke backend."""
         with self.lock:
+            if time.monotonic() - self.last_detection > 10:
+                self.connected = False
+                return
             payload = {
                 "id_box": self.box_id,
                 "session_id": self.session_id,
@@ -229,10 +242,11 @@ class BackendSync:
             resp = requests.post(
                 f"{self.api_url}/logs/people-counting",
                 json=payload,
+                headers={"X-Device-Token": DEVICE_TOKEN},
                 timeout=5
             )
             self.connected = resp.ok
-        except requests.exceptions.RequestException:
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError):
             self.connected = False
 
     def run(self):
@@ -259,7 +273,7 @@ def process_stream(stream_name, rtsp_url, roi_polygon, model, person_class_id, s
     time.sleep(1.0)
 
     if not vs.cap or not vs.cap.isOpened():
-        print(f"[ERROR] [{stream_name}] Gagal koneksi ke {rtsp_url}")
+        print(f"[ERROR] [{stream_name}] Gagal koneksi kamera")
         return
 
     if not HEADLESS:
@@ -347,7 +361,9 @@ def main():
     print("=" * 50)
     print(f"  Backend  : {BACKEND_URL}")
     print(f"  Box ID   : {BOX_ID}")
-    print(f"  RTSP     : {RTSP_URL}")
+    if not RTSP_URL or len(DEVICE_TOKEN) < 32:
+        raise ValueError("Set ELOTO_RTSP_URL dan ELOTO_DEVICE_TOKEN sebelum menjalankan counting")
+    print("  RTSP     : configured")
     print(f"  Model    : {MODEL_PATH}")
     print(f"  Headless : {HEADLESS}")
     print(f"  Sync     : {SYNC_INTERVAL}s")

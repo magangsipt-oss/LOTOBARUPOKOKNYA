@@ -2,7 +2,7 @@
  * Shared constants and helper functions for E-LOTO Platform
  */
 
-export const API_SECRET_TOKEN = 'ELOTO_SECURE_KEY_2026';
+
 
 export const STATE_DESC = {
   // Nama panjang (backend DB / frontend state)
@@ -87,25 +87,28 @@ export const formatWaktuDowntime = (totalDetik) => {
   return [jam, menit, detik].map(value => String(value).padStart(2, '0')).join(':');
 };
 
-export const resolveProfilePhotoUrl = (photo) => {
+export const resolveProfilePhotoUrl = photo => {
   const value = String(photo || '').trim();
-  if (!value || value === 'assets/default-avatar.png' || value.startsWith('data:') || value.startsWith('http')) {
-    return value || 'assets/default-avatar.png';
-  }
-  if (value.startsWith('api/uploads/')) return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/${value}`;
-  if (value.startsWith('uploads/')) return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/${value}`;
-  return `${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/uploads/user_profiles/${value}`;
+  const base = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+  if (!value || value === 'assets/default-avatar.png') return 'assets/default-avatar.png';
+  if (/^data:image\/(jpeg|png|webp);base64,/.test(value)) return value;
+  if (value.startsWith('api/uploads/')) return `${base}/legacy-uploads/${value.slice(12)}`;
+  if (value.startsWith('uploads/')) return `${base}/${value}`;
+  if (/^[A-Za-z0-9_.-]+$/.test(value)) return `${base}/uploads/user_profiles/${value}`;
+  return 'assets/default-avatar.png';
 };
+
+export const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export const resolveUserPhotoUrl = (profile, fallbackPhoto) => {
   const uid = String(profile?.rfidUid || profile?.rfid_uid || profile?.uid || '').trim();
-  if (uid) return `${import.meta.env.VITE_API_URL || 'http://localhost:5002/api'}/users/photo/${encodeURIComponent(uid)}`;
+  if (uid) return `${import.meta.env.VITE_API_URL || '/api'}/users/photo/${encodeURIComponent(uid)}`;
   return resolveProfilePhotoUrl(fallbackPhoto || profile?.foto);
 };
 
 export const getInitialAvatar = (name) => {
   const initials = String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || '?';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" fill="#fee2e2"/><text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="#b91c1c" font-family="Arial" font-size="34" font-weight="700">${initials}</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" fill="#fee2e2"/><text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="#b91c1c" font-family="Arial" font-size="34" font-weight="700">${escapeHtml(initials)}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 };
 
@@ -151,8 +154,14 @@ export const terjemahkanIdKeNamaLengkap = (idMentah, userDatabase) => {
 
 export const normalizeUserRole = (role) => {
   const rLower = String(role || '').toLowerCase();
-  if (rLower.includes('pengawas') || rLower.includes('spv') || rLower.includes('k3')) return 'pengawas';
+  if (rLower.includes('supervisor') || rLower.includes('pengawas') || rLower.includes('spv') || rLower.includes('k3')) return 'pengawas';
   if (rLower.includes('fuel') || rLower.includes('bbm') || rLower.includes('refuel')) return 'fuelman';
   if (rLower.includes('admin')) return 'admin';
   return 'teknisi';
+};
+
+export const safeCsvCell = value => {
+  let text = String(value ?? '');
+  if (/^[\s]*[=+@-]/.test(text) || /^[\t\r\n]/.test(text)) text = "'" + text;
+  return '"' + text.replace(/"/g, '""') + '"';
 };

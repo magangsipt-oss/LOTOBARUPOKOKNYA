@@ -1,3 +1,7 @@
+import crypto from 'node:crypto';
+import { createSession, destroySession, normalizeRole } from '../security/session.js';
+import pool from '../config/database.js';
+import bcrypt from 'bcryptjs';
 import UserModel from '../models/userModel.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,15 +13,19 @@ const userProfilesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 
 const normalizePhotoUid = (uid) => String(uid || '').replace(/[\s:-]/g, '').toUpperCase().replace(/[^A-Z0-9_-]/g, '');
 
 const saveJpegPhoto = async (input, uid) => {
-  const filename = `${normalizePhotoUid(uid)}.jpg`;
+  const filename = `${normalizePhotoUid(uid)}-${crypto.randomUUID()}.jpg`;
   const filePath = path.join(userProfilesDir, filename);
   await fs.mkdir(userProfilesDir, { recursive: true });
-  await sharp(input).jpeg({ quality: 82 }).toFile(filePath);
+  await sharp(input, { limitInputPixels: 16000000 }).rotate().resize(512, 512, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 82 }).toFile(filePath);
   return `uploads/user_profiles/${filename}`;
 };
 
 const persistProfilePhoto = async (photo, sid) => {
-  if (!photo || !String(photo).startsWith('data:image/')) return photo;
+  if (!photo) return undefined;
+  if (!String(photo).startsWith('data:image/')) {
+    if (photo === 'assets/default-avatar.png' || /^uploads\/user_profiles\/[A-Za-z0-9_-]+\.jpg$/.test(photo)) return photo;
+    throw Object.assign(new Error('Foto harus diunggah sebagai gambar.'), { status: 400 });
+  }
 
   const match = String(photo).match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
   if (!match) throw new Error('Format foto hasil crop tidak valid');
@@ -29,7 +37,7 @@ const userController = {
   login: async (req, res) => {
     try {
       const { sid, password } = req.body || {};
-      if (!sid || !password) {
+      if (typeof sid !== 'string' || !sid.trim() || sid.length > 50 || typeof password !== 'string' || Buffer.byteLength(password) > 72) {
         return res.status(400).json({ success: false, message: 'SID dan kata sandi wajib diisi' });
       }
 
@@ -38,11 +46,34 @@ const userController = {
         return res.status(401).json({ success: false, message: 'ID Karyawan (SID) atau Kata Sandi Salah!' });
       }
 
-      return res.status(200).json({ success: true, message: 'Login berhasil', data: user });
+      if (!normalizeRole(user.role)) return res.status(403).json({ success: false, message: 'Peran akun tidak valid.' });
+      const csrf = await createSession(req, res, user);
+      return res.status(200).json({ success: true, message: 'Login berhasil', data: user, csrfToken: csrf });
     } catch (error) {
       console.error('Error login:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal memproses login', error: error.message });
+      return res.status(500).json({ success: false, message: 'Gagal memproses login', error: 'REQUEST_FAILED' });
     }
+  },
+
+  me: (req, res) => {
+    if (req.auth.type !== 'user') return res.status(403).json({ success: false });
+    return res.json({ success: true, data: req.auth.user, csrfToken: req.auth.csrf });
+  },
+  logout: async (req, res, next) => {
+    try { await destroySession(req, res); res.json({ success: true }); } catch (error) { next(error); }
+  },
+  changePassword: async (req, res, next) => {
+    try {
+      const { currentPassword, newPassword } = req.body || {};
+      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length < 12 || Buffer.byteLength(newPassword) > 72) {
+        return res.status(400).json({ success: false, message: 'Kata sandi baru minimal 12 karakter dan maksimal 72 byte.' });
+      }
+      const user = await UserModel.authenticate(req.auth.user.sid, currentPassword);
+      if (!user) return res.status(401).json({ success: false, message: 'Kata sandi lama salah.' });
+      await UserModel.changePassword(user.sid, await bcrypt.hash(newPassword, 12));
+      await destroySession(req, res);
+      res.json({ success: true, message: 'Kata sandi diubah. Silakan login kembali.' });
+    } catch (error) { next(error); }
   },
 
   // 1. Mengambil semua data pengguna
@@ -52,14 +83,14 @@ const userController = {
       return res.status(200).json({
         success: true,
         message: 'Data seluruh pengguna berhasil diambil',
-        data: users,
+        data: req.auth?.type === 'device' ? users.map(({ sid, nama, role, rfid_uid, fp_id }) => ({ sid, nama, role, rfid_uid, fp_id })) : users,
       });
     } catch (error) {
       console.error('Error getAllUsers:', error.message);
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil data pengguna',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -87,7 +118,7 @@ const userController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil detail pengguna',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -125,7 +156,7 @@ const userController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal memverifikasi kartu RFID',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -144,12 +175,23 @@ const userController = {
       const photo = String(user.foto).trim();
       const dataUri = photo.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/s);
       if (dataUri) {
-        await saveJpegPhoto(Buffer.from(dataUri[2], 'base64'), user.rfid_uid || user.sid || uid);
+        const result = await saveJpegPhoto(Buffer.from(dataUri[2], 'base64'), user.rfid_uid || user.sid || uid);
+        await pool.query('UPDATE users SET foto = ? WHERE sid = ?', [result, user.sid]);
+        user.foto = result;
       }
 
-      const filename = dataUri ? `${normalizePhotoUid(user.rfid_uid || user.sid || uid)}.jpg` : path.basename(photo.split('?')[0]);
+      const filename = path.basename(String(user.foto).split('?')[0]);
       const filePath = path.join(userProfilesDir, filename);
-      await fs.access(filePath);
+      try { await fs.access(filePath); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const legacyRoot = path.join(userProfilesDir, '..', '..', '..', 'api', 'uploads', 'user_profiles');
+        const legacyPath = path.join(legacyRoot, filename);
+        await fs.access(legacyPath);
+        // Decode and re-encode legacy images; no arbitrary file content is served.
+        const image = await sharp(legacyPath, { limitInputPixels: 16000000 }).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).jpeg().toBuffer();
+        return res.type('jpeg').send(image);
+      }
       res.setHeader('Content-Type', 'image/jpeg');
       return res.sendFile(filename, { root: userProfilesDir });
     } catch (error) {
@@ -177,7 +219,7 @@ const userController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil data supervisor',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -190,17 +232,15 @@ const userController = {
       const nama = body.nama || body.name || body.username || 'New User';
       const rfidUid = body.rfid_uid ?? body.rfidUid ?? body.card_number ?? body.cardNumber ?? null;
       const role = body.role || 'WORKER';
-      const password = body.password || sid;
+      const password = body.password;
 
-      if (!nama || !rfidUid) {
+      if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid) || !normalizeRole(role) || typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72 || password === sid) {
         return res.status(400).json({
           success: false,
-          message: 'Nama lengkap dan nomor kartu RFID wajib diisi!',
+          message: 'SID, nama, RFID dan peran harus valid; kata sandi minimal 12 karakter, maksimal 72 byte, dan bukan SID.',
         });
       }
 
-      const profile_photo = req.file ? await saveJpegPhoto(req.file.path, rfidUid) : await persistProfilePhoto(body.foto || body.profile_photo, rfidUid || sid);
-      if (req.file) await fs.unlink(req.file.path).catch(() => {});
 
       const existingCard = await UserModel.getByRfidUid(rfidUid);
       if (existingCard) {
@@ -209,6 +249,8 @@ const userController = {
           message: `Nomor kartu RFID ${rfidUid} sudah terdaftar atas nama ${existingCard.nama || existingCard.name}`,
         });
       }
+
+      const profile_photo = req.file ? await saveJpegPhoto(req.file.buffer, rfidUid) : await persistProfilePhoto(body.foto || body.profile_photo, rfidUid || sid);
 
       const newId = await UserModel.create({
         sid,
@@ -226,10 +268,10 @@ const userController = {
       });
     } catch (error) {
       console.error('Error createUser:', error.message);
-      return res.status(500).json({
+      return res.status(error.code === 'ER_DUP_ENTRY' ? 409 : error.status || 500).json({
         success: false,
         message: 'Gagal menambahkan pengguna baru',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -239,24 +281,23 @@ const userController = {
     try {
       const { sid } = req.params;
       const body = req.body || {};
-      const nama = body.nama || body.name || body.username || 'Updated User';
-      const rfidUid = body.rfid_uid ?? body.rfidUid ?? body.card_number ?? body.cardNumber ?? null;
-      const role = body.role || 'WORKER';
-
-      if (!nama || !rfidUid) {
-        return res.status(400).json({
-          success: false,
-          message: 'Nama lengkap dan nomor kartu RFID wajib diisi!',
-        });
+      const existing = await UserModel.getBySid(sid);
+      if (!existing) return res.status(404).json({ success: false, message: 'Pengguna tidak ditemukan.' });
+      const nama = body.nama ?? body.name ?? existing.nama;
+      const rfidUid = body.rfid_uid ?? body.rfidUid ?? existing.rfid_uid;
+      const role = body.role ?? existing.role;
+      if (typeof nama !== 'string' || !nama.trim() || nama.length > 100 || !normalizeRole(role) || (rfidUid !== null && (typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid)))) {
+        return res.status(400).json({ success: false, message: 'Data pengguna tidak valid.' });
       }
-
-      const profile_photo = req.file ? await saveJpegPhoto(req.file.path, rfidUid) : await persistProfilePhoto(body.foto || body.profile_photo, rfidUid || sid);
-      if (req.file) await fs.unlink(req.file.path).catch(() => {});
-
+      if (normalizeRole(existing.role) === 'admin' && normalizeRole(role) !== 'admin') {
+        return res.status(409).json({ success: false, message: 'Perubahan peran administrator harus dilakukan melalui prosedur administrasi terpisah.' });
+      }
+      const profile_photo = req.file ? await saveJpegPhoto(req.file.buffer, rfidUid || sid) : await persistProfilePhoto(body.foto || body.profile_photo, rfidUid || sid);
       const isUpdated = await UserModel.update(sid, {
         nama,
         role,
         rfidUid,
+        fpId: existing.fp_id,
         foto: profile_photo,
       });
 
@@ -274,10 +315,10 @@ const userController = {
       });
     } catch (error) {
       console.error('Error updateUser:', error.message);
-      return res.status(500).json({
+      return res.status(error.code === 'ER_DUP_ENTRY' ? 409 : error.status || 500).json({
         success: false,
         message: 'Gagal memperbarui data pengguna',
-        error: error.message,
+        error: 'REQUEST_FAILED',
       });
     }
   },
@@ -301,10 +342,10 @@ const userController = {
       });
     } catch (error) {
       console.error('Error deleteUser:', error.message);
-      return res.status(500).json({
+      return res.status(error.status || 500).json({
         success: false,
-        message: 'Gagal menghapus pengguna',
-        error: error.message,
+        message: error.status === 409 ? error.message : 'Gagal menghapus pengguna',
+        error: 'REQUEST_FAILED',
       });
     }
   },

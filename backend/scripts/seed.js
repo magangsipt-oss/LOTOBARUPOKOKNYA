@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -9,28 +10,31 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 import { sequelize, User, Box, TappingHistory, AuditLog, PeopleCounting } from '../orm/models/index.js';
 
 async function seed() {
+  if (process.env.NODE_ENV === 'production' || process.env.ALLOW_DEMO_SEED !== '1') throw new Error('Demo seeding is disabled; use bootstrap-admin for production');
+  const password = process.env.DEMO_PASSWORD;
+  if (!password || password.length < 12 || Buffer.byteLength(password) > 72) throw new Error('DEMO_PASSWORD must be 12+ characters, max 72 bytes');
   await sequelize.authenticate();
   console.log('DB Connected');
 
   // Disable FK checks temporarily
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 0');
+
 
   // ===== USERS =====
   const users = [
-    { sid: 'Admin', nama: 'Master Administrator', role: 'ADMIN', rfid_uid: '0000', password: 'Admin', foto: null },
-    { sid: 'SPV001', nama: 'Budi Santoso', role: 'PENGAWAS', rfid_uid: '9D88FA1200', password: 'SPV001', foto: null },
-    { sid: 'SPV002', nama: 'Eltha Putri', role: 'PENGAWAS', rfid_uid: '3C001E9494', password: 'SPV002', foto: null },
-    { sid: 'MEK001', nama: 'Agus Prayitno', role: 'WORKER', rfid_uid: '1A2B3C4D5E', password: 'MEK001', foto: null },
-    { sid: 'MEK002', nama: 'Rahmat Hidayat', role: 'WORKER', rfid_uid: 'F4E5D6C7B8', password: 'MEK002', foto: null },
-    { sid: 'MEK003', nama: 'Joko Widodo', role: 'WORKER', rfid_uid: 'A1B2C3D4E5', password: 'MEK003', foto: null },
-    { sid: 'MEK004', nama: 'Andi Saputra', role: 'WORKER', rfid_uid: '3E0028F54F', password: 'MEK004', foto: null },
-    { sid: 'MEK005', nama: 'Rizki Pratama', role: 'WORKER', rfid_uid: '3D001266BB', password: 'MEK005', foto: null },
-    { sid: 'FUL001', nama: 'Dedi Kurniawan', role: 'FUELMAN', rfid_uid: '3C00035095', password: 'FUL001', foto: null },
-    { sid: 'FUL002', nama: 'Hendra Wijaya', role: 'FUELMAN', rfid_uid: '3E0027D5B2', password: 'FUL002', foto: null }
+    { sid: 'Admin', nama: 'Master Administrator', role: 'ADMIN', rfid_uid: '0000', foto: null },
+    { sid: 'SPV001', nama: 'Budi Santoso', role: 'PENGAWAS', rfid_uid: '9D88FA1200', foto: null },
+    { sid: 'SPV002', nama: 'Eltha Putri', role: 'PENGAWAS', rfid_uid: '3C001E9494', foto: null },
+    { sid: 'MEK001', nama: 'Agus Prayitno', role: 'WORKER', rfid_uid: '1A2B3C4D5E', foto: null },
+    { sid: 'MEK002', nama: 'Rahmat Hidayat', role: 'WORKER', rfid_uid: 'F4E5D6C7B8', foto: null },
+    { sid: 'MEK003', nama: 'Joko Widodo', role: 'WORKER', rfid_uid: 'A1B2C3D4E5', foto: null },
+    { sid: 'MEK004', nama: 'Andi Saputra', role: 'WORKER', rfid_uid: '3E0028F54F', foto: null },
+    { sid: 'MEK005', nama: 'Rizki Pratama', role: 'WORKER', rfid_uid: '3D001266BB', foto: null },
+    { sid: 'FUL001', nama: 'Dedi Kurniawan', role: 'FUELMAN', rfid_uid: '3C00035095', foto: null },
+    { sid: 'FUL002', nama: 'Hendra Wijaya', role: 'FUELMAN', rfid_uid: '3E0027D5B2', foto: null }
   ];
 
   for (const u of users) {
-    await User.upsert(u);
+    await User.findOrCreate({ where: { sid: u.sid }, defaults: { ...u, password: await bcrypt.hash(password, 12) } });
   }
   console.log(`Users: ${users.length} seeded`);
 
@@ -79,7 +83,7 @@ async function seed() {
   console.log(`PeopleCounting: ${pcData.length} seeded`);
 
   // Re-enable FK checks
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 1');
+
 
   console.log('\nSeed complete!');
   await sequelize.close();

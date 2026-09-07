@@ -20,7 +20,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil RFID buffer',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -48,7 +48,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil RFID buffer',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -77,7 +77,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menambahkan ke RFID buffer',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -112,7 +112,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus dari RFID buffer',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -141,7 +141,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal membersihkan RFID buffer',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -163,7 +163,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil audit logs',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -192,7 +192,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mengambil audit logs',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -221,7 +221,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal mencatat event',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -256,7 +256,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus audit log',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   },
@@ -277,7 +277,7 @@ const eventController = {
       return res.status(500).json({
         success: false,
         message: 'Gagal menghapus old audit logs',
-        error: error.message
+        error: 'REQUEST_FAILED'
       });
     }
   }

@@ -1,39 +1,29 @@
+import { randomUUID } from 'node:crypto';
 import pool from '../config/database.js';
-
-/**
- * Model untuk mengelola command queue dan device commands
- */
 const CommandModel = {
-  // 1. Set/Queue command untuk box
-  setCommand: async (idBox, command, parameter) => {
-    const query = `
-      UPDATE boxes 
-      SET pending_cmd = ?, cmd_param = ?, updated_at = NOW()
-      WHERE id_box = ?
-    `;
-    const [result] = await pool.query(query, [command, parameter || '', idBox]);
-    return result.affectedRows > 0;
+  async setCommand(idBox, command, parameter = '') {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [boxes] = await connection.query('SELECT id_box FROM boxes WHERE id_box = ? FOR UPDATE', [idBox]);
+      if (!boxes.length) { await connection.rollback(); return null; }
+      const [pending] = await connection.query('SELECT id FROM device_commands WHERE id_box = ? AND acknowledged_at IS NULL AND created_at >= NOW() - INTERVAL 10 MINUTE', [idBox]);
+      if (pending.length >= 20) throw Object.assign(new Error('Antrean perintah penuh'), { status: 409 });
+      const id = randomUUID();
+      await connection.query('INSERT INTO device_commands (id, id_box, command, parameter) VALUES (?, ?, ?, ?)', [id, idBox, command, parameter]);
+      await connection.commit();
+      return id;
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
   },
-
-  // 2. Ambil pending command untuk box (used by device sync)
-  getPendingCommand: async (idBox) => {
-    const query = `
-      SELECT pending_cmd, cmd_param FROM boxes WHERE id_box = ? LIMIT 1
-    `;
-    const [rows] = await pool.query(query, [idBox]);
-    return rows[0] || { pending_cmd: '', cmd_param: '' };
+  async getPendingCommand(idBox) {
+    const [rows] = await pool.query(`SELECT id, command AS pending_cmd, parameter AS cmd_param FROM device_commands
+      WHERE id_box = ? AND acknowledged_at IS NULL AND created_at >= NOW() - INTERVAL 10 MINUTE ORDER BY created_at, id LIMIT 1`, [idBox]);
+    return rows[0] || null;
   },
-
-  // 3. Clear/consume command setelah device mengambilnya
-  clearPendingCommand: async (idBox) => {
-    const query = `
-      UPDATE boxes 
-      SET pending_cmd = '', cmd_param = '', updated_at = NOW()
-      WHERE id_box = ?
-    `;
-    const [result] = await pool.query(query, [idBox]);
+  async clearPendingCommand(idBox, commandId) {
+    const [result] = await pool.query('UPDATE device_commands SET acknowledged_at = COALESCE(acknowledged_at, NOW()) WHERE id_box = ? AND id = ?', [idBox, commandId]);
     return result.affectedRows > 0;
   }
 };
-
 export default CommandModel;

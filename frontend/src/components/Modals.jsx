@@ -1,6 +1,6 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import Avatar from './Avatar';
-import { safeToFixed, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
+import { safeToFixed } from '../utils/helpers';
 
 /**
  * Modal Umum Besar - menampilkan konten dinamis
@@ -231,8 +231,7 @@ export function ModalEditUser({ show, onClose, formEditUser, setFormEditUser, on
             {hwData.last_uid && hwData.last_uid !== '—' && hwData.last_uid !== 'SYSTEM' && <p className="text-[10px] text-blue-600 font-mono mt-1">Pindaian Boks Terakhir: <b>{hwData.last_uid}</b></p>}
           </div>
           <div>
-            <label className="block text-slate-700 font-bold mb-1">Foto Profil (URL atau Upload):</label>
-            <input type="url" placeholder="https://... atau assets/foto.jpg" className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-slate-900 focus:outline-none focus:border-red-500" value={formEditUser.foto && !formEditUser.foto.startsWith('data:') ? formEditUser.foto : ''} onChange={(e) => setFormEditUser({ ...formEditUser, foto: e.target.value })} />
+            <label className="block text-slate-700 font-bold mb-1">Foto Profil:</label>
             <input type="file" accept="image/*" className="w-full mt-2 text-[10px]" onChange={(e) => onUploadPhoto(e, setFormEditUser)} />
           </div>
           <div className="pt-2 flex justify-end gap-2 border-t">

@@ -1,10 +1,10 @@
 import React, { useEffect } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 import Avatar from '../components/Avatar';
 import BoxCard from '../components/BoxCard';
-import { STATE_DESC, formatWaktuDowntime, safeToFixed, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
+import { escapeHtml, STATE_DESC, formatWaktuDowntime, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
 
 /**
  * Halaman Dashboard - Peta, Box Cards, Telemetri
@@ -25,10 +25,9 @@ export default function Dashboard() {
     terjemahkanIdKeNamaLengkap,
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
-    bukaModalUmum, bukaModalRadar, triggerEmergencyOverride,
+    bukaModalUmum, bukaModalRadar,
     handleHapusRiwayatTapping,
     peopleCount, peopleCountHistory,
-    pemicuToast
   } = useApp();
 
   const isLiveTapPhotoVisible = isHwOnline &&
@@ -39,9 +38,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (!isLoggedIn || activeTab !== 'dashboard' || !mapContainerRef.current) {
       if (leafletMapInstanceRef.current) {
-        try { leafletMapInstanceRef.current.remove(); } catch (e) {}
+        try { leafletMapInstanceRef.current.remove(); } catch {}
         leafletMapInstanceRef.current = null;
-        markersRef.current = {};
+        markersRef.current = Object.create(null);
         lastCenteredBoxIdRef.current = null;
       }
       return;
@@ -68,7 +67,7 @@ export default function Dashboard() {
     const t1 = setTimeout(() => { if (leafletMapInstanceRef.current) leafletMapInstanceRef.current.invalidateSize(); }, 200);
     const t2 = setTimeout(() => { if (leafletMapInstanceRef.current) leafletMapInstanceRef.current.invalidateSize(); }, 600);
     return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [isLoggedIn, activeTab]);
+  }, [isLoggedIn, activeTab, mapContainerRef, leafletMapInstanceRef, markersRef, lastCenteredBoxIdRef, selectedBox]);
 
   // MANAGEMENT MARKER MAP
   useEffect(() => {
@@ -92,9 +91,9 @@ export default function Dashboard() {
       const renderPopupContent = (bId, bUnit, bState, lat, lng) => {
         const cacheKey = `${lat.toFixed(5)}_${lng.toFixed(5)}`;
         const addressText = geoAddressCacheRef.current[cacheKey];
-        let locationHtml = `<div id="geo-${bId}" class="text-[10px] text-slate-600 mt-1 font-mono"><i class="fa-solid fa-location-crosshairs text-red-500"></i> Koordinat: ${lat.toFixed(5)}, ${lng.toFixed(5)}</div>`;
-        if (addressText) locationHtml = `<div id="geo-${bId}" class="text-[10px] text-slate-700 font-semibold mt-1"><i class="fa-solid fa-map-pin text-red-500"></i> ${addressText}</div>`;
-        return `<b>${bId}</b><br>Unit: ${bUnit}<br>Status: ${bState || 'STATE_IDLE'}<br>${locationHtml}`;
+        let locationHtml = `<div id="geo-${escapeHtml(bId)}" class="text-[10px] text-slate-600 mt-1 font-mono"><i class="fa-solid fa-location-crosshairs text-red-500"></i> Koordinat: ${lat.toFixed(5)}, ${lng.toFixed(5)}</div>`;
+        if (addressText) locationHtml = `<div id="geo-${escapeHtml(bId)}" class="text-[10px] text-slate-700 font-semibold mt-1"><i class="fa-solid fa-map-pin text-red-500"></i> ${escapeHtml(addressText)}</div>`;
+        return `<b>${escapeHtml(bId)}</b><br>Unit: ${escapeHtml(bUnit)}<br>Status: ${escapeHtml(bState || 'STATE_IDLE')}<br>${locationHtml}`;
       };
 
       if (markersRef.current[box.id]) {
@@ -105,7 +104,7 @@ export default function Dashboard() {
       } else {
         const marker = L.marker([bLat, bLng], { icon: customIcon }).addTo(map)
           .bindPopup(renderPopupContent(box.id, box.unit, box.state, bLat, bLng))
-          .bindTooltip(`${box.id} - ${box.unit}`, { permanent: true, direction: 'top', offset: [0, -42], className: 'box-permanent-label' });
+          .bindTooltip(`${escapeHtml(box.id)} - ${escapeHtml(box.unit)}`, { permanent: true, direction: 'top', offset: [0, -42], className: 'box-permanent-label' });
         marker.on('popupopen', function () {
           const cacheKey = `${bLat.toFixed(5)}_${bLng.toFixed(5)}`;
           if (!geoAddressCacheRef.current[cacheKey]) {
@@ -118,7 +117,7 @@ export default function Dashboard() {
                 const namaLokasiLengkap = [jalan, desa, kec].filter(Boolean).join(', ') || 'Area Operasional Lapangan';
                 geoAddressCacheRef.current[cacheKey] = namaLokasiLengkap;
                 const container = document.getElementById(`geo-${box.id}`);
-                if (container) container.innerHTML = `<i class="fa-solid fa-map-pin text-red-500"></i> ${namaLokasiLengkap}`;
+                if (container) container.textContent = namaLokasiLengkap;
               })
               .catch(() => { geoAddressCacheRef.current[cacheKey] = `GPS: ${bLat.toFixed(4)}, ${bLng.toFixed(4)}`; });
           }
@@ -129,7 +128,7 @@ export default function Dashboard() {
     });
 
     Object.keys(markersRef.current).forEach(id => {
-      if (!currentMarkerKeys.has(id)) { try { markersRef.current[id].remove(); } catch (e) {} delete markersRef.current[id]; }
+      if (!currentMarkerKeys.has(id)) { try { markersRef.current[id].remove(); } catch {} delete markersRef.current[id]; }
     });
 
     if (selectedBox) {
@@ -144,7 +143,7 @@ export default function Dashboard() {
         lastCenteredBoxIdRef.current = selectedBox.id;
       }
     }
-  }, [boxes, selectedBox?.id, activeTab]);
+  }, [boxes, selectedBox, activeTab, markersRef, geoAddressCacheRef, leafletMapInstanceRef, handleSelectBox, lastCenteredBoxIdRef]);
 
   if (activeTab !== 'dashboard' || !(sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas')) return null;
 
@@ -169,57 +168,30 @@ export default function Dashboard() {
           <i className={`fa-solid fa-satellite-dish text-lg ${isHwOnline ? 'text-green-400' : 'text-red-400'}`}></i>
         </div>
         <div onClick={() => bukaModalUmum("Data Pindaian Kartu & Petugas Masuk", "fa-id-card-clip", null)} className="bg-red-50 border-2 border-red-300 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:bg-red-100 hover:border-red-600 hover:shadow-md transition-all active:scale-[0.98]">
-          <div><p className="text-[9px] text-red-700 font-bold uppercase tracking-wider flex items-center gap-1">Data Pindaian <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-red-500"></i></p><h3 className="text-lg font-black font-mono-tech mt-1 text-red-700">{totalOrangMasukOtomatis} Petugas</h3></div>
+          <div><p className="text-[9px] text-red-700 font-bold uppercase tracking-wider flex items-center gap-1">Data Pindaian <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-red-500"></i></p><h3 className="text-lg font-black font-mono-tech mt-1 text-red-700">{isHwOnline ? totalOrangMasukOtomatis : '—'} Petugas</h3></div>
           <i className="fa-solid fa-id-card-clip text-lg text-red-600"></i>
         </div>
 
         {/* PEOPLE COUNTING CARD */}
         <div onClick={() => {
-          const historyHtml = peopleCountHistory.length > 0
-            ? `<div class="overflow-x-auto border border-gray-200 rounded-xl max-h-64 overflow-y-auto"><table class="w-full text-left border-collapse text-xs font-mono-tech"><thead class="bg-gray-100 text-slate-800 border-b border-gray-200"><tr><th class="p-2">Waktu</th><th class="p-2 text-center">Detected</th><th class="p-2 text-center">Registered</th><th class="p-2 text-center">Status</th></tr></thead><tbody class="divide-y divide-gray-100">${peopleCountHistory.map(h => {
-              const match = h.detected_count === h.registered_count;
-              const diff = h.detected_count - h.registered_count;
-              const statusClass = match ? 'text-green-600 bg-green-50' : (diff > 0 ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50');
-              const statusText = match ? 'SESUAI' : (diff > 0 ? `+${diff} EXTRA` : `${diff} KURANG`);
-              return `<tr class="hover:bg-red-50/50"><td class="p-2">${new Date(h.created_at).toLocaleTimeString('id-ID')}</td><td class="p-2 text-center font-bold">${h.detected_count}</td><td class="p-2 text-center">${h.registered_count}</td><td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-[9px] font-bold border ${statusClass}">${statusText}</span></td></tr>`;
-            }).join('')}</tbody></table></div>`
-            : '<div class="text-center py-6 text-slate-400 italic">Belum ada data counting</div>';
-
-          const diff = peopleCount.detected_count - peopleCount.registered_count;
-          const statusColor = diff === 0 ? 'text-green-600' : (diff > 0 ? 'text-amber-600' : 'text-red-600');
-          const statusText = diff === 0 ? 'SESUAI' : (diff > 0 ? `+${diff} EXTRA PERSON` : `${diff} KURANG`);
-
-          bukaModalUmum('People Counting - Realtime Monitor', 'fa-users', `
-            <div class="space-y-3">
-              <div class="grid grid-cols-2 gap-3">
-                <div class="bg-green-50 border border-green-200 p-3 rounded-xl text-center">
-                  <p class="text-[10px] text-green-700 font-bold uppercase">Detected (Camera)</p>
-                  <p class="text-3xl font-black text-green-600 font-mono-tech">${peopleCount.detected_count}</p>
-                </div>
-                <div class="bg-blue-50 border border-blue-200 p-3 rounded-xl text-center">
-                  <p class="text-[10px] text-blue-700 font-bold uppercase">Registered (RFID)</p>
-                  <p class="text-3xl font-black text-blue-600 font-mono-tech">${peopleCount.registered_count}</p>
-                </div>
-              </div>
-              <div class="text-center p-2 rounded-xl border ${diff === 0 ? 'bg-green-50 border-green-200' : (diff > 0 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200')}">
-                <p class="text-sm font-bold ${statusColor}">${statusText}</p>
-              </div>
-              <p class="text-[10px] text-slate-500 font-bold uppercase">Riwayat Counting:</p>
-              ${historyHtml}
-            </div>
-          `);
+          bukaModalUmum('People Counting', 'fa-video', <div className="space-y-3">
+            <p>{peopleCount.stale ? 'Data kamera belum tersedia atau sudah kedaluwarsa.' : `Terdeteksi: ${peopleCount.stale ? '—' : peopleCount.detected_count}; terdaftar: ${peopleCount.stale ? '—' : peopleCount.registered_count}`}</p>
+            <table className="w-full text-left"><thead><tr><th>Waktu</th><th>Terdeteksi</th><th>Terdaftar</th></tr></thead>
+              <tbody>{peopleCountHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.detected_count}</td><td>{row.registered_count}</td></tr>)}</tbody>
+            </table>
+          </div>);
         }} className="bg-white border border-gray-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
           <div>
             <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">People Counting <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
             <h3 className="text-lg font-black font-mono-tech mt-1">
-              <span className="text-green-600">{peopleCount.detected_count}</span>
+              <span className="text-green-600">{peopleCount.stale ? '—' : peopleCount.detected_count}</span>
               <span className="text-slate-400 mx-1">/</span>
-              <span className="text-blue-600">{peopleCount.registered_count}</span>
+              <span className="text-blue-600">{peopleCount.stale ? '—' : peopleCount.registered_count}</span>
             </h3>
             <p className="text-[9px] text-slate-400">Detected / Registered</p>
           </div>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
-            <i className={`fa-solid fa-video text-lg ${peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
+            <i className={`fa-solid fa-video text-lg ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
           </div>
         </div>
       </div>
@@ -258,7 +230,7 @@ export default function Dashboard() {
               {selectedBox ? (
                 <img
                   key={selectedBox.id}
-                  src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5002'}/api/stream/${encodeURIComponent(selectedBox.id)}`}
+                  src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/${encodeURIComponent(selectedBox.id)}`}
                   alt={`CCTV ${selectedBox.id}`}
                   className="w-full h-auto max-h-[360px] object-contain"
                   onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
@@ -318,13 +290,12 @@ export default function Dashboard() {
           <div className="bg-white border border-red-100 p-4 sm:p-5 rounded-2xl shadow-md space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <p className="text-[10px] font-mono-tech tracking-widest uppercase text-slate-600 font-bold">Daftar Antrean Petugas di Lapangan</p>
-              <button type="button" onClick={triggerEmergencyOverride} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 px-2.5 py-1 rounded text-[10px] font-mono-tech font-bold flex items-center gap-1 transition-all shadow-sm active:scale-95"><i className="fa-solid fa-triangle-exclamation"></i> Buka Paksa Darurat</button>
             </div>
             <div className="bg-gray-50 border border-gray-200 p-3 rounded-xl min-h-[50px] flex items-center flex-wrap gap-2">
               {(() => {
                 let queueList = [];
                 if (Array.isArray(hwData.queue)) queueList = hwData.queue;
-                else if (typeof hwData.queue === 'string' && hwData.queue.trim() !== '') { try { queueList = JSON.parse(hwData.queue); } catch (e) { queueList = []; } }
+                else if (typeof hwData.queue === 'string' && hwData.queue.trim() !== '') { try { queueList = JSON.parse(hwData.queue); } catch { queueList = []; } }
                 queueList = queueList.filter(item => !isAdminUid(typeof item === 'string' ? item : (item.uid || item.last_uid || '')));
                 const hasActiveFuelman = hwData.active_fuelman && hwData.active_fuelman !== '';
                 if (isHwOnline && (queueList.length > 0 || hasActiveFuelman)) {
@@ -349,7 +320,7 @@ export default function Dashboard() {
                     </span>
                   </div>)}</React.Fragment>);
                 }
-                return <span className="text-xs text-slate-500 font-mono-tech italic">Antrean kosong — Belum ada gembok terpasang di lapangan.</span>;
+                return <span className="text-xs text-slate-500 font-mono-tech italic">{isHwOnline ? 'Tidak ada personel dalam antrean perangkat.' : 'Perangkat offline. Kondisi antrean saat ini belum diketahui.'}</span>;
               })()}
             </div>
           </div>

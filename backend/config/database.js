@@ -2,7 +2,7 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 
 // Membaca konfigurasi dari file .env
-dotenv.config();
+dotenv.config({ path: new URL('../.env', import.meta.url), quiet: true });
 
 /**
  * Membuat Connection Pool ke Database MySQL E-LOTO
@@ -15,8 +15,12 @@ const pool = mysql.createPool({
   port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
   connectionLimit: 10, // Maksimal 10 antrean koneksi aktif bersamaan
-  queueLimit: 0
+  queueLimit: 100,
+  connectTimeout: 10000,
+  timezone: '+08:00'
 });
+
+pool.pool.on('connection', connection => { connection.query("SET time_zone = '+08:00'"); });
 
 // Fungsi pembantu untuk menguji apakah database berhasil terhubung
 export const testConnection = async () => {
