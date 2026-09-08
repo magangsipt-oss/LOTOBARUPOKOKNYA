@@ -10,6 +10,7 @@
     "test": "node --test tests/*.test.js",
     "migrate": "node scripts/migrate.js",
     "seed:demo": "node scripts/seed.js --demo",
+    "reset:demo": "node scripts/reset-demo.js",
     "bootstrap-admin": "node scripts/bootstrap-admin.js",
     "reset-password": "node scripts/reset-password.js",
     "provision-device": "node scripts/provision-device.js"

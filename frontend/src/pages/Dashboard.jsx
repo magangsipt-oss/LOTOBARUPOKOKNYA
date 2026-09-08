@@ -180,15 +180,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
-        <div><h1 className="font-bold text-slate-900">Pantau Boks LOTO</h1><p className="text-xs text-slate-500">{boxes.length} boks · {boxes.filter(box => Number(box.is_online) === 1).length} online</p></div>
-        <label className="text-xs text-slate-600 flex flex-col gap-1">Boks yang dipantau
-          <select aria-label="Pilih boks yang dipantau" value={selectedBox?.id || ''} onChange={event => { const box = boxes.find(item => item.id === event.target.value); if (box) handleSelectBox(box); }} className="border border-gray-300 rounded-lg p-2 bg-white text-slate-900 sm:min-w-64">
-            {!selectedBox && <option value="">Pilih boks</option>}
-            {[...boxes].sort((a, b) => String(a.id).localeCompare(String(b.id), 'id', { numeric: true })).map(box => <option key={box.id} value={box.id}>{box.id} · {box.unit} · {Number(box.is_online) === 1 ? 'Online' : 'Offline'}</option>)}
-          </select>
-        </label>
-      </div>
       {/* 5 KARTU METRIK */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
