@@ -90,7 +90,8 @@ const maintenanceController = {
   // 4. Menambahkan maintenance log baru
   createMaintenance: async (req, res) => {
     try {
-      const { mesin, jenis, estimasi, teknisi, pengawas, deskripsi, status, foto } = req.body;
+      const { jenis, estimasi, teknisi, pengawas, deskripsi, status, foto } = req.body;
+      const mesin = req.body.mesin ?? req.body.unit ?? 'Unit tidak ditentukan';
       const idBox = req.body.idBox ?? req.body.id_box;
 
       if (typeof idBox !== 'string' || !idBox || idBox.length > 50 || typeof mesin !== 'string' || !mesin.trim() || mesin.length > 100 || typeof jenis !== 'string' || !jenis || jenis.length > 50 || [estimasi, teknisi, pengawas, deskripsi].some(v => typeof v !== 'string' || !v.trim()) || estimasi.length > 50 || teknisi.length > 100 || pengawas.length > 100 || deskripsi.length > 10000 || (status && (typeof status !== 'string' || status.length > 20)) || (foto && (typeof foto !== 'string' || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(foto) || foto.length > 7000000))) {

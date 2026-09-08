@@ -53,6 +53,7 @@ export default function Dashboard() {
   const [failedStreamId, setFailedStreamId] = useState(null);
   const cameraConfigured = streams.some(stream => stream.id === selectedBox?.id && stream.configured);
   const showCamera = cameraConfigured && failedStreamId !== selectedBox?.id;
+  const countMismatch = !peopleCount.stale && Number.isInteger(Number(peopleCount.detected_count)) && Number.isInteger(Number(peopleCount.registered_count)) && Number(peopleCount.detected_count) !== Number(peopleCount.registered_count);
 
   useEffect(() => {
     if (!isLoggedIn || activeTab !== 'dashboard') return;
@@ -180,15 +181,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
-        <div><h1 className="font-bold text-slate-900">Pantau Boks LOTO</h1><p className="text-xs text-slate-500">{boxes.length} boks · {boxes.filter(box => Number(box.is_online) === 1).length} online</p></div>
-        <label className="text-xs text-slate-600 flex flex-col gap-1">Boks yang dipantau
-          <select aria-label="Pilih boks yang dipantau" value={selectedBox?.id || ''} onChange={event => { const box = boxes.find(item => item.id === event.target.value); if (box) handleSelectBox(box); }} className="border border-gray-300 rounded-lg p-2 bg-white text-slate-900 sm:min-w-64">
-            {!selectedBox && <option value="">Pilih boks</option>}
-            {[...boxes].sort((a, b) => String(a.id).localeCompare(String(b.id), 'id', { numeric: true })).map(box => <option key={box.id} value={box.id}>{box.id} · {box.unit} · {Number(box.is_online) === 1 ? 'Online' : 'Offline'}</option>)}
-          </select>
-        </label>
-      </div>
       {/* 5 KARTU METRIK */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
@@ -208,7 +200,7 @@ export default function Dashboard() {
           <i className={`fa-solid fa-satellite-dish text-lg ${isHwOnline ? 'text-green-400' : 'text-red-400'}`}></i>
         </div>
         <div onClick={() => bukaModalUmum("Data Pindaian Kartu & Petugas Masuk", "fa-id-card-clip", null)} className="bg-red-50 border-2 border-red-300 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:bg-red-100 hover:border-red-600 hover:shadow-md transition-all active:scale-[0.98]">
-          <div><p className="text-[9px] text-red-700 font-bold uppercase tracking-wider flex items-center gap-1">Data Pindaian <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-red-500"></i></p><h3 className="text-lg font-black font-mono-tech mt-1 text-red-700">{isHwOnline ? totalOrangMasukOtomatis : '—'} Petugas</h3></div>
+          <div><p className="text-[9px] text-red-700 font-bold uppercase tracking-wider flex items-center gap-1">Petugas Terdaftar <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-red-500"></i></p><h3 className="text-lg font-black font-mono-tech mt-1 text-red-700">{totalOrangMasukOtomatis} Petugas</h3></div>
           <i className="fa-solid fa-id-card-clip text-lg text-red-600"></i>
         </div>
 
@@ -220,7 +212,7 @@ export default function Dashboard() {
               <tbody>{peopleCountHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.detected_count}</td><td>{row.registered_count}</td></tr>)}</tbody>
             </table>
           </div>);
-        }} className="bg-white border border-gray-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
+        }} className={`bg-white border p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98] ${countMismatch ? 'border-red-500 bg-red-50' : 'border-gray-200'}`}>
           <div>
             <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">People Counting <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
             <h3 className="text-lg font-black font-mono-tech mt-1">
@@ -229,6 +221,7 @@ export default function Dashboard() {
               <span className="text-blue-600">{peopleCount.stale ? '—' : peopleCount.registered_count}</span>
             </h3>
             <p className="text-[9px] text-slate-400">Detected / Registered</p>
+            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ PERINGATAN: jumlah tidak sesuai</p>}
           </div>
           <div className={`w-10 h-10 rounded-full flex items-center justify-center ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
             <i className={`fa-solid fa-video text-lg ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
