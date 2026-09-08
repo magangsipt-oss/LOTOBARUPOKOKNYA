@@ -17,7 +17,7 @@ Saat development, Vite pada port 3000 mem-proxy `/api` ke backend port 5002. Saa
 
 ## Identitas dan otorisasi
 
-Browser login memakai SID dan password bcrypt. Server menyimpan hash token sesi di `web_sessions` dan memberikan cookie HttpOnly selama delapan jam. Frontend menyimpan token CSRF di memori dan mengirimkannya pada mutasi. Identitas dan role dipulihkan melalui `/api/users/me`; role terbaru dibaca dari database.
+Browser login memakai SID dan password bcrypt. Akun baru memakai SID sebagai password awal dan dapat menggantinya dari profil. Server menyimpan hash token sesi di `web_sessions` dan memberikan cookie HttpOnly selama delapan jam. Frontend menyimpan token CSRF di memori dan mengirimkannya pada mutasi. Identitas dan role dipulihkan melalui `/api/users/me`; role terbaru dibaca dari database.
 
 ESP32 dan counting menggunakan `X-Device-Token`. Hash token dipetakan ke satu boks. Middleware membatasi perangkat pada operasi dan identitas boks yang diizinkan. Token perangkat tidak diberikan ke browser. Aturan role berada di [authorization.js](../backend/middleware/authorization.js).
 

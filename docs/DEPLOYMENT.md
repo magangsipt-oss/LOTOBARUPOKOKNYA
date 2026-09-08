@@ -23,7 +23,7 @@ Sebelum backend dapat berjalan, konfigurasi `backend/.env` berdasarkan `backend/
 
 MySQL tidak memberi rollback atomik untuk seluruh rangkaian DDL. Runner memakai koneksi terkunci dan pemeriksaan indeks/kolom agar langkah yang sudah selesai dapat dilewati ketika diulang, tetapi kegagalan DDL tetap perlu diperiksa sebelum retry. Tidak ada `sync(force)` atau penghapusan tabel otomatis pada runner baru.
 
-Akun plaintext lama tidak lagi bisa login. Reset kata sandi akun tersebut; jangan mempertahankan SID sebagai kata sandi. Skrip tidak mencetak kata sandi:
+Akun plaintext lama tidak lagi bisa login. Reset kata sandi akun tersebut dengan password baru yang kuat; password reset tidak boleh memakai SID. Skrip tidak mencetak kata sandi:
 
 ```bash
 export ELOTO_USER_SID=Admin
@@ -33,7 +33,7 @@ pnpm --filter backend run reset-password
 unset ELOTO_NEW_PASSWORD
 ```
 
-Untuk database baru tanpa administrator, gunakan `pnpm --filter backend run bootstrap-admin` dengan environment yang sama. Akun dibuat tanpa kartu RFID otomatis. `seed` adalah data demo dan ditolak pada production.
+Untuk database baru tanpa administrator, gunakan `pnpm --filter backend run bootstrap-admin` dengan `ELOTO_USER_SID`. Akun dibuat tanpa kartu RFID otomatis dan memakai SID sebagai password awal. `seed` adalah data demo dan ditolak pada production.
 
 ## Kredensial perangkat dan counting
 
