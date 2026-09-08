@@ -88,8 +88,9 @@ export default function Users() {
                   </div>
                 </div>
                 <div className="sm:col-span-2 md:col-span-4">
-                  <label className="block text-slate-700 mb-1 font-bold">Kata sandi awal (minimal 12 karakter)</label>
-                  <input type="password" required minLength={12} autoComplete="new-password" className="w-full bg-white border p-2.5 rounded-lg mb-3" value={formAdminNewUser.password} onChange={e => setFormAdminNewUser({ ...formAdminNewUser, password: e.target.value })} />
+                  <label className="block text-slate-700 mb-1 font-bold">Password awal</label>
+                  <input type="password" readOnly autoComplete="new-password" className="w-full bg-slate-100 border p-2.5 rounded-lg mb-1 text-slate-600" value={formAdminNewUser.sid} placeholder="Otomatis mengikuti SID" />
+                  <p className="text-[10px] text-amber-700">Terisi otomatis sama dengan SID. User dapat menggantinya dari halaman profil.</p>
                   <label className="block text-slate-700 mb-1 font-bold">Foto Profil</label>
                   <input type="file" accept="image/*" className="w-full mt-2 text-[10px]" onChange={(e) => handleProfilePhotoUpload(e, setFormAdminNewUser)} />
                   {formAdminNewUser.foto && formAdminNewUser.foto.startsWith('data:') && <div className="mt-2 flex justify-center"><div className="rounded-full bg-white p-1.5 shadow-md ring-2 ring-red-100"><Avatar profile={{ nama: formAdminNewUser.nama, foto: formAdminNewUser.foto }} className="w-20 h-20" /></div></div>}

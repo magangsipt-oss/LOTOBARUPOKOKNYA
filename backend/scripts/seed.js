@@ -10,9 +10,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 import { sequelize, User, Box, TappingHistory, AuditLog, PeopleCounting } from '../orm/models/index.js';
 
 async function seed() {
-  if (process.env.NODE_ENV === 'production' || process.env.ALLOW_DEMO_SEED !== '1') throw new Error('Demo seeding is disabled; use bootstrap-admin for production');
-  const password = process.env.DEMO_PASSWORD;
-  if (!password || password.length < 12 || Buffer.byteLength(password) > 72) throw new Error('DEMO_PASSWORD must be 12+ characters, max 72 bytes');
+  if (process.env.NODE_ENV === 'production' || !process.argv.includes('--demo')) throw new Error('Demo seeding is disabled; use bootstrap-admin for production');
   await sequelize.authenticate();
   console.log('DB Connected');
 
@@ -34,7 +32,7 @@ async function seed() {
   ];
 
   for (const u of users) {
-    await User.findOrCreate({ where: { sid: u.sid }, defaults: { ...u, password: await bcrypt.hash(password, 12) } });
+    await User.findOrCreate({ where: { sid: u.sid }, defaults: { ...u, password: await bcrypt.hash(u.sid, 12) } });
   }
   console.log(`Users: ${users.length} seeded`);
 
@@ -62,7 +60,10 @@ async function seed() {
   ];
 
   for (const t of tappingData) {
-    await TappingHistory.create(t);
+    await TappingHistory.findOrCreate({
+      where: { id_box: t.id_box, session_id: t.session_id, rfid_uid: t.rfid_uid, event_text: t.event_text },
+      defaults: t
+    });
   }
   console.log(`TappingHistory: ${tappingData.length} seeded`);
 

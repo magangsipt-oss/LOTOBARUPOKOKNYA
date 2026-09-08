@@ -522,7 +522,7 @@ export function AppProvider({ children }) {
     const cleanNama = formAdminNewUser.nama.replace(/[<>]/g, "").trim();
     const cleanRfid = formAdminNewUser.rfidUid.replace(/[<>]/g, "").trim();
     if (!cleanSid || !cleanNama) { alert("Mohon lengkapi ID Karyawan (SID) dan Nama Lengkap!"); return; }
-    const dataKaryawanBaru = { sid: cleanSid, nama: cleanNama, role: formAdminNewUser.role, rfidUid: cleanRfid, password: formAdminNewUser.password, foto: formAdminNewUser.foto || 'assets/default-avatar.png' };
+    const dataKaryawanBaru = { sid: cleanSid, nama: cleanNama, role: formAdminNewUser.role, rfidUid: cleanRfid, password: cleanSid, foto: formAdminNewUser.foto || 'assets/default-avatar.png' };
     try {
       const hasil = await userService.createUser(dataKaryawanBaru);
       if (hasil.success || hasil.status === 'success') {
@@ -550,12 +550,11 @@ export function AppProvider({ children }) {
         pemicuToast(`Mengimpor ${jsonRows.length} data karyawan...`, "ok");
         let suksesCount = 0;
         for (const row of jsonRows) {
-          let sidVal = '', namaVal = '', roleVal = 'teknisi', rfidVal = '', passwordVal = '';
+          let sidVal = '', namaVal = '', roleVal = 'teknisi', rfidVal = '';
           Object.keys(row).forEach(key => {
             const kLower = key.toLowerCase().trim();
             const val = String(row[key] || '').trim();
             if (['sid', 'id', 'id karyawan'].includes(kLower)) { if (!sidVal && val) sidVal = val; }
-            if (kLower === 'password' || kLower === 'kata sandi') passwordVal = val;
             if (kLower.includes('nama')) { if (!namaVal && val) namaVal = val; }
             if (kLower.includes('role') || kLower.includes('jabatan')) {
               if (val) {
@@ -567,9 +566,9 @@ export function AppProvider({ children }) {
             }
             if (kLower.includes('rfid')) { if (val) rfidVal = val.toUpperCase(); }
           });
-          if (sidVal && namaVal && passwordVal.length >= 12) {
+          if (sidVal && namaVal) {
             try {
-              const resJson = await userService.createUser({ sid: sidVal, nama: namaVal, role: roleVal, rfidUid: rfidVal, password: passwordVal, foto: 'assets/default-avatar.png' });
+              const resJson = await userService.createUser({ sid: sidVal, nama: namaVal, role: roleVal, rfidUid: rfidVal, password: sidVal, foto: 'assets/default-avatar.png' });
               if (resJson.success || resJson.status === 'success') suksesCount++;
             } catch {}
           }
@@ -579,7 +578,7 @@ export function AppProvider({ children }) {
         const dataUsers = resultUsers.data || resultUsers;
         const dataSteril = Array.isArray(dataUsers) ? dataUsers.map(u => ({ ...u, role: normalizeUserRole(u.role), rfidUid: u.rfid_uid || u.rfidUid || '', foto: u.foto || 'assets/default-avatar.png' })) : [];
         setUserDatabase(dataSteril);
-        pemicuToast(`Berhasil: ${suksesCount}; gagal/dilewati: ${jsonRows.length - suksesCount}. Kolom password wajib minimal 12 karakter.`, "ok");
+        pemicuToast(`Berhasil: ${suksesCount}; gagal/dilewati: ${jsonRows.length - suksesCount}. Password awal otomatis sama dengan SID.`, "ok");
         e.target.value = '';
       } catch { pemicuToast("Gagal memproses berkas Excel!", "fail"); }
     };

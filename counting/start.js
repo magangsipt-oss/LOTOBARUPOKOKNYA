@@ -8,6 +8,15 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const envFile = path.join(root, '.env');
 if (existsSync(envFile)) loadEnvFile(envFile);
 
+const missing = [];
+if (!process.env.ELOTO_RTSP_URL?.trim()) missing.push('ELOTO_RTSP_URL');
+if ((process.env.ELOTO_DEVICE_TOKEN || '').length < 32) missing.push('ELOTO_DEVICE_TOKEN (minimal 32 karakter)');
+if (missing.length) {
+  console.log(`[counting] Belum diaktifkan: isi ${missing.join(' dan ')} di counting/.env.`);
+  console.log('[counting] Web dan backend tetap berjalan. Setelah konfigurasi siap, jalankan pnpm dev:counting.');
+  process.exit(0);
+}
+
 const virtualPython = path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 const python = process.env.ELOTO_PYTHON || (existsSync(virtualPython) ? virtualPython : process.platform === 'win32' ? 'python' : 'python3');
 const child = spawn(python, ['-u', path.join(root, 'people_counting.py')], {

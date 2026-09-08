@@ -232,12 +232,10 @@ const userController = {
       const nama = body.nama || body.name || body.username || 'New User';
       const rfidUid = body.rfid_uid ?? body.rfidUid ?? body.card_number ?? body.cardNumber ?? null;
       const role = body.role || 'WORKER';
-      const password = body.password;
-
-      if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid) || !normalizeRole(role) || typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72 || password === sid) {
+      if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid) || !normalizeRole(role)) {
         return res.status(400).json({
           success: false,
-          message: 'SID, nama, RFID dan peran harus valid; kata sandi minimal 12 karakter, maksimal 72 byte, dan bukan SID.',
+          message: 'SID, nama, RFID dan peran harus valid.',
         });
       }
 

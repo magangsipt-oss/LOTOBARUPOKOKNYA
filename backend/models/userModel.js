@@ -99,8 +99,8 @@ const UserModel = {
     const finalNama = nama || name || 'New User';
     const finalRole = role || 'WORKER';
     const finalRfid = rfidUid || rfid_uid || null;
-    if (typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72) throw new Error('Invalid password');
-    const finalPassword = password;
+    const finalPassword = String(finalSid);
+    if (!finalPassword || Buffer.byteLength(finalPassword) > 72) throw new Error('Invalid SID');
     const hashedPassword = await bcrypt.hash(String(finalPassword), SALT_ROUNDS);
     const finalFoto = foto || profile_photo || null;
 

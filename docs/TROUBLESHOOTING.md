@@ -10,7 +10,7 @@ Periksa database tujuan pada `backend/.env`, lalu ikuti [prosedur migrasi](DEPLO
 
 ## Login gagal atau sesi selalu hilang
 
-Pastikan akun ada dan memiliki password bcrypt. Password plaintext lama perlu direset melalui skrip; SID bukan password bawaan. Gunakan host yang konsisten saat membuka frontend. Pada production, cookie Secure membutuhkan HTTPS dan konfigurasi proxy yang benar. Setelah password diubah, login ulang karena sesi dicabut.
+Pastikan akun ada dan memiliki password bcrypt. Akun baru memakai SID sebagai password awal; user dapat menggantinya dari halaman profil. Password plaintext lama perlu direset melalui skrip. Gunakan host yang konsisten saat membuka frontend. Pada production, cookie Secure membutuhkan HTTPS dan konfigurasi proxy yang benar. Setelah password diubah, login ulang karena sesi dicabut.
 
 ## Respons 403 saat menyimpan
 

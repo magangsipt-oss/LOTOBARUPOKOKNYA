@@ -31,13 +31,18 @@ Untuk **database development kosong yang sudah dibuat**, jalankan:
 ```bash
 pnpm --filter backend run migrate
 export ELOTO_USER_SID=Admin
-read -rs ELOTO_NEW_PASSWORD
-export ELOTO_NEW_PASSWORD
 pnpm --filter backend run bootstrap-admin
-unset ELOTO_NEW_PASSWORD
 ```
 
-Masukkan kata sandi minimal 12 karakter saat `read` menunggu input; ketikan tidak ditampilkan. Untuk database lama, ikuti [prosedur baseline dan backup](docs/DEPLOYMENT.md), bukan prosedur database kosong.
+Akun administrator baru memakai SID sebagai password awal. Untuk database lama, ikuti [prosedur baseline dan backup](docs/DEPLOYMENT.md), bukan prosedur database kosong.
+
+Untuk database development baru dengan data demo, jalankan satu perintah setelah database pada `backend/.env` tersedia:
+
+```bash
+pnpm db:setup:demo
+```
+
+Perintah tersebut menjalankan seluruh migration lalu seeder ORM yang idempotent. Akun demo memakai SID masing-masing sebagai password awal.
 
 Jalankan aplikasi:
 

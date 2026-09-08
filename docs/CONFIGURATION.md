@@ -51,6 +51,8 @@ pnpm dev:counting
 
 Dependency Python, model, ROI, dan dukungan GPU perlu divalidasi pada mesin target. Tes unit counting tidak menjalankan pipeline kamera/model. Jangan memakai URL kamera contoh sebagai kredensial nyata.
 
+Jika URL kamera atau token belum lengkap, launcher melewati counting dengan pesan `Belum diaktifkan` dan exit sukses; web/backend tetap dapat berjalan. Setelah konfigurasi diisi, jalankan `pnpm dev:counting` atau restart `pnpm dev`.
+
 ## ESP32
 
 Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config.txt` pada SD perangkat:

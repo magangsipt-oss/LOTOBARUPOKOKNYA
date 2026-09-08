@@ -9,6 +9,7 @@
     "dev": "node --watch server.js",
     "test": "node --test tests/*.test.js",
     "migrate": "node scripts/migrate.js",
+    "seed:demo": "node scripts/seed.js --demo",
     "bootstrap-admin": "node scripts/bootstrap-admin.js",
     "reset-password": "node scripts/reset-password.js",
     "provision-device": "node scripts/provision-device.js"
