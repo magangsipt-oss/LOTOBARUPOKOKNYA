@@ -1,5 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import L from 'leaflet';
+import api from '../services/api';
+import { boxCoordinates, DEFAULT_CENTER } from '../utils/mapCoordinates.js';
 import 'leaflet/dist/leaflet.css';
 import { useApp } from '../context/useApp';
 import Avatar from '../components/Avatar';
@@ -34,6 +36,27 @@ export default function Dashboard() {
     !isSystemUid(hwData.last_uid) &&
     ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_WORKER_DETAIL'].includes(hwData.state);
 
+  const [streams, setStreams] = useState([]);
+  const [failedStreamId, setFailedStreamId] = useState(null);
+  const cameraConfigured = streams.some(stream => stream.id === selectedBox?.id && stream.configured);
+  const showCamera = cameraConfigured && failedStreamId !== selectedBox?.id;
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'dashboard') return;
+    let active = true;
+    api.get('/stream').then(({ data }) => {
+      if (active) setStreams(data.data || []);
+    }).catch(() => { if (active) setStreams([]); });
+    return () => { active = false; };
+  }, [isLoggedIn, activeTab, selectedBox?.id, selectedBox?.rtsp_url]);
+
+  useEffect(() => () => {
+    leafletMapInstanceRef.current?.remove();
+    leafletMapInstanceRef.current = null;
+    markersRef.current = Object.create(null);
+    lastCenteredBoxIdRef.current = null;
+  }, [leafletMapInstanceRef, markersRef, lastCenteredBoxIdRef]);
+
   // INITIALISASI MAP LEAFLET
   useEffect(() => {
     if (!isLoggedIn || activeTab !== 'dashboard' || !mapContainerRef.current) {
@@ -46,11 +69,7 @@ export default function Dashboard() {
       return;
     }
 
-    const mapLat = (selectedBox && !isNaN(Number(selectedBox.lat)) && Number(selectedBox.lat) !== 0) ? Number(selectedBox.lat) : 2.144691;
-    const mapLng = (selectedBox && !isNaN(Number(selectedBox.lng)) && Number(selectedBox.lng) !== 0) ? Number(selectedBox.lng) : 117.477526;
-
-    // Guard: skip if coordinates are still invalid
-    if (isNaN(mapLat) || isNaN(mapLng) || mapLat === 0 || mapLng === 0) return;
+    const [mapLat, mapLng] = boxCoordinates(selectedBox) || DEFAULT_CENTER;
 
     if (!leafletMapInstanceRef.current) {
       const map = L.map(mapContainerRef.current, { center: [mapLat, mapLng], zoom: 13, zoomControl: true });
@@ -59,7 +78,7 @@ export default function Dashboard() {
       map.on('click', function (e) {
         if (e.originalEvent.target.closest('.custom-gps-marker') || e.originalEvent.target.closest('.leaflet-popup') || e.originalEvent.target.closest('.leaflet-tooltip')) return;
         map.closePopup();
-        map.flyTo([2.144691, 117.477526], 13, { animate: true, duration: 1.2 });
+        map.stop().setView(DEFAULT_CENTER, 13, { animate: false });
       });
       map.on('zoomend', function () { if (map.getZoom() < 16) map.closePopup(); });
     }
@@ -72,14 +91,13 @@ export default function Dashboard() {
   // MANAGEMENT MARKER MAP
   useEffect(() => {
     const map = leafletMapInstanceRef.current;
-    if (!map || activeTab !== 'dashboard' || !Array.isArray(boxes) || boxes.length === 0) return;
+    if (!map || activeTab !== 'dashboard' || !Array.isArray(boxes)) return;
 
     const currentMarkerKeys = new Set();
     boxes.forEach((box) => {
-      const bLat = Number(box.lat);
-      const bLng = Number(box.lng || box.lon);
-      if (isNaN(bLat) || isNaN(bLng) || bLat === 0 || bLng === 0) return;
-      if (!isFinite(bLat) || !isFinite(bLng)) return;
+      const coordinates = boxCoordinates(box);
+      if (!coordinates) return;
+      const [bLat, bLng] = coordinates;
       currentMarkerKeys.add(box.id);
       const isBoxLocked = box.state && box.state !== 'STATE_IDLE' && box.state !== 'STATE_REGISTER_RFID';
       const markerColor = isBoxLocked ? '#ef4444' : (box.state === 'STATE_REGISTER_RFID' ? '#2563eb' : '#22c55e');
@@ -132,13 +150,13 @@ export default function Dashboard() {
     });
 
     if (selectedBox) {
-      const mapLat = !isNaN(Number(selectedBox.lat)) && Number(selectedBox.lat) !== 0 ? Number(selectedBox.lat) : 2.144691;
-      const mapLng = !isNaN(Number(selectedBox.lng)) && Number(selectedBox.lng) !== 0 ? Number(selectedBox.lng) : 117.477526;
-      if (!isFinite(mapLat) || !isFinite(mapLng)) return;
+      const [mapLat, mapLng] = boxCoordinates(selectedBox) || DEFAULT_CENTER;
       const centerNow = map.getCenter();
       const distMoved = Math.abs(centerNow.lat - mapLat) + Math.abs(centerNow.lng - mapLng);
       if (lastCenteredBoxIdRef.current !== selectedBox.id || distMoved > 0.0001) {
-        map.flyTo([mapLat, mapLng], 18, { animate: true, duration: 1.2 });
+        map.stop();
+        map.invalidateSize({ pan: false });
+        map.setView([mapLat, mapLng], 18, { animate: false });
         setTimeout(() => { if (markersRef.current && markersRef.current[selectedBox.id]) markersRef.current[selectedBox.id].openPopup(); }, 500);
         lastCenteredBoxIdRef.current = selectedBox.id;
       }
@@ -224,23 +242,23 @@ export default function Dashboard() {
             <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech">
               <i className="fa-solid fa-video"></i> CCTV Live Feed
               {selectedBox && <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">{selectedBox.id}</span>}
-              <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[9px] font-bold">LIVE</span>
+              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[9px] font-bold">{showCamera ? 'LIVE' : 'OFFLINE'}</span>
             </div>
             <div className="relative rounded-2xl border border-red-200 shadow-lg overflow-hidden bg-black" style={{ minHeight: '200px' }}>
-              {selectedBox ? (
+              {showCamera ? (
                 <img
                   key={selectedBox.id}
                   src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/${encodeURIComponent(selectedBox.id)}`}
                   alt={`CCTV ${selectedBox.id}`}
                   className="w-full h-auto max-h-[360px] object-contain"
-                  onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+                  onError={() => setFailedStreamId(selectedBox.id)}
                 />
               ) : null}
-              <div className={`${selectedBox ? 'hidden' : 'flex'} absolute inset-0 items-center justify-center bg-slate-900 text-slate-400 flex-col gap-2`}>
+              <div className={`${showCamera ? 'hidden' : 'flex'} absolute inset-0 items-center justify-center bg-slate-900 text-slate-400 flex-col gap-2`}>
                 <i className="fa-solid fa-video-slash text-3xl"></i>
-                <p className="text-xs">{selectedBox ? 'RTSP belum dikonfigurasi' : 'Pilih boks terlebih dahulu'}</p>
+                <p className="text-xs">{selectedBox ? (cameraConfigured ? 'Stream tidak tersedia' : 'Stream belum dikonfigurasi') : 'Pilih boks terlebih dahulu'}</p>
                 <p className="text-[10px] text-slate-500">
-                  {selectedBox ? 'Atur RTSP URL di form edit boks' : 'Klik boks di daftar untuk melihat CCTV'}
+                  {selectedBox ? 'Konfigurasikan layanan kamera dan MJPEG_PORTS di server' : 'Klik boks di daftar untuk melihat CCTV'}
                 </p>
               </div>
             </div>

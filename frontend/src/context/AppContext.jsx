@@ -61,7 +61,6 @@ export function AppProvider({ children }) {
   const excelFileInputRef = useRef(null);
   const selectedBoxIdRef = useRef(null);
   const isFetchingRef = useRef(false);
-  const lastSeenOnlineRef = useRef({});
 
   // Form states
   const [formData, setFormData] = useState({ sid: '', password: '' });
@@ -323,39 +322,8 @@ export function AppProvider({ children }) {
 
         if (boksTerbaru) {
           const bId = boksTerbaru.id;
-          const configuredIp = String(boksTerbaru.ip || '').trim();
-          const canProbeDevice = configuredIp && configuredIp !== '192.168.1.100' && configuredIp !== '0.0.0.0';
-          let isDeviceActive = false;
-
-          if (canProbeDevice) {
-            try {
-              // Probe via backend proxy (aman, gak perlu CORS langsung ke ESP32)
-              const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/proxy/${encodeURIComponent(bId)}`;
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 4000);
-              const locRes = await fetch(proxyUrl, { signal: controller.signal, credentials: 'include' });
-              clearTimeout(timeoutId);
-              if (locRes.ok) {
-                const locData = await locRes.json();
-                isDeviceActive = Number(locData.is_online) === 1;
-                boksTerbaru.is_online = locData.is_online;
-                boksTerbaru.lcd0 = locData.lcd0 || boksTerbaru.lcd0;
-                boksTerbaru.lcd1 = locData.lcd1 || boksTerbaru.lcd1;
-                boksTerbaru.state = locData.state || boksTerbaru.state;
-                boksTerbaru.relay_open = locData.relay_open !== undefined ? locData.relay_open : boksTerbaru.relay_open;
-                boksTerbaru.queue = locData.queue || boksTerbaru.queue;
-                boksTerbaru.last_uid = locData.last_uid || boksTerbaru.last_uid;
-                boksTerbaru.supervisor_uid = locData.supervisor_uid || boksTerbaru.supervisor_uid;
-                boksTerbaru.active_fuelman = locData.active_fuelman || boksTerbaru.active_fuelman;
-                boksTerbaru.gps_fix = locData.gps_fix !== undefined ? locData.gps_fix : boksTerbaru.gps_fix;
-                boksTerbaru.ssid = locData.ssid || boksTerbaru.ssid;
-                boksTerbaru.last_event = locData.last_event || boksTerbaru.last_event;
-                lastSeenOnlineRef.current[bId] = Date.now();
-              }
-            } catch { /* fallback database */ }
-          } else {
-            isDeviceActive = Number(boksTerbaru.is_online) === 1;
-          }
+          // The boxes response already contains the authenticated telemetry snapshot.
+          const isDeviceActive = Number(boksTerbaru.is_online) === 1;
           const isSmoothOnline = isDeviceActive;
           if (isDeviceActive) {
             const directIp = boksTerbaru.ip || '';
@@ -421,15 +389,7 @@ export function AppProvider({ children }) {
     setPeopleCountHistory([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
-    const clickLat = Number(box.lat);
-    const clickLng = Number(box.lng || box.lon);
-    if (leafletMapInstanceRef.current && !isNaN(clickLat) && !isNaN(clickLng) && clickLat !== 0 && clickLng !== 0) {
-      leafletMapInstanceRef.current.flyTo([clickLat, clickLng], 18, { animate: true, duration: 1.2 });
-      setTimeout(() => {
-        if (markersRef.current && markersRef.current[box.id]) markersRef.current[box.id].openPopup();
-      }, 500);
-    }
-    lastCenteredBoxIdRef.current = box.id;
+    lastCenteredBoxIdRef.current = null;
   }, []);
 
   const handleTambahAlatBerat = async (e) => {
