@@ -49,7 +49,7 @@ unset ELOTO_DEVICE_TOKEN
 
 Boks harus sudah terdaftar. Database menyimpan hash token. Pasang token asli pada `/config.txt` di SD ESP32 menggunakan format `esp32/config.example.txt`. Pasang sertifikat CA yang memvalidasi domain API sebagai `/server_ca.pem`. `SERVER` harus memakai HTTPS; firmware tidak menggunakan `setInsecure`. Host perangkat harus dapat menyinkronkan waktu NTP agar validasi sertifikat berhasil. Token baru menggantikan token lama; lakukan pembaruan server, firmware, dan counting secara terkoordinasi.
 
-Export konfigurasi berdasarkan `counting/.env.example` ke environment layanan Python; script tidak membaca file `.env` otomatis. Set URL RTSP dan kredensial kamera melalui environment. Gunakan port MJPEG berbeda per boks dan petakan secara eksplisit dalam `MJPEG_PORTS` backend. Server MJPEG hanya bind loopback.
+Isi `counting/.env` berdasarkan `counting/.env.example` bila menjalankan lewat `pnpm dev:counting` (atau `pnpm dev` untuk seluruh layanan development). Untuk layanan yang menjalankan Python langsung, export konfigurasi ke environment proses. Set URL RTSP dan kredensial kamera melalui environment. Gunakan port MJPEG berbeda per boks dan petakan secara eksplisit dalam `MJPEG_PORTS` backend. Server MJPEG hanya bind loopback.
 
 Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh lalu ACK ID perintah; retry tidak membuka relay. Tidak ada migrasi otomatis perintah lama, dan tidak ada fitur remote override keselamatan.
 

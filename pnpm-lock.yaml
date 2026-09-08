@@ -51,6 +51,8 @@ importers:
         specifier: ^0.35.4
         version: 0.35.4(@types/node@26.4.1)
 
+  counting: {}
+
   frontend:
     dependencies:
       '@tailwindcss/vite':

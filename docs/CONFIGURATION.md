@@ -23,7 +23,7 @@ Gunakan akun DDL untuk migrasi dan akun dengan hak terbatas untuk runtime. Konfi
 
 ## Counting
 
-[Contoh environment counting](../counting/.env.example) **tidak dimuat otomatis**. Export nilai melalui shell atau environment process manager. ID boks harus persis sama dengan database dan pemetaan backend, termasuk spasi.
+Salin [contoh environment counting](../counting/.env.example) ke `counting/.env`. Launcher `pnpm dev` dan `pnpm dev:counting` memuat file tersebut otomatis; environment yang sudah diexport mendapat prioritas. Launcher memakai `counting/.venv` bila tersedia, atau Python sistem. `ELOTO_PYTHON` dapat menentukan executable Python lain. Menjalankan script Python langsung tetap memerlukan environment yang diexport. ID boks harus persis sama dengan database dan pemetaan backend, termasuk spasi.
 
 | Variabel | Perilaku |
 | --- | --- |
@@ -44,8 +44,9 @@ Dari root repository, siapkan environment Python terpisah:
 python3 -m venv counting/.venv
 source counting/.venv/bin/activate
 python -m pip install -r counting/requirements.txt
-# Isi environment layanan sebelum menjalankan worker.
-python counting/people_counting.py
+# Isi counting/.env sebelum menjalankan worker.
+pnpm dev:counting
+# Atau jalankan frontend, backend, dan counting sekaligus: pnpm dev
 ```
 
 Dependency Python, model, ROI, dan dukungan GPU perlu divalidasi pada mesin target. Tes unit counting tidak menjalankan pipeline kamera/model. Jangan memakai URL kamera contoh sebagai kredensial nyata.

@@ -15,3 +15,17 @@ test('avatar initials cannot inject SVG markup', () => {
   assert.ok(svg.includes('&lt;&amp;'));
   assert.ok(!svg.includes('<&'));
 });
+
+
+test('switching boxes replaces hardware and clears absent personnel data', async () => {
+  const { boxHardwareSnapshot } = await import('../../frontend/src/utils/boxHardware.js');
+  const first = boxHardwareSnapshot({ id: 'BOX 1', is_online: 1, queue: '["PERSON-A"]', supervisor_uid: 'SPV-A', state: 'STATE_SUPERVISOR_VALID' });
+  const second = boxHardwareSnapshot({ id: 'BOX 2', is_online: 0 });
+  assert.deepEqual(first.queue, ['PERSON-A']);
+  assert.equal(second.id_box, 'BOX 2');
+  assert.equal(second.wifi_connected, false);
+  assert.equal(second.supervisor_uid, '—');
+  assert.deepEqual(second.queue, []);
+  assert.deepEqual(boxHardwareSnapshot({ queue: 'null' }).queue, []);
+  assert.deepEqual(boxHardwareSnapshot({ queue: '{"invalid":true}' }).queue, []);
+});

@@ -22,7 +22,7 @@ Periksa `SERVER` HTTPS, CA pada `/server_ca.pem`, waktu NTP, dan token SD. Token
 
 ## Video tidak muncul atau counting stale
 
-Pastikan worker Python berjalan dengan environment RTSP dan token yang benar. `.env` counting tidak dibaca otomatis. Cocokkan ID boks dan `ELOTO_MJPEG_PORT` dengan `MJPEG_PORTS` backend. MJPEG Python bind ke loopback, sehingga backend harus dapat menjangkaunya melalui `127.0.0.1`.
+Pastikan worker Python berjalan dengan environment RTSP dan token yang benar. `counting/.env` dimuat otomatis oleh `pnpm dev`/`pnpm dev:counting`; menjalankan Python langsung memerlukan environment yang diexport. Cocokkan ID boks dan `ELOTO_MJPEG_PORT` dengan `MJPEG_PORTS` backend. MJPEG Python bind ke loopback, sehingga backend harus dapat menjangkaunya melalui `127.0.0.1`.
 
 Endpoint stream tanpa pemetaan mengembalikan 404; upstream tidak tersedia dapat menghasilkan 502/503. Data count yang belum ada atau stale tidak berarti area kosong. Periksa kamera, model, frame terbaru, dan koneksi API sebelum menafsirkan hasil deteksi.
 

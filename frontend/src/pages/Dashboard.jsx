@@ -36,6 +36,19 @@ export default function Dashboard() {
     !isSystemUid(hwData.last_uid) &&
     ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_WORKER_DETAIL'].includes(hwData.state);
 
+  const [boxStatusFilter, setBoxStatusFilter] = useState('all');
+  const [boxPage, setBoxPage] = useState(1);
+  const pageSize = 10;
+  const matchingBoxes = filteredBoxes.filter(box => {
+    if (boxStatusFilter === 'online') return Number(box.is_online) === 1;
+    if (boxStatusFilter === 'offline') return Number(box.is_online) !== 1;
+    if (boxStatusFilter === 'locked') return box.state && !['STATE_IDLE', 'STATE_REGISTER_RFID'].includes(box.state);
+    return true;
+  }).sort((a, b) => String(a.id).localeCompare(String(b.id), 'id', { numeric: true }));
+  const pageCount = Math.max(1, Math.ceil(matchingBoxes.length / pageSize));
+  const currentPage = Math.min(boxPage, pageCount);
+  const visibleBoxes = matchingBoxes.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
   const [streams, setStreams] = useState([]);
   const [failedStreamId, setFailedStreamId] = useState(null);
   const cameraConfigured = streams.some(stream => stream.id === selectedBox?.id && stream.configured);
@@ -167,6 +180,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
+        <div><h1 className="font-bold text-slate-900">Pantau Boks LOTO</h1><p className="text-xs text-slate-500">{boxes.length} boks · {boxes.filter(box => Number(box.is_online) === 1).length} online</p></div>
+        <label className="text-xs text-slate-600 flex flex-col gap-1">Boks yang dipantau
+          <select aria-label="Pilih boks yang dipantau" value={selectedBox?.id || ''} onChange={event => { const box = boxes.find(item => item.id === event.target.value); if (box) handleSelectBox(box); }} className="border border-gray-300 rounded-lg p-2 bg-white text-slate-900 sm:min-w-64">
+            {!selectedBox && <option value="">Pilih boks</option>}
+            {[...boxes].sort((a, b) => String(a.id).localeCompare(String(b.id), 'id', { numeric: true })).map(box => <option key={box.id} value={box.id}>{box.id} · {box.unit} · {Number(box.is_online) === 1 ? 'Online' : 'Offline'}</option>)}
+          </select>
+        </label>
+      </div>
       {/* 5 KARTU METRIK */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
@@ -256,9 +278,9 @@ export default function Dashboard() {
               ) : null}
               <div className={`${showCamera ? 'hidden' : 'flex'} absolute inset-0 items-center justify-center bg-slate-900 text-slate-400 flex-col gap-2`}>
                 <i className="fa-solid fa-video-slash text-3xl"></i>
-                <p className="text-xs">{selectedBox ? (cameraConfigured ? 'Stream tidak tersedia' : 'Stream belum dikonfigurasi') : 'Pilih boks terlebih dahulu'}</p>
+                <p className="text-xs">{selectedBox ? (cameraConfigured ? 'Stream tidak tersedia' : selectedBox.rtsp_url ? 'Kamera belum aktif' : 'Boks tanpa kamera') : 'Pilih boks terlebih dahulu'}</p>
                 <p className="text-[10px] text-slate-500">
-                  {selectedBox ? 'Konfigurasikan layanan kamera dan MJPEG_PORTS di server' : 'Klik boks di daftar untuk melihat CCTV'}
+                  {selectedBox ? (selectedBox.rtsp_url || cameraConfigured ? 'Kamera belum terhubung. Periksa koneksi layanan kamera.' : 'Kamera opsional. Boks tetap dapat digunakan tanpa kamera.') : 'Klik boks di daftar untuk melihat CCTV'}
                 </p>
               </div>
             </div>
@@ -349,6 +371,7 @@ export default function Dashboard() {
           {sessionUser?.role === 'admin' && (
             <div className="bg-red-50/60 border border-red-200 p-4 sm:p-5 rounded-2xl shadow-sm space-y-4 backdrop-blur-sm">
               <div className="text-xs font-bold text-red-600 uppercase tracking-widest font-mono-tech"><i className={`fa-solid ${editingBoxId ? 'fa-pen-to-square' : 'fa-plus'}`}></i> {editingBoxId ? 'Edit Data Boks' : 'Tambah Boks Alat Baru'}</div>
+              <p className="text-xs text-slate-600">Daftarkan setiap boks dengan ID unik. Kamera dan koordinat dapat diisi sesuai perlengkapan boks.</p>
               <form onSubmit={handleTambahAlatBerat} className="space-y-3 text-xs">
                 <input type="text" required disabled={Boolean(editingBoxId)} placeholder="ID Boks (Contoh: BOX ELOTO 1)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none disabled:bg-gray-100 disabled:text-slate-500" value={formAlatBerat.id} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, id: e.target.value })} />
                 <input type="text" required placeholder="Nama Alat / Mesin (Contoh: HD-785 DUMP TRUCK)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none" value={formAlatBerat.unit} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, unit: e.target.value })} />
@@ -358,7 +381,7 @@ export default function Dashboard() {
                     <i className={`fa-solid ${isSyncing ? 'fa-spinner animate-spin' : 'fa-satellite-dish'}`}></i> Sync
                   </button>
                 </div>
-                <input type="text" placeholder="RTSP URL CCTV (opsional, rtsp://user:pass@ip:port/path)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.rtsp_url || ''} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, rtsp_url: e.target.value })} />
+                <input type="text" aria-label="URL kamera opsional untuk boks ini" placeholder="URL kamera boks ini (opsional, rtsp://...)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.rtsp_url || ''} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, rtsp_url: e.target.value })} />
                 <div className="grid grid-cols-2 gap-2">
                   <input type="text" placeholder="Latitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lat} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lat: e.target.value })} />
                   <input type="text" placeholder="Longitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lng} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lng: e.target.value })} />
@@ -376,7 +399,7 @@ export default function Dashboard() {
             <p className="text-xs font-mono-tech tracking-widest uppercase text-slate-600 border-b pb-2 mb-3">Daftar Boks Terdaftar</p>
             <div className="bg-gray-50 border border-gray-300 p-2 rounded-xl flex items-center gap-2 mb-3">
               <i className="fa-solid fa-magnifying-glass text-slate-400 text-xs"></i>
-              <input type="text" placeholder="Cari boks (ID, Unit, IP)..." className="w-full bg-transparent text-xs text-slate-900 focus:outline-none font-mono-tech" value={boxSearchTerm} onChange={(e) => setBoxSearchTerm(e.target.value)} />
+              <input type="text" placeholder="Cari boks (ID, Unit, IP)..." className="w-full bg-transparent text-xs text-slate-900 focus:outline-none font-mono-tech" value={boxSearchTerm} onChange={(e) => { setBoxSearchTerm(e.target.value); setBoxPage(1); }} />
               {boxSearchTerm && <button type="button" onClick={() => setBoxSearchTerm('')} className="text-slate-400 hover:text-red-600 text-[10px] uppercase font-bold font-mono-tech">&times;</button>}
             </div>
             <div className="grid grid-cols-2 gap-2 text-[10px] font-mono-tech mb-4">
@@ -388,10 +411,22 @@ export default function Dashboard() {
                 <span className={`font-bold block ${isHwOnline ? 'text-green-600' : 'text-red-600'}`}>{isHwOnline ? 'Tersambung  ✓  ' : 'Terputus  ✗  '}</span>
               </div>
             </div>
-            <div className="space-y-2 overflow-y-auto pr-1 flex-1 max-h-[220px]">
-              {filteredBoxes.length > 0 ? filteredBoxes.map((box) => (
+            <label className="text-xs text-slate-600 flex items-center gap-2 mb-3">Tampilkan
+              <select aria-label="Filter status boks" value={boxStatusFilter} onChange={event => { setBoxStatusFilter(event.target.value); setBoxPage(1); }} className="border border-gray-300 rounded-lg p-2 flex-1 bg-white">
+                <option value="all">Semua boks</option><option value="online">Online</option><option value="offline">Offline</option><option value="locked">Terkunci</option>
+              </select>
+            </label>
+            <div className="space-y-2 overflow-y-auto pr-1 flex-1 max-h-[440px]">
+              {visibleBoxes.length > 0 ? visibleBoxes.map((box) => (
                 <BoxCard key={box.id} box={box} isSelected={selectedBox} isHwOnline={isHwOnline} hwData={hwData} sessionUser={sessionUser} onSelect={handleSelectBox} onEdit={handleEditAlatBerat} onDelete={handleHapusAlatBerat} />
               )) : <div className="p-4 text-center text-slate-400 italic text-xs">Tidak ada boks yang cocok.</div>}
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-3 text-xs text-slate-600">
+              <span>{matchingBoxes.length} boks · {currentPage}/{pageCount}</span>
+              <div className="flex gap-2">
+                <button type="button" aria-label="Halaman boks sebelumnya" disabled={currentPage === 1} onClick={() => setBoxPage(currentPage - 1)} className="border rounded-lg px-2 py-1 disabled:opacity-40">Sebelumnya</button>
+                <button type="button" aria-label="Halaman boks berikutnya" disabled={currentPage === pageCount} onClick={() => setBoxPage(currentPage + 1)} className="border rounded-lg px-2 py-1 disabled:opacity-40">Berikutnya</button>
+              </div>
             </div>
           </div>
         </div>

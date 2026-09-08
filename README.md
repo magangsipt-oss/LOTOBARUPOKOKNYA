@@ -16,7 +16,7 @@ Aplikasi pemantauan Lockout/Tagout dengan dashboard web, API Node.js, perangkat 
 
 ## Mulai development
 
-Siapkan Node.js, pnpm, dan MySQL. Workspace mencantumkan pnpm `11.25.0` pada paket backend. Python dan toolchain ESP32 diperlukan bila menjalankan komponen tersebut; keduanya tidak dijalankan oleh perintah dev pnpm.
+Siapkan Node.js, pnpm, dan MySQL. Workspace mencantumkan pnpm `11.25.0` pada paket backend. Python dan dependency `counting/requirements.txt` diperlukan: `pnpm dev` menjalankan frontend, backend, dan people counting sekaligus. Isi `counting/.env` berdasarkan contoh sebelum menjalankan. Firmware ESP32 tetap dijalankan terpisah.
 
 Jalankan dari root repository:
 

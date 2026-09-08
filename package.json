@@ -10,7 +10,8 @@
     "build": "npm run build --prefix frontend",
     "build:frontend": "pnpm --filter frontend run build",
     "lint": "npm run lint --prefix frontend",
-    "test": "npm test --prefix backend"
+    "test": "npm test --prefix backend",
+    "dev:counting": "pnpm --filter counting run dev"
   },
   "devDependencies": {
     "knip": "^6.34.0",

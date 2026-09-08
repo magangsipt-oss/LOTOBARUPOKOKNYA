@@ -1,3 +1,4 @@
+import { boxHardwareSnapshot } from '../utils/boxHardware.js';
 import { escapeHtml, safeCsvCell } from '../utils/helpers';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
@@ -219,6 +220,7 @@ export function AppProvider({ children }) {
 
   // Load maintenance, buffer, tapping history
   useEffect(() => {
+    let active = true;
     const muatDataLaporanDanBuffer = async () => {
       try {
         const maintenanceResult = await boxService.getAllMaintenance();
@@ -240,11 +242,11 @@ export function AppProvider({ children }) {
         if (targetBoxId) {
           const pcResult = await logService.getLatestPeopleCount(targetBoxId);
           const pcData = pcResult.data || pcResult;
-          if (pcData && pcData.detected_count !== undefined) setPeopleCount(pcData);
+          if (active && selectedBoxIdRef.current === targetBoxId && pcData && pcData.detected_count !== undefined) setPeopleCount(pcData);
 
           const pcHistory = await logService.getPeopleCountHistory(targetBoxId, 20);
           const pcHistoryData = pcHistory.data || pcHistory;
-          if (Array.isArray(pcHistoryData)) setPeopleCountHistory(pcHistoryData);
+          if (active && selectedBoxIdRef.current === targetBoxId && Array.isArray(pcHistoryData)) setPeopleCountHistory(pcHistoryData);
         }
       } catch { /* silent */ }
     };
@@ -252,7 +254,7 @@ export function AppProvider({ children }) {
     if (isLoggedIn) {
       muatDataLaporanDanBuffer();
       const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
-      return () => clearInterval(intervalSync);
+      return () => { active = false; clearInterval(intervalSync); };
     }
   }, [isLoggedIn, reportBoxId]);
 
@@ -321,7 +323,6 @@ export function AppProvider({ children }) {
         }
 
         if (boksTerbaru) {
-          const bId = boksTerbaru.id;
           // The boxes response already contains the authenticated telemetry snapshot.
           const isDeviceActive = Number(boksTerbaru.is_online) === 1;
           const isSmoothOnline = isDeviceActive;
@@ -335,31 +336,7 @@ export function AppProvider({ children }) {
           setSelectedBox(boksTerbaru);
           setIsHwOnline(isSmoothOnline);
 
-          let queueFinal = [];
-          if (Array.isArray(boksTerbaru.queue)) { queueFinal = boksTerbaru.queue; }
-          else if (typeof boksTerbaru.queue === 'string') { try { queueFinal = JSON.parse(boksTerbaru.queue); } catch {} }
-
-          setHwData({
-            id_box: bId,
-            lcd0: boksTerbaru.lcd0 || '  SISTEM READY',
-            lcd1: boksTerbaru.lcd1 || 'TEKAN 1 UTK MULAI',
-            state: boksTerbaru.state || 'STATE_IDLE',
-            relay_open: boksTerbaru.relay_open == 1 || boksTerbaru.relay_open === true,
-            last_event: boksTerbaru.last_event || '',
-            last_event_ok: boksTerbaru.last_event_ok == 1 || boksTerbaru.last_event_ok === true,
-            gps_fix: boksTerbaru.gps_fix == 1 || boksTerbaru.gps_fix === true,
-            supervisor_uid: boksTerbaru.supervisor_uid || '—',
-            active_fuelman: boksTerbaru.active_fuelman || '',
-            last_uid: boksTerbaru.last_uid || '—',
-            wifi_connected: isSmoothOnline,
-            queue: queueFinal,
-            audit_log: boksTerbaru.audit_log || [],
-            uptime_ms: Number(boksTerbaru.uptime_ms || 0),
-            lat: boksTerbaru.lat,
-            lng: boksTerbaru.lng,
-            lon: boksTerbaru.lng,
-            ssid: boksTerbaru.ssid || 'Wi-Fi Hotspot'
-          });
+          setHwData(boxHardwareSnapshot(boksTerbaru));
         }
       } catch { setIsHwOnline(false); setPeopleCount(prev => ({ ...prev, stale: true })); } finally { isFetchingRef.current = false; }
     };
@@ -389,6 +366,8 @@ export function AppProvider({ children }) {
     setPeopleCountHistory([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
+    setIsHwOnline(Number(box.is_online) === 1);
+    setHwData(boxHardwareSnapshot(box));
     lastCenteredBoxIdRef.current = null;
   }, []);
 
@@ -409,6 +388,10 @@ export function AppProvider({ children }) {
         setBoxes(prev => editingBoxId ? prev.map(box => String(box.id) === String(cleanId) ? { ...box, ...savedBox } : box) : [...prev, savedBox]);
         setSelectedBox(prev => prev && String(prev.id) === String(cleanId) ? { ...prev, ...savedBox } : savedBox);
         selectedBoxIdRef.current = cleanId;
+        setIsHwOnline(false);
+        setHwData(boxHardwareSnapshot(savedBox));
+        setPeopleCount({ detected_count: null, registered_count: null, stale: true });
+        setPeopleCountHistory([]);
         setEditingBoxId('');
         setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
         pemicuToast(editingBoxId ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
@@ -436,6 +419,10 @@ export function AppProvider({ children }) {
           setBoxes(sisaBox);
           if (selectedBox && String(selectedBox.id).toLowerCase().trim() === String(idBox).toLowerCase().trim()) {
             setSelectedBox(sisaBox[0] || null);
+            setIsHwOnline(Number(sisaBox[0]?.is_online) === 1);
+            setHwData(boxHardwareSnapshot(sisaBox[0]));
+            setPeopleCount({ detected_count: null, registered_count: null, stale: true });
+            setPeopleCountHistory([]);
             selectedBoxIdRef.current = sisaBox[0] ? sisaBox[0].id : null;
           }
           pemicuToast(hasil.message || 'Boks dihapus', "ok");
