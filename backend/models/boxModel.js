@@ -16,7 +16,15 @@ const BoxModel = {
       FROM boxes ORDER BY id_box ASC
     `;
     const [rows] = await pool.query(query);
-    return rows;
+    // Keep this compatible with MariaDB versions whose JSON aggregation
+    // functions can fail when the server's mysql.proc metadata is stale.
+    const [queueRows] = await pool.query('SELECT id_box, rfid_uid FROM queue ORDER BY joined_at ASC');
+    const queueByBox = Object.create(null);
+    for (const row of queueRows) {
+      if (!queueByBox[row.id_box]) queueByBox[row.id_box] = [];
+      queueByBox[row.id_box].push(row.rfid_uid);
+    }
+    return rows.map(row => ({ ...row, queue: queueByBox[row.id_box] || [] }));
   },
 
   // 2. Mengambil data box berdasarkan ID Box

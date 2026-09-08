@@ -12,6 +12,7 @@
     "lint": "npm run lint --prefix frontend",
     "test": "npm test --prefix backend",
     "dev:counting": "pnpm --filter counting run dev",
+    "paralel": "pnpm --parallel -r run",
     "db:migrate": "pnpm --filter backend run migrate",
     "db:seed:demo": "pnpm --filter backend run seed:demo",
     "db:reset:demo": "pnpm --filter backend run reset:demo && pnpm db:seed:demo",
