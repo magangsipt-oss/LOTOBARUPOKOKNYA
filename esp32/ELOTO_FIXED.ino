@@ -851,6 +851,8 @@ void clearSIM808Buffer() {
 
 String sendATCommand(const String &cmd, unsigned long timeout) {
     clearSIM808Buffer();
+    Serial.print(">> ");
+    Serial.println(cmd);
     gpsSerial.println(cmd);
     String response = "";
     unsigned long start = millis();
@@ -859,24 +861,46 @@ String sendATCommand(const String &cmd, unsigned long timeout) {
             char c = gpsSerial.read();
             response += c;
             gpsByteCount++;
+            Serial.write(c);
         }
     }
+    Serial.println();
     return response;
 }
 
 void initSIM808() {
-    Serial.println("[SIM808] Inisialisasi GNSS...");
+    Serial.println();
+    Serial.println("================================================");
+    Serial.println("        SIM808 + ESP32 MAXIMUM GPS");
+    Serial.println("================================================");
 
+    Serial.println();
+    Serial.println("[1] TEST KOMUNIKASI SIM808");
     sendATCommand("AT", 1000);
+
+    Serial.println();
+    Serial.println("[2] MATIKAN ECHO");
     sendATCommand("ATE0", 1000);
+
+    Serial.println();
+    Serial.println("[3] AKTIFKAN GNSS");
     sendATCommand("AT+CGNSPWR=1", 1500);
+
+    Serial.println();
+    Serial.println("[4] SET GNSS RMC");
     sendATCommand("AT+CGNSSEQ=\"RMC\"", 1000);
 
+    Serial.println();
+    Serial.println("[5] CEK STATUS GNSS");
     String status = sendATCommand("AT+CGNSPWR?", 1000);
     sim808Initialized = status.indexOf("+CGNSPWR: 1") >= 0;
     sim808GpsStartTime = millis();
 
-    Serial.printf("[SIM808] GNSS power: %s\n", sim808Initialized ? "ON" : "OFF");
+    Serial.println();
+    Serial.println("================================================");
+    Serial.println(" GPS AKTIF");
+    Serial.println(" MENCARI SATELIT...");
+    Serial.println("================================================");
 }
 
 bool parseSIM808CGNSINF(const String &response, double &lat, double &lon, bool &fix) {
@@ -935,36 +959,53 @@ void feedGPS() {
             currentLongitude = lon;
             gpsHasFix        = true;
             gpsLastFixMillis = millis();
+            sim808FixCount++;
+
+            if (!firstGpsFixSent) {
+                firstGpsFixSent = true;
+                logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
+                needsRedraw = true;
+                Serial.println();
+                Serial.println("************************************************");
+                Serial.println("          GPS FIX BERHASIL!");
+                Serial.println("************************************************");
+                Serial.printf("Waktu mendapatkan FIX : %.1f detik\n",
+                              (now - sim808GpsStartTime) / 1000.0);
+            }
+
+            if (!wasFixed) {
+                Serial.println();
+                Serial.println(">>> GPS SIGNAL KEMBALI <<<");
+            }
 
             bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
                                    fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
 
             if (positionChanged || now - gpsLastSerialReportMillis >= 5000) {
-                Serial.printf("[GPS] FIX lat=%.6f lon=%.6f\n", currentLatitude, currentLongitude);
+                Serial.println();
+                Serial.println("================================================");
+                Serial.println("                GPS MONITOR");
+                Serial.println("================================================");
+                Serial.printf("Latitude    : %.6f\n", currentLatitude);
+                Serial.printf("Longitude   : %.6f\n", currentLongitude);
+                Serial.println("STATUS      : GPS ONLINE / FIX");
+                Serial.println();
+                Serial.println("GOOGLE MAPS:");
+                Serial.printf("https://www.google.com/maps?q=%.6f,%.6f\n",
+                              currentLatitude, currentLongitude);
+                Serial.println("================================================");
                 gpsLastSerialLatitude  = currentLatitude;
                 gpsLastSerialLongitude = currentLongitude;
                 gpsLastSerialReportMillis = now;
-            }
-
-            if (!firstGpsFixSent) {
-                firstGpsFixSent = true;
-                sim808FixCount++;
-                logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
-                needsRedraw = true;
-                Serial.printf("[SIM808] GPS FIX pertama dalam %.1f detik\n",
-                              (now - sim808GpsStartTime) / 1000.0);
-            }
-
-            if (!wasFixed) {
-                Serial.println("[GPS] >> GPS SIGNAL KEMBALI <<");
             }
 
             sim808LastLatitude  = String(lat, 6);
             sim808LastLongitude = String(lon, 6);
         } else {
             if (gpsHasFix) {
-                Serial.println("[GPS] >> GPS FIX HILANG <<");
-                Serial.println("[GPS] Menggunakan koordinat terakhir yang valid.");
+                Serial.println();
+                Serial.println(">>> GPS FIX HILANG <<<");
+                Serial.println("Menggunakan koordinat terakhir yang valid.");
                 needsRedraw = true;
             }
             gpsHasFix = false;
@@ -974,6 +1015,15 @@ void feedGPS() {
         if (gpsHasFix) needsRedraw = true;
         gpsHasFix = false;
         sim808NoFixCount++;
+    }
+
+    if (sim808FixCount > 0 || sim808NoFixCount > 0) {
+        Serial.println();
+        Serial.println("STATISTIK:");
+        Serial.printf("Jumlah FIX     : %lu\n", sim808FixCount);
+        Serial.printf("Jumlah No FIX  : %lu\n", sim808NoFixCount);
+        Serial.printf("Lama GPS ON    : %lu detik\n", (now - sim808GpsStartTime) / 1000);
+        Serial.println("================================================");
     }
 }
 
