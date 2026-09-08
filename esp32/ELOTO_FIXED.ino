@@ -9,7 +9,7 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <TinyGPS++.h>
+// SIM808 GPS via AT commands (replaces TinyGPS++)
 #include <SPI.h>
 #include <SD.h>
 #include <LittleFS.h>
@@ -201,8 +201,18 @@ SemaphoreHandle_t sdMutex = NULL;
 
 TFT_eSPI tft = TFT_eSPI();
 
-TinyGPSPlus gps;
 HardwareSerial gpsSerial(2);
+
+// ============================================================================
+// SIM808 GPS AT COMMAND VARIABLES
+// ============================================================================
+const unsigned long SIM808_GPS_INTERVAL  = 1000;
+const unsigned long SIM808_GPS_TIMEOUT   = 700;
+unsigned long sim808LastGPSRead           = 0;
+String sim808LastLatitude                = "";
+String sim808LastLongitude               = "";
+uint32_t sim808FixCount                  = 0;
+uint32_t sim808NoFixCount                = 0;
 HardwareSerial rd6300Serial(1);
 WebServer server(80);
 
@@ -236,6 +246,8 @@ uint32_t gpsSentenceCount = 0;
 unsigned long gpsLastSerialReportMillis = 0;
 double gpsLastSerialLatitude = 0;
 double gpsLastSerialLongitude = 0;
+unsigned long sim808GpsStartTime = 0;
+bool sim808Initialized = false;
 
 // Variabel Global Anti Phantom Double-Tap
 String lastScannedRfidUID = "";
@@ -833,48 +845,135 @@ String escapeJsonString(String input) {
     return input;
 }
 
-void feedGPS() {
-    while (gpsSerial.available() > 0) {
-        char c = gpsSerial.read();
-        gpsLastByteMillis = millis();
-        gpsByteCount++;
-        if (gps.encode(c)) {
-            gpsSentenceCount++;
-            if (gps.location.isValid()) {
-                currentLatitude  = gps.location.lat();
-                currentLongitude = gps.location.lng();
-                gpsHasFix        = true;
-                gpsLastFixMillis  = millis();
-                bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
-                                       fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
-                
-                if (positionChanged || millis() - gpsLastSerialReportMillis >= 5000) {
-                    Serial.printf("[GPS] FIX lat=%.6f lon=%.6f sats=%lu hdop=%.2f age=%lu ms\n",
-                                  currentLatitude,
-                                  currentLongitude,
-                                  gps.satellites.isValid() ? gps.satellites.value() : 0UL,
-                                  gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
-                                  gps.location.age());
-                    gpsLastSerialLatitude = currentLatitude;
-                    gpsLastSerialLongitude = currentLongitude;
-                    gpsLastSerialReportMillis = millis();
-                }
-                
-                if (!firstGpsFixSent) {
-                    firstGpsFixSent = true;
-                    logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
-                    needsRedraw = true;
-                }
-            }
+void clearSIM808Buffer() {
+    while (gpsSerial.available()) gpsSerial.read();
+}
+
+String sendATCommand(const String &cmd, unsigned long timeout) {
+    clearSIM808Buffer();
+    gpsSerial.println(cmd);
+    String response = "";
+    unsigned long start = millis();
+    while (millis() - start < timeout) {
+        while (gpsSerial.available()) {
+            char c = gpsSerial.read();
+            response += c;
+            gpsByteCount++;
         }
     }
-    
-    if (gps.location.age() > 30000) {
+    return response;
+}
+
+void initSIM808() {
+    Serial.println("[SIM808] Inisialisasi GNSS...");
+
+    sendATCommand("AT", 1000);
+    sendATCommand("ATE0", 1000);
+    sendATCommand("AT+CGNSPWR=1", 1500);
+    sendATCommand("AT+CGNSSEQ=\"RMC\"", 1000);
+
+    String status = sendATCommand("AT+CGNSPWR?", 1000);
+    sim808Initialized = status.indexOf("+CGNSPWR: 1") >= 0;
+    sim808GpsStartTime = millis();
+
+    Serial.printf("[SIM808] GNSS power: %s\n", sim808Initialized ? "ON" : "OFF");
+}
+
+bool parseSIM808CGNSINF(const String &response, double &lat, double &lon, bool &fix) {
+    int pos = response.indexOf("+CGNSINF:");
+    if (pos < 0) return false;
+
+    String data = response.substring(pos + 9);
+    data.trim();
+
+    String fields[20];
+    int fieldIndex = 0;
+    int startIdx = 0;
+    for (unsigned int i = 0; i <= data.length(); i++) {
+        if (data.charAt(i) == ',' || i == data.length()) {
+            if (fieldIndex < 20) {
+                fields[fieldIndex] = data.substring(startIdx, i);
+                fieldIndex++;
+            }
+            startIdx = i + 1;
+        }
+    }
+
+    if (fieldIndex < 8) return false;
+
+    String fixStatus = fields[1];
+    String latitude  = fields[3];
+    String longitude = fields[4];
+
+    fix = (fixStatus == "1") && latitude.length() > 0 && longitude.length() > 0;
+
+    if (fix) {
+        lat = latitude.toDouble();
+        lon = longitude.toDouble();
+        return true;
+    }
+    return false;
+}
+
+void feedGPS() {
+    unsigned long now = millis();
+    if (now - sim808LastGPSRead < SIM808_GPS_INTERVAL) return;
+    sim808LastGPSRead = now;
+
+    gpsSentenceCount++;
+    String response = sendATCommand("AT+CGNSINF", SIM808_GPS_TIMEOUT);
+
+    double lat = 0, lon = 0;
+    bool fix = false;
+
+    if (parseSIM808CGNSINF(response, lat, lon, fix)) {
+        gpsByteCount = response.length();
+
+        if (fix) {
+            bool wasFixed = gpsHasFix;
+            currentLatitude  = lat;
+            currentLongitude = lon;
+            gpsHasFix        = true;
+            gpsLastFixMillis = millis();
+
+            bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
+                                   fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
+
+            if (positionChanged || now - gpsLastSerialReportMillis >= 5000) {
+                Serial.printf("[GPS] FIX lat=%.6f lon=%.6f\n", currentLatitude, currentLongitude);
+                gpsLastSerialLatitude  = currentLatitude;
+                gpsLastSerialLongitude = currentLongitude;
+                gpsLastSerialReportMillis = now;
+            }
+
+            if (!firstGpsFixSent) {
+                firstGpsFixSent = true;
+                sim808FixCount++;
+                logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
+                needsRedraw = true;
+                Serial.printf("[SIM808] GPS FIX pertama dalam %.1f detik\n",
+                              (now - sim808GpsStartTime) / 1000.0);
+            }
+
+            if (!wasFixed) {
+                Serial.println("[GPS] >> GPS SIGNAL KEMBALI <<");
+            }
+
+            sim808LastLatitude  = String(lat, 6);
+            sim808LastLongitude = String(lon, 6);
+        } else {
+            if (gpsHasFix) {
+                Serial.println("[GPS] >> GPS FIX HILANG <<");
+                Serial.println("[GPS] Menggunakan koordinat terakhir yang valid.");
+                needsRedraw = true;
+            }
+            gpsHasFix = false;
+            sim808NoFixCount++;
+        }
+    } else {
         if (gpsHasFix) needsRedraw = true;
         gpsHasFix = false;
-        if (gps.location.age() > 60000) {
-            firstGpsFixSent = false;
-        }
+        sim808NoFixCount++;
     }
 }
 
@@ -2801,9 +2900,9 @@ void handleStatus() {
     doc["gps_sentences"] = gpsSentenceCount;
     doc["gps_last_byte_ms"] = gpsLastByteMillis;
     doc["gps_last_fix_ms"] = gpsLastFixMillis;
-    doc["gps_chars_processed"] = gps.charsProcessed();
-    doc["gps_failed_checksum"] = gps.failedChecksum();
-    doc["gps_passed_checksum"] = gps.passedChecksum();
+    doc["gps_fix_count"] = sim808FixCount;
+    doc["gps_nofix_count"] = sim808NoFixCount;
+    doc["gps_sim808_ok"] = sim808Initialized;
     doc["uptime_ms"] = millis(); doc["is_online"] = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
     
     JsonArray q = doc.createNestedArray("queue");
@@ -2853,7 +2952,7 @@ void setup() {
     setStoryFont(12);
     tft.drawString("MEMULAI SISTEM...", 240, 160);
 
-    Serial.println("[ELOTO] GPS monitor aktif: UART2 RX=GPIO16 TX=GPIO17 baud=9600");
+    Serial.println("[ELOTO] GPS SIM808 aktif: UART2 RX=GPIO16 TX=GPIO17 baud=9600");
     
     sdMutex = xSemaphoreCreateMutex();
     networkQueue = xQueueCreate(10, sizeof(NetworkJob));
@@ -2877,8 +2976,9 @@ void setup() {
     
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(tft_output);
-    gpsSerial.setRxBufferSize(1024); 
+    gpsSerial.setRxBufferSize(1024);
     gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+    initSIM808();
     rd6300Serial.begin(9600, SERIAL_8N1, RD6300_RX_PIN, RD6300_TX_PIN);
     
     pinMode(PIN_RELAY, OUTPUT); 
