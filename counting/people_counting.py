@@ -116,7 +116,7 @@ class MJPEGFrame:
     def __init__(self):
         self.frame = None
         self.lock = threading.Lock()
-        selfannotated = None
+        self.annotated = None
 
     def update(self, frame, annotated):
         with self.lock:
@@ -331,6 +331,9 @@ def process_stream(stream_name, rtsp_url, roi_polygon, model, person_class_id, s
                     cv2.circle(annotated, foot, 5, color, -1)
             cv2.putText(annotated, f"Detected: {people_in_roi} | Registered: {syncer.registered_count}",
                         (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+            if people_in_roi != syncer.registered_count:
+                cv2.putText(annotated, "WARNING: COUNT MISMATCH - LOTO NOT SAFE",
+                            (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
             cv2.putText(annotated, f"Backend: {'ONLINE' if syncer.connected else 'OFFLINE'}",
                         (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
             mjpeg_frame.update(frame, annotated)
@@ -339,7 +342,8 @@ def process_stream(stream_name, rtsp_url, roi_polygon, model, person_class_id, s
             frame_count += 1
             if frame_count % 30 == 0:
                 status = "ONLINE" if syncer.connected else "OFFLINE"
-                print(f"[{stream_name}] Frame {frame_count} | ROI: {people_in_roi} | Registered: {syncer.registered_count} | Backend: {status}")
+                warning = " | WARNING COUNT MISMATCH" if people_in_roi != syncer.registered_count else ""
+                print(f"[{stream_name}] Frame {frame_count} | ROI: {people_in_roi} | Registered: {syncer.registered_count} | Backend: {status}{warning}")
 
             # Display (non-headless)
             if not HEADLESS:

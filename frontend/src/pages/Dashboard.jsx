@@ -51,7 +51,7 @@ export default function Dashboard() {
 
   const [streams, setStreams] = useState([]);
   const [failedStreamId, setFailedStreamId] = useState(null);
-  const cameraConfigured = streams.some(stream => stream.id === selectedBox?.id && stream.configured);
+  const cameraConfigured = Boolean(selectedBox?.rtsp_url) || streams.some(stream => stream.id === selectedBox?.id && stream.configured);
   const showCamera = cameraConfigured && failedStreamId !== selectedBox?.id;
   const countMismatch = !peopleCount.stale && Number.isInteger(Number(peopleCount.detected_count)) && Number.isInteger(Number(peopleCount.registered_count)) && Number(peopleCount.detected_count) !== Number(peopleCount.registered_count);
 
@@ -221,7 +221,7 @@ export default function Dashboard() {
               <span className="text-blue-600">{peopleCount.stale ? '—' : peopleCount.registered_count}</span>
             </h3>
             <p className="text-[9px] text-slate-400">Detected / Registered</p>
-            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ PERINGATAN: jumlah tidak sesuai</p>}
+            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ PERINGATAN: terdeteksi {Number(peopleCount.detected_count) < Number(peopleCount.registered_count) ? 'kurang' : 'lebih'} dari terdaftar</p>}
           </div>
           <div className={`w-10 h-10 rounded-full flex items-center justify-center ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
             <i className={`fa-solid fa-video text-lg ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
