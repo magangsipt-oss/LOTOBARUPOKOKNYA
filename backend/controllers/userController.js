@@ -185,7 +185,7 @@ const userController = {
       try { await fs.access(filePath); }
       catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        const legacyRoot = path.join(userProfilesDir, '..', '..', '..', 'api', 'uploads', 'user_profiles');
+        const legacyRoot = path.join(userProfilesDir, '..', '..', 'legacy-uploads', 'user_profiles');
         const legacyPath = path.join(legacyRoot, filename);
         await fs.access(legacyPath);
         // Decode and re-encode legacy images; no arbitrary file content is served.

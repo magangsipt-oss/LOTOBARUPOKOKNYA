@@ -65,7 +65,7 @@ export function createApp() {
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   const root = path.dirname(fileURLToPath(import.meta.url));
   app.use('/api/uploads', express.static(path.join(root, 'uploads'), { dotfiles: 'deny' }));
-  app.use('/api/legacy-uploads', express.static(path.join(root, '..', 'api', 'uploads'), { dotfiles: 'deny' }));
+  app.use('/api/legacy-uploads', express.static(path.join(root, 'legacy-uploads'), { dotfiles: 'deny' }));
   app.use('/api/boxes', boxRoutes);
   app.use('/api/commands', commandRoutes);
   app.use('/api/events', eventRoutes);

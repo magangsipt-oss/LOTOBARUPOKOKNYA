@@ -1,6 +1,6 @@
 # Dokumentasi E-LOTO
 
-Dokumentasi ini menjelaskan implementasi aktif di `frontend/`, `backend/`, `counting/`, dan `esp32/`. Folder `api/` dan `index.html` root adalah peninggalan versi lama.
+Dokumentasi ini menjelaskan implementasi aktif di `frontend/`, `backend/`, `counting/`, dan `esp32/`. Kode PHP dalam folder `api/` dan `index.html` root versi lama sudah dihapus. Foto profil lama disimpan di `backend/legacy-uploads/` agar tetap dapat diakses melalui backend.
 
 | Kebutuhan | Panduan |
 | --- | --- |

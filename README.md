@@ -13,7 +13,6 @@ Aplikasi pemantauan Lockout/Tagout dengan dashboard web, API Node.js, perangkat 
 | `counting/` | Worker Python untuk RTSP, deteksi orang, dan MJPEG |
 | `esp32/` | Firmware dan contoh konfigurasi SD perangkat |
 | `docs/` | Panduan pengembangan, integrasi, dan operasional |
-| `api/`, `index.html` root | Kode lama; bukan target deployment aktif |
 
 ## Mulai development
 
