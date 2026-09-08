@@ -159,7 +159,7 @@ export default function Logs() {
                       <button type="button" onClick={() => handleHapusLogPemeliharaan(log.id)} className="bg-white text-red-500 px-2 py-1 rounded text-[10px] border border-red-200 hover:bg-red-50" title="Hapus"><i className="fa-solid fa-trash-can"></i></button>
                     </td>
                   </tr>
-                )) : <tr><td colSpan="9" className="p-12 text-center text-slate-500 italic font-sans border border-red-200">Belum ada berkas laporan yang sesuai.</td></tr>}
+                )) : <tr><td colSpan="8" className="p-12 text-center text-slate-500 italic font-sans border border-red-200">Belum ada berkas laporan yang sesuai.</td></tr>}
               </tbody>
             </table>
           </div>

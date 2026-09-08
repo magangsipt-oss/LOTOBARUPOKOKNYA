@@ -65,8 +65,8 @@ const userController = {
   changePassword: async (req, res, next) => {
     try {
       const { currentPassword, newPassword } = req.body || {};
-      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length < 12 || Buffer.byteLength(newPassword) > 72) {
-        return res.status(400).json({ success: false, message: 'Kata sandi baru minimal 12 karakter dan maksimal 72 byte.' });
+      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length === 0 || Buffer.byteLength(newPassword) > 72) {
+        return res.status(400).json({ success: false, message: 'Kata sandi baru wajib diisi dan maksimal 72 byte.' });
       }
       const user = await UserModel.authenticate(req.auth.user.sid, currentPassword);
       if (!user) return res.status(401).json({ success: false, message: 'Kata sandi lama salah.' });
@@ -255,7 +255,6 @@ const userController = {
         nama,
         role,
         rfidUid,
-        password,
         foto: profile_photo,
       });
 

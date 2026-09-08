@@ -30,6 +30,7 @@ function LoginForm() {
     try {
       await handleLogin(formData.sid.trim(), formData.password, (msg, type) => {
         if (type === 'fail') setLoginError(msg);
+        if (type === 'ok') window.dispatchEvent(new CustomEvent('eloto-toast', { detail: { msg, type: 'ok' } }));
       });
     } catch {
       setLoginError('Login gagal. Silakan coba lagi.');
@@ -39,15 +40,15 @@ function LoginForm() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 flex items-center justify-center p-4 relative overflow-hidden">
       {/* Background Pattern */}
-      <div className="absolute inset-0 opacity-5">
-        <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle at 25px 25px, rgba(255,255,255,0.15) 2%, transparent 0%)', backgroundSize: '50px 50px' }} />
+      <div className="absolute inset-0 opacity-30">
+        <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle at 25px 25px, rgba(0,0,0,0.03) 2%, transparent 0%)', backgroundSize: '50px 50px' }} />
       </div>
 
       {/* Floating Elements */}
-      <div className="absolute top-20 left-10 w-72 h-72 bg-red-500/10 rounded-full blur-3xl animate-pulse" />
-      <div className="absolute bottom-20 right-10 w-96 h-96 bg-red-600/10 rounded-full blur-3xl animate-pulse" />
+      <div className="absolute top-20 left-10 w-72 h-72 bg-red-100/40 rounded-full blur-3xl animate-pulse" />
+      <div className="absolute bottom-20 right-10 w-96 h-96 bg-red-100/30 rounded-full blur-3xl animate-pulse" />
 
       <div className="relative z-10 w-full max-w-md">
         {/* Logo & Title */}
@@ -55,25 +56,25 @@ function LoginForm() {
           <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-red-500 to-red-700 rounded-2xl shadow-lg shadow-red-500/30 mb-4 transform hover:scale-105 transition-transform">
             <i className="fa-solid fa-shield-halved text-white text-3xl"></i>
           </div>
-          <h1 className="text-3xl font-black text-white tracking-tight">E-LOTO</h1>
-          <p className="text-slate-400 text-sm mt-1 font-medium">Industrial IoT Safety System</p>
+          <h1 className="text-3xl font-black text-slate-800 tracking-tight">E-LOTO</h1>
+          <p className="text-slate-500 text-sm mt-1 font-medium">Industrial IoT Safety System</p>
         </div>
 
         {/* Login Card */}
-        <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/20">
-          <div className="text-center mb-6">
+        <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border-2 border-red-200">
+          <div className="text-center mb-6 pb-4 border-b-2 border-red-100">
             <h2 className="text-xl font-bold text-slate-800">Selamat Datang</h2>
             <p className="text-slate-500 text-xs mt-1">Masuk ke sistem monitoring</p>
           </div>
 
           <form onSubmit={onSubmit} className="space-y-4">
             {loginError && (
-              <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <p role="alert" className="rounded-xl border-2 border-red-300 bg-red-50 p-3 text-sm text-red-700">
                 {loginError}
               </p>
             )}
             <div className="space-y-1">
-              <label className="block text-slate-700 text-xs font-semibold">ID Karyawan / SID</label>
+              <label className="block text-slate-700 text-xs font-semibold pl-1">ID Karyawan / SID</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   <i className="fa-solid fa-fingerprint"></i>
@@ -82,7 +83,7 @@ function LoginForm() {
                   type="text"
                   required
                   placeholder="Masukkan ID Karyawan"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-3 text-slate-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-all"
+                  className="w-full bg-white border-2 border-red-200 rounded-xl pl-10 pr-4 py-3 text-slate-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-all"
                   value={formData.sid}
                   onChange={(e) => setFormData({ ...formData, sid: e.target.value })}
                 />
@@ -90,7 +91,7 @@ function LoginForm() {
             </div>
 
             <div className="space-y-1">
-              <label className="block text-slate-700 text-xs font-semibold">Kata Sandi</label>
+              <label className="block text-slate-700 text-xs font-semibold pl-1">Kata Sandi</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   <i className="fa-solid fa-lock"></i>
@@ -99,7 +100,7 @@ function LoginForm() {
                   type="password"
                   required
                   placeholder="Masukkan Kata Sandi"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-3 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-all"
+                  className="w-full bg-white border-2 border-red-200 rounded-xl pl-10 pr-4 py-3 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-all"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 />
@@ -123,8 +124,8 @@ function LoginForm() {
             </button>
           </form>
 
-          <div className="mt-6 pt-4 border-t border-slate-200">
-            <p className="text-center text-[10px] text-slate-400">
+          <div className="mt-6 pt-4 border-t-2 border-red-100">
+            <p className="text-center text-[10px] text-slate-500">
               <i className="fa-solid fa-lock mr-1"></i> Sistem aman & terenkripsi
             </p>
           </div>
@@ -226,7 +227,7 @@ export default function App() {
 
   if (!isProtocolValid) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
         <div className="max-w-lg rounded-3xl bg-white p-8 shadow-2xl text-center space-y-6">
           <div className="w-16 h-16 bg-amber-100 rounded-2xl flex items-center justify-center mx-auto">
             <i className="fa-solid fa-triangle-exclamation text-amber-600 text-3xl"></i>

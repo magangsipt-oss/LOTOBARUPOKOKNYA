@@ -48,7 +48,7 @@ export function AppProvider({ children }) {
   const [cropTargetSetter, setCropTargetSetter] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [printActiveLog, setPrintActiveLog] = useState(null);
-  const [subTabMaintenance, setSubTabMaintenance] = useState('menu-riwayat');
+  const [subTabMaintenance, setSubTabMaintenance] = useState('form-mekanik');
   const [subTabAdmin, setSubTabAdmin] = useState('daftar-personel');
 
   // Refs
@@ -392,9 +392,10 @@ export function AppProvider({ children }) {
         setHwData(boxHardwareSnapshot(savedBox));
         setPeopleCount({ detected_count: null, registered_count: null, stale: true });
         setPeopleCountHistory([]);
+        const wasEditing = Boolean(editingBoxId);
         setEditingBoxId('');
         setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
-        pemicuToast(editingBoxId ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
+        pemicuToast(wasEditing ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
       } else { pemicuToast(hasil.message, 'fail'); }
     } catch { pemicuToast("Gagal mendaftarkan unit box ke server!", "fail"); }
   };
@@ -407,7 +408,7 @@ export function AppProvider({ children }) {
 
   const handleBatalEditAlatBerat = () => {
     setEditingBoxId('');
-    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '' });
+    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
   };
 
   const handleHapusAlatBerat = async (idBox) => {

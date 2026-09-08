@@ -13,7 +13,7 @@ export default function Sidebar() {
 
   const navItems = [];
 
-  if (sessionUser) {
+  if (sessionUser && sessionUser?.role !== 'admin') {
     navItems.push({ id: 'profil-tab', icon: 'fa-user', label: 'Profil Saya' });
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
@@ -47,16 +47,15 @@ export default function Sidebar() {
 
       {/* User Card */}
       <div className="p-4">
-        <button
-          type="button"
-          onClick={() => setActiveTab('profil-tab')}
-          className={`w-full bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center space-y-2 hover:border-red-300 hover:bg-red-50/50 transition-all ${sessionUser?.role === 'admin' ? 'cursor-default' : ''}`}
+        <div
+          className={`w-full bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center space-y-2 ${sessionUser?.role !== 'admin' ? 'cursor-pointer hover:border-red-300 hover:bg-red-50/50 transition-all' : ''}`}
+          {...(sessionUser?.role !== 'admin' && { onClick: () => setActiveTab('profil-tab'), role: 'button', tabIndex: 0 })}
         >
           <Avatar profile={sessionUser} className="w-14 h-14 mx-auto ring-2 ring-white shadow-md" />
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Pengguna Aktif</p>
           <p className="text-xs font-bold text-slate-800 truncate">{sessionUser?.nama}</p>
           <span className="inline-block text-[9px] bg-slate-800 text-white px-2.5 py-1 rounded-full font-bold uppercase tracking-wider">{sessionUser?.role}</span>
-        </button>
+        </div>
       </div>
 
       {/* Navigation */}

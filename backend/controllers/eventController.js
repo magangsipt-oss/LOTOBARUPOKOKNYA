@@ -151,7 +151,7 @@ const eventController = {
   // 6. Ambil semua audit logs
   getAllAuditLogs: async (req, res) => {
     try {
-      const limit = parseInt(req.query.limit) || 1000;
+      const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit) || 1000));
       const logs = await EventModel.getAllAuditLogs(limit);
       return res.status(200).json({
         success: true,
@@ -172,7 +172,7 @@ const eventController = {
   getAuditLogsByBox: async (req, res) => {
     try {
       const { idBox } = req.params;
-      const limit = parseInt(req.query.limit) || 500;
+      const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit) || 500));
 
       if (!idBox) {
         return res.status(400).json({
