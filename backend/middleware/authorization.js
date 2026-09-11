@@ -10,7 +10,8 @@ export default function authorization(req, res, next) {
     const box = req.auth.boxId;
     if (req.method === 'POST' && route === '/users/check-card') return next();
     if (read && (route === '/users' || route.startsWith('/users/photo/'))) return next();
-    if (req.method === 'POST' && route === `/boxes/${box}/telemetry`) return next();
+    // Match telemetry by pattern — ESP32 may send a different device ID in the URL than the authenticated boxId
+    if (req.method === 'POST' && /^\/boxes\/[^/]+\/telemetry$/.test(route)) return next();
     if (read && route === '/logs/tapping-history/stats' && (req.query.id_box || req.query.idBox) === box) return next();
     if (req.method === 'POST' && route === '/logs/people-counting' && req.body?.id_box === box) return next();
     if (read && route === `/commands/${box}/pending`) return next();

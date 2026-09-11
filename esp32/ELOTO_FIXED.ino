@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <time.h>
-#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -9,7 +7,8 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-// SIM808 GPS via AT commands (replaces TinyGPS++)
+// TinyGPS++ TIDAK dipakai lagi -- modul GPS di board ini adalah SIM808/SIM868
+// (modul AT-command, bukan modul NMEA polos), jadi dibaca pakai perintah AT+CGNSINF.
 #include <SPI.h>
 #include <SD.h>
 #include <LittleFS.h>
@@ -68,16 +67,16 @@
 #define PIN_AD_KEY      34      
 #define SD_CS_PIN       5       
 #define TFT_CS_PIN      15      
-#define DEVICE_ID       "BOX ELOTO 1"
+// Default ID - bisa diubah dari SD Card config.txt
+String device_id        = "BOX ELOTO 1";
 
 // ============================================================================
-// KONFIGURASI JARINGAN & SERVER (DIBACA DARI SD CARD NANTINYA)
+// KONFIGURASI JARINGAN & SERVER (DIBACA DARI SD CARD)
 // ============================================================================
-String wifi_ssid        = "";
-String wifi_password    = "";
-String server_host      = "";
-String device_token = "";
-String server_ca = "";
+String wifi_ssid        = "vivoV29";
+String wifi_password    = "112233445566";
+String server_host      = "192.168.137.1:5002";
+String device_token     = "ESP32-ELOTO-BOX1-SECRET-TOKEN-2024";
 const char* SERVER_PROJECT_PATH  = "";
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 800;
@@ -87,11 +86,11 @@ const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 String getServerBaseUrl() {
     String host = server_host;
     host.trim();
-    if (host.length() == 0 || host.startsWith("http://")) return "";
+    if (host.length() == 0) host = WiFi.gatewayIP().toString();
     if (host.startsWith("http://") || host.startsWith("https://")) {
         return host + SERVER_PROJECT_PATH + "/";
     }
-    return "https://" + host + SERVER_PROJECT_PATH + "/";
+    return "http://" + host + SERVER_PROJECT_PATH + "/";
 }
 
 String getApiUrl(const char* endpoint) {
@@ -99,10 +98,10 @@ String getApiUrl(const char* endpoint) {
 }
 
 String getDeviceId() {
-    String configuredId = DEVICE_ID;
+    String configuredId = device_id;
     configuredId.trim();
     if (configuredId.length() > 0) return configuredId;
-    
+
     String mac = WiFi.macAddress();
     mac.replace(":", "");
     mac.toUpperCase();
@@ -124,7 +123,8 @@ enum SystemState {
     STATE_LOGOUT_DENIED, STATE_STACK_STATUS, STATE_SERVER_OFFLINE, STATE_SYSTEM_ERROR,
     STATE_INITIALIZING, STATE_CONNECTING, STATE_SHOW_IP, STATE_SYSTEM_READY, STATE_COUNTDOWN,
     STATE_SUPERVISOR_VALID, STATE_MECHANIC_VALID, STATE_ALL_WORKERS_REGISTERED,
-    STATE_LOGOUT_SUCCESS, STATE_ALL_WORKERS_OUT, STATE_UNLOCKING, STATE_SYSTEM_READY_FINAL
+    STATE_LOGOUT_SUCCESS, STATE_ALL_WORKERS_OUT, STATE_UNLOCKING, STATE_SYSTEM_READY_FINAL,
+    STATE_WELCOME
 };
 
 String stateToString(SystemState s);
@@ -162,9 +162,8 @@ struct AuditEntry {
 };
 
 struct NetworkJob {
-    char event[101];
-    char uid[51];
-    char eventId[33];
+    char event[32];
+    char uid[16];
 };
 
 const uint8_t MAX_RAM_USERS = 50;
@@ -189,6 +188,17 @@ bool firstGpsFixSent      = false;
 bool relayOpen            = false;
 bool sdCardMounted        = false;
 bool exitCountdownActive  = false;
+bool gpsInitDone          = false;
+
+void initGpsModule();  // forward declaration
+
+// GPS init task - berjalan di background supaya tidak memblok main loop
+void gpsInitTask(void *pvParameters) {
+    initGpsModule();
+    gpsInitDone = true;
+    Serial.println("[GPS] Init selesai di background task");
+    vTaskDelete(NULL);
+}
 
 bool hasValidGpsFix() {
     return gpsHasFix && currentLatitude >= -90.0 && currentLatitude <= 90.0 &&
@@ -203,16 +213,14 @@ TFT_eSPI tft = TFT_eSPI();
 
 HardwareSerial gpsSerial(2);
 
-// ============================================================================
-// SIM808 GPS AT COMMAND VARIABLES
-// ============================================================================
-const unsigned long SIM808_GPS_INTERVAL  = 1000;
-const unsigned long SIM808_GPS_TIMEOUT   = 700;
-unsigned long sim808LastGPSRead           = 0;
-String sim808LastLatitude                = "";
-String sim808LastLongitude               = "";
-uint32_t sim808FixCount                  = 0;
-uint32_t sim808NoFixCount                = 0;
+// --- State machine polling GPS via AT+CGNSINF (non-blocking, tidak mengganggu loop utama) ---
+enum GpsPollState { GPS_POLL_IDLE, GPS_POLL_WAITING };
+GpsPollState gpsPollState = GPS_POLL_IDLE;
+String gpsResponseBuffer = "";
+unsigned long gpsPollStartMillis = 0;
+unsigned long gpsLastPollMillis = 0;
+const unsigned long GPS_POLL_INTERVAL = 1000;  // tanya modul tiap 1 detik
+const unsigned long GPS_POLL_TIMEOUT  = 900;   // batas tunggu jawaban modul
 HardwareSerial rd6300Serial(1);
 WebServer server(80);
 
@@ -244,23 +252,34 @@ unsigned long gpsLastFixMillis = 0;
 uint32_t gpsByteCount = 0;
 uint32_t gpsSentenceCount = 0;
 unsigned long gpsLastSerialReportMillis = 0;
+unsigned long gpsDebugPrintMillis = 0;
 double gpsLastSerialLatitude = 0;
 double gpsLastSerialLongitude = 0;
-unsigned long sim808GpsStartTime = 0;
-bool sim808Initialized = false;
 
 // Variabel Global Anti Phantom Double-Tap
 String lastScannedRfidUID = "";
 unsigned long lastScannedRfidTime = 0;
+
+// Flag: sync database ke SD Card belum dilakukan saat boot
+bool startupSyncPending = true;
+
+// Status registrasi: info kartu terakhir yang di-tap di mode registrasi
+bool regHasCard = false;         // ada kartu yang baru didaftarkan
+String regLastUID = "";          // UID kartu terakhir
+String regLastSID = "";          // SID (kosong untuk kartu baru)
+String regLastName = "";         // Nama (KARTU BARU untuk kartu baru)
+String regLastRole = "";         // Role
+String regLastStatus = "";       // Status (REGISTRASI OK! / SUDAH TERDAFTAR)
+bool regLastSuccess = true;      // apakah registrasi berhasil
 
 // ============================================================================
 // PROTOTIPE FUNGSI FULL (AGAR COMPILER TIDAK ERROR)
 // ============================================================================
 void processRfidLogic(String uid);
 String checkRfidSensor();
-bool syncDatabaseToSDCard();
+void syncDatabaseToSDCard();
 WorkerInfo searchUserFromSDCard(String uid);
-void saveOfflineLogToSDCard(String event, String uid, String eventId);
+void saveOfflineLogToSDCard(String event, String uid);
 void uploadOfflineLogsSDCard();
 void saveSessionToSD();
 void clearSessionFromSD();
@@ -279,6 +298,7 @@ void drawWorkerGroupIcon(int16_t cx, int16_t cy, uint8_t count, uint16_t color);
 void buzzSuccess();
 void buzzFailed();
 void buzzTick();
+void countdownBeep(int detik);
 void connectWiFiRoutine();
 WorkerInfo fetchCardDataAPI(String uid);
 uint8_t readADKeypadRaw();
@@ -287,11 +307,13 @@ void sanitizeQueueDeadlock();
 void displayCardNotification(String uid, String name, String role, String statusMsg, bool isSuccess);
 void displayErrorCardPopup(String uid, String title, String name, String role, String sid, String bottomHint);
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH);
-void resetPhotoPrecache();
-void precacheNextWorkerPhoto();
 void amanDelay(uint32_t ms);
 void clearMainScreenArea();
 void executeFooterChoice();
+void kirimPerintahAT(const char* perintah, unsigned long tunggu);
+void initGpsModule();
+void parseGpsResponse(const String &response);
+void feedGPS();
 
 // ============================================================================
 // KONVERSI HEX KE DECIMAL 
@@ -352,9 +374,6 @@ uint8_t getDebouncedKey() {
 // ============================================================================
 void loadConfigFromSD() {
     if (!sdCardMounted) return;
-    if (!SD.exists("/users.csv") && SD.exists("/users.bak")) SD.rename("/users.bak", "/users.csv");
-    File caFile = SD.open("/server_ca.pem", FILE_READ);
-    if (caFile) { server_ca = caFile.readString(); caFile.close(); }
 
     if (SD.exists("/config.txt")) {
         File configFile = SD.open("/config.txt", FILE_READ);
@@ -366,9 +385,12 @@ void loadConfigFromSD() {
                 else if (line.startsWith("PASS=")) wifi_password = line.substring(5);
                 else if (line.startsWith("SERVER=")) server_host = line.substring(7);
                 else if (line.startsWith("TOKEN=")) device_token = line.substring(6);
+                else if (line.startsWith("DEVICE_ID=")) device_id = line.substring(10);
             }
             configFile.close();
             Serial.println("[CONFIG] Berhasil memuat konfigurasi dari SD Card.");
+            Serial.println("[CONFIG] Device ID: " + device_id);
+            Serial.println("[CONFIG] Server: " + server_host);
         }
     } else {
         File configFile = SD.open("/config.txt", FILE_WRITE);
@@ -377,8 +399,10 @@ void loadConfigFromSD() {
             configFile.println("PASS=" + wifi_password);
             configFile.println("SERVER=" + server_host);
             configFile.println("TOKEN=" + device_token);
+            configFile.println("DEVICE_ID=" + device_id);
             configFile.close();
             Serial.println("[CONFIG] File config.txt baru dibuat di SD Card.");
+            Serial.println("[CONFIG] Device ID default: " + device_id);
         }
     }
 }
@@ -386,73 +410,45 @@ void loadConfigFromSD() {
 // ============================================================================
 // INISIALISASI MICROSD AMAN
 // ============================================================================
-// PERBAIKAN:
-// - Selalu non-aktifkan TFT_CS sebelum & sesudah setiap percobaan, supaya TFT
-//   benar-benar lepas dari bus SPI saat SD dicoba dibaca (anti "tabrakan").
-// - SD.end() dipanggil sebelum setiap percobaan ulang, supaya driver SD
-//   benar-benar reset (percobaan sebelumnya yang gagal bisa meninggalkan
-//   state SPI yang setengah jalan dan bikin percobaan berikutnya ikut gagal).
-// - Ditambah 1 tingkat kecepatan lagi (100 kHz) untuk kartu yang lambat naik.
-// - Ditambah log ke Serial supaya kelihatan persis di tahap mana gagalnya.
-// - Bug lama: SD.rmdir() dipanggil ke "/user.csv" padahal itu FILE bukan
-//   folder (rmdir tidak akan pernah berhasil menghapus file) -> diganti
-//   SD.remove().
 bool initializeSDCard() {
-    const uint32_t speedTiers[] = { 400000, 200000, 100000 };
+    digitalWrite(TFT_CS_PIN, HIGH);
+    digitalWrite(SD_CS_PIN, HIGH);
+    delay(50);   // beri waktu microSD card power-up sebelum diajak bicara (dulu 10ms, sering kurang)
+
     bool terhubung = false;
+    const uint32_t kecepatanCoba[] = { 400000, 400000, 200000 }; // coba beberapa kali, bukan cuma sekali per kecepatan
 
-    for (uint8_t attempt = 0; attempt < 3 && !terhubung; attempt++) {
-        // Lepaskan dulu koneksi SD sebelumnya (kalau ada) supaya bus benar-benar bersih
-        SD.end();
-
-        // Pastikan TFT benar-benar "diam" (CS HIGH = tidak aktif) sebelum SD dipakai
-        digitalWrite(TFT_CS_PIN, HIGH);
-        digitalWrite(SD_CS_PIN, HIGH);
-        delay(20);
-
-        Serial.printf("[SD] Percobaan #%d, kecepatan %lu Hz...\n", attempt + 1, (unsigned long)speedTiers[attempt]);
-
-        if (SD.begin(SD_CS_PIN, SPI, speedTiers[attempt])) {
-            terhubung = true;
-            Serial.println("[SD] SD.begin() BERHASIL.");
-        } else {
-            Serial.println("[SD] SD.begin() gagal, coba lagi...");
+    for (uint8_t percobaan = 0; percobaan < 3 && !terhubung; percobaan++) {
+        if (percobaan > 0) {
+            SD.end();                 // reset state SD sebelum coba lagi
             digitalWrite(SD_CS_PIN, HIGH);
             delay(100);
+        }
+        if (SD.begin(SD_CS_PIN, SPI, kecepatanCoba[percobaan])) {
+            terhubung = true;
+            Serial.printf("[SD] Terbaca pada percobaan ke-%d (%lu Hz)\n", percobaan + 1, (unsigned long)kecepatanCoba[percobaan]);
         }
     }
 
     if (!terhubung) {
-        Serial.println("[SD] GAGAL total setelah 3 percobaan. Cek: kartu terpasang benar, sudah diformat FAT32, dan kabel/pin CS/SCK/MISO/MOSI tidak longgar.");
         digitalWrite(SD_CS_PIN, HIGH);
+        Serial.println("[SD] GAGAL terbaca setelah 3 percobaan. Cek posisi microSD & jalur CS/pin 5.");
         return false;
     }
-
-    // Info kartu untuk verifikasi lewat Serial Monitor
-    uint8_t cardType = SD.cardType();
-    if (cardType == CARD_NONE) {
-        Serial.println("[SD] Terhubung tapi tidak ada kartu terdeteksi (CARD_NONE). Cek kartu/slot.");
-        digitalWrite(SD_CS_PIN, HIGH);
-        return false;
-    }
-    uint64_t cardSizeMB = SD.cardSize() / (1024 * 1024);
-    Serial.printf("[SD] Tipe kartu: %s, ukuran: %llu MB\n",
-        cardType == CARD_MMC ? "MMC" : cardType == CARD_SD ? "SDSC" : cardType == CARD_SDHC ? "SDHC" : "UNKNOWN",
-        (unsigned long long)cardSizeMB);
-
-    if (SD.exists("/user.csv")) SD.remove("/user.csv");
-    if (SD.exists("/users.csv.txt")) SD.remove("/users.csv.txt");
-    if (!SD.exists("/foto")) SD.mkdir("/foto");
-
-    if (!SD.exists("/users.csv")) {
-        File initFile = SD.open("/users.csv", FILE_WRITE);
-        if (initFile) {
-            initFile.println("9D88FA1200,Budi Santoso,PENGAWAS,1");
-            initFile.println("1A2B3C4D5E,Agus Prayitno,MEKANIK,0");
-            initFile.close();
+    if (terhubung) {
+        if (SD.exists("/user.csv")) SD.rmdir("/user.csv");
+        if (SD.exists("/users.csv.txt")) SD.remove("/users.csv.txt");
+        if (!SD.exists("/foto")) SD.mkdir("/foto");
+        
+        if (!SD.exists("/users.csv")) {
+            File initFile = SD.open("/users.csv", FILE_WRITE);
+            if (initFile) {
+                initFile.println("9D88FA1200,Budi Santoso,PENGAWAS,1");
+                initFile.println("1A2B3C4D5E,Agus Prayitno,MEKANIK,0");
+                initFile.close();
+            }
         }
     }
-
     digitalWrite(SD_CS_PIN, HIGH);
     return terhubung;
 }
@@ -519,7 +515,8 @@ void drawWorkerGroupIcon(int16_t cx, int16_t cy, uint8_t count, uint16_t color) 
 }
 
 bool hasFooterChoice() {
-    return currentState == STATE_BOOT_IP || currentState == STATE_SHOW_IP || 
+    return currentState == STATE_WELCOME ||
+           currentState == STATE_SHOW_IP ||
            currentState == STATE_START_CONFIRM || currentState == STATE_SYSTEM_READY ||
            currentState == STATE_SUPERVISOR_VALID || currentState == STATE_SET_MEKANIK_COUNT ||
            currentState == STATE_ALL_WORKERS_REGISTERED || currentState == STATE_WORKER_LIST ||
@@ -600,14 +597,22 @@ void updateHeaderClock() {
 // ============================================================================
 void amanDelay(uint32_t ms) {
     unsigned long startMillis = millis();
+    static unsigned long lastHeartbeatInDelay = 0;
     while (millis() - startMillis < ms) {
         server.handleClient();
         feedGPS();
-        
+
         if (millis() - lastClockUpdateMillis >= 1000) {
             lastClockUpdateMillis = millis();
             updateHeaderClock();
         }
+
+        // Kirim heartbeat tiap 7 detik supaya box tetap online di dashboard
+        if (WiFi.status() == WL_CONNECTED && millis() - lastHeartbeatInDelay >= 7000) {
+            lastHeartbeatInDelay = millis();
+            logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
+        }
+
         delay(2);
     }
 }
@@ -721,23 +726,29 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
 
     // 1. Jika belum ada di SD, download via HTTP
     if (!photoExists && WiFi.status() == WL_CONNECTED) {
-        WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
+        unsigned long t0 = millis();
+        Serial.printf("[PHOTO] Download UID=%s, heap=%lu\n", uid.c_str(), (unsigned long)ESP.getFreeHeap());
+        WiFiClient client; client.setTimeout(3000);
         HTTPClient http;
         String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
+        Serial.printf("[PHOTO] URL: %s\n", url.c_str());
         http.begin(client, url);
-        http.addHeader("X-Device-Token", device_token);
         http.addHeader("Accept", "image/jpeg");
-        http.setTimeout(1000); 
-        
+        http.addHeader("X-Device-Token", device_token);
+        http.setTimeout(5000);
+
         int httpCode = http.GET();
+        Serial.printf("[PHOTO] HTTP %d, size=%d, time=%lums\n", httpCode, http.getSize(), millis() - t0);
         if (httpCode == HTTP_CODE_OK) {
-            String jpeg = http.getString(); 
+            String jpeg = http.getString();
+            Serial.printf("[PHOTO] Response: %d bytes, first=0x%02X 0x%02X\n", jpeg.length(), (uint8_t)jpeg[0], (jpeg.length() > 1 ? (uint8_t)jpeg[1] : 0));
             if (jpeg.length() > 100 && (uint8_t)jpeg[0] == 0xFF && (uint8_t)jpeg[1] == 0xD8) {
                 jpegSize = jpeg.length();
                 jpegData = static_cast<uint8_t *>(malloc(jpegSize));
                 if (jpegData != NULL) {
                     memcpy(jpegData, jpeg.c_str(), jpegSize);
-                    
+                    Serial.printf("[PHOTO] JPEG OK: %d bytes, total=%lums\n", jpegSize, millis() - t0);
+
                     // Simpan ke SD card sebagai cache
                     if (sdCardMounted && xSemaphoreTake(sdMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
                         digitalWrite(TFT_CS_PIN, HIGH);
@@ -749,7 +760,17 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
                         digitalWrite(SD_CS_PIN, HIGH);
                         xSemaphoreGive(sdMutex);
                     }
+                } else {
+                    Serial.println("[PHOTO] malloc GAGAL!");
                 }
+            } else {
+                Serial.printf("[PHOTO] Bukan JPEG valid! len=%d first=0x%02X\n", jpeg.length(), jpeg.length() > 0 ? (uint8_t)jpeg[0] : 0);
+            }
+        } else {
+            Serial.printf("[PHOTO] HTTP GAGAL: %d (%lums)\n", httpCode, millis() - t0);
+            if (httpCode > 0) {
+                String errBody = http.getString();
+                Serial.printf("[PHOTO] Error body: %s\n", errBody.substring(0, 200).c_str());
             }
         }
         http.end();
@@ -835,195 +856,145 @@ String normalizeUserRole(String role) {
     return "MEKANIK";
 }
 
-// Escape karakter khusus untuk JSON string (anti payload broken)
-String escapeJsonString(String input) {
-    input.replace("\\", "\\\\");
-    input.replace("\"", "\\\"");
-    input.replace("\n", "\\n");
-    input.replace("\r", "\\r");
-    input.replace("\t", "\\t");
-    return input;
-}
-
-void clearSIM808Buffer() {
+// ============================================================================
+// INISIALISASI MODUL SIM808/SIM868 -- dipanggil sekali di setup()
+// Modul ini beda dengan GPS "polos" (NEO-6M dkk): dia butuh perintah AT dulu
+// buat menyalakan GNSS-nya sebelum bisa dibaca. Kalau ini dilewat, GPS-nya
+// diam saja walau kabel & baudrate sudah benar -- itu sebabnya "gak kebaca".
+// ============================================================================
+void kirimPerintahAT(const char* perintah, unsigned long tunggu) {
     while (gpsSerial.available()) gpsSerial.read();
-}
-
-String sendATCommand(const String &cmd, unsigned long timeout) {
-    clearSIM808Buffer();
-    Serial.print(">> ");
-    Serial.println(cmd);
-    gpsSerial.println(cmd);
-    String response = "";
-    unsigned long start = millis();
-    while (millis() - start < timeout) {
+    Serial.print(">> "); Serial.println(perintah);
+    gpsSerial.println(perintah);
+    unsigned long mulai = millis();
+    while (millis() - mulai < tunggu) {
         while (gpsSerial.available()) {
-            char c = gpsSerial.read();
-            response += c;
-            gpsByteCount++;
-            Serial.write(c);
+            Serial.write(gpsSerial.read());
         }
     }
     Serial.println();
-    return response;
 }
 
-void initSIM808() {
-    Serial.println();
-    Serial.println("================================================");
-    Serial.println("        SIM808 + ESP32 MAXIMUM GPS");
-    Serial.println("================================================");
-
-    Serial.println();
-    Serial.println("[1] TEST KOMUNIKASI SIM808");
-    sendATCommand("AT", 1000);
-
-    Serial.println();
-    Serial.println("[2] MATIKAN ECHO");
-    sendATCommand("ATE0", 1000);
-
-    Serial.println();
-    Serial.println("[3] AKTIFKAN GNSS");
-    sendATCommand("AT+CGNSPWR=1", 1500);
-
-    Serial.println();
-    Serial.println("[4] SET GNSS RMC");
-    sendATCommand("AT+CGNSSEQ=\"RMC\"", 1000);
-
-    Serial.println();
-    Serial.println("[5] CEK STATUS GNSS");
-    String status = sendATCommand("AT+CGNSPWR?", 1000);
-    sim808Initialized = status.indexOf("+CGNSPWR: 1") >= 0;
-    sim808GpsStartTime = millis();
-
-    Serial.println();
-    Serial.println("================================================");
-    Serial.println(" GPS AKTIF");
-    Serial.println(" MENCARI SATELIT...");
-    Serial.println("================================================");
+void initGpsModule() {
+    delay(2000);   // SIM808 butuh waktu boot internal sebelum menerima AT command
+    Serial.println("[GPS] Inisialisasi modul SIM808...");
+    kirimPerintahAT("AT", 1000);
+    kirimPerintahAT("AT+CGNSPWR=1", 1500);      // nyalakan GNSS di dalam modul
+    kirimPerintahAT("AT+CGNSSEQ=\"RMC\"", 1000); // urutan output RMC
+    gpsLastPollMillis = millis();
+    Serial.println("[GPS] Modul siap, mulai polling AT+CGNSINF tiap 1 detik.");
 }
 
-bool parseSIM808CGNSINF(const String &response, double &lat, double &lon, bool &fix) {
+// ============================================================================
+// PARSING JAWABAN "AT+CGNSINF" -> currentLatitude / currentLongitude / dst
+// Format: +CGNSINF: <run>,<fix>,<utc>,<lat>,<lon>,<alt>,<speed>,<course>,...
+// ============================================================================
+void parseGpsResponse(const String &response) {
     int pos = response.indexOf("+CGNSINF:");
-    if (pos < 0) return false;
+    if (pos < 0) return;
 
     String data = response.substring(pos + 9);
+    int nl = data.indexOf('\n');
+    if (nl > 0) data = data.substring(0, nl);
     data.trim();
 
-    String fields[20];
-    int fieldIndex = 0;
-    int startIdx = 0;
-    for (unsigned int i = 0; i <= data.length(); i++) {
-        if (data.charAt(i) == ',' || i == data.length()) {
-            if (fieldIndex < 20) {
-                fields[fieldIndex] = data.substring(startIdx, i);
-                fieldIndex++;
-            }
-            startIdx = i + 1;
+    String field[20];
+    int idx = 0, mulai = 0;
+    for (int i = 0; i <= (int)data.length(); i++) {
+        if (i == (int)data.length() || data.charAt(i) == ',') {
+            if (idx < 20) field[idx] = data.substring(mulai, i);
+            idx++;
+            mulai = i + 1;
         }
     }
-
-    if (fieldIndex < 8) return false;
-
-    String fixStatus = fields[1];
-    String latitude  = fields[3];
-    String longitude = fields[4];
-
-    fix = (fixStatus == "1") && latitude.length() > 0 && longitude.length() > 0;
-
-    if (fix) {
-        lat = latitude.toDouble();
-        lon = longitude.toDouble();
-        return true;
-    }
-    return false;
-}
-
-void feedGPS() {
-    unsigned long now = millis();
-    if (now - sim808LastGPSRead < SIM808_GPS_INTERVAL) return;
-    sim808LastGPSRead = now;
+    if (idx < 6) return;   // jawaban belum lengkap, abaikan
 
     gpsSentenceCount++;
-    String response = sendATCommand("AT+CGNSINF", SIM808_GPS_TIMEOUT);
 
-    double lat = 0, lon = 0;
-    bool fix = false;
+    String fixStatus = field[1];
+    String latStr     = field[3];
+    String lonStr     = field[4];
 
-    if (parseSIM808CGNSINF(response, lat, lon, fix)) {
-        gpsByteCount = response.length();
+    if (fixStatus == "1" && latStr.length() > 0 && lonStr.length() > 0) {
+        currentLatitude  = latStr.toFloat();
+        currentLongitude = lonStr.toFloat();
+        gpsHasFix        = true;
+        gpsLastFixMillis = millis();
 
-        if (fix) {
-            bool wasFixed = gpsHasFix;
-            currentLatitude  = lat;
-            currentLongitude = lon;
-            gpsHasFix        = true;
-            gpsLastFixMillis = millis();
-            sim808FixCount++;
-
-            if (!firstGpsFixSent) {
-                firstGpsFixSent = true;
-                logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
-                needsRedraw = true;
-                Serial.println();
-                Serial.println("************************************************");
-                Serial.println("          GPS FIX BERHASIL!");
-                Serial.println("************************************************");
-                Serial.printf("Waktu mendapatkan FIX : %.1f detik\n",
-                              (now - sim808GpsStartTime) / 1000.0);
-            }
-
-            if (!wasFixed) {
-                Serial.println();
-                Serial.println(">>> GPS SIGNAL KEMBALI <<<");
-            }
-
-            bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
-                                   fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
-
-            if (positionChanged || now - gpsLastSerialReportMillis >= 5000) {
-                Serial.println();
-                Serial.println("================================================");
-                Serial.println("                GPS MONITOR");
-                Serial.println("================================================");
-                Serial.printf("Latitude    : %.6f\n", currentLatitude);
-                Serial.printf("Longitude   : %.6f\n", currentLongitude);
-                Serial.println("STATUS      : GPS ONLINE / FIX");
-                Serial.println();
-                Serial.println("GOOGLE MAPS:");
-                Serial.printf("https://www.google.com/maps?q=%.6f,%.6f\n",
-                              currentLatitude, currentLongitude);
-                Serial.println("================================================");
-                gpsLastSerialLatitude  = currentLatitude;
-                gpsLastSerialLongitude = currentLongitude;
-                gpsLastSerialReportMillis = now;
-            }
-
-            sim808LastLatitude  = String(lat, 6);
-            sim808LastLongitude = String(lon, 6);
-        } else {
-            if (gpsHasFix) {
-                Serial.println();
-                Serial.println(">>> GPS FIX HILANG <<<");
-                Serial.println("Menggunakan koordinat terakhir yang valid.");
-                needsRedraw = true;
-            }
-            gpsHasFix = false;
-            sim808NoFixCount++;
+        bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
+                               fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
+        if (positionChanged || millis() - gpsLastSerialReportMillis >= 5000) {
+            Serial.printf("[GPS] FIX latitude=%.6f  longitude=%.6f\n", currentLatitude, currentLongitude);
+            gpsLastSerialLatitude  = currentLatitude;
+            gpsLastSerialLongitude = currentLongitude;
+            gpsLastSerialReportMillis = millis();
         }
-    } else {
-        if (gpsHasFix) needsRedraw = true;
-        gpsHasFix = false;
-        sim808NoFixCount++;
+        if (!firstGpsFixSent) {
+            firstGpsFixSent = true;
+            logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
+            needsRedraw = true;
+        }
+    }
+}
+
+// ============================================================================
+// DIPANGGIL TERUS DI loop() -- NON-BLOCKING, gak bikin macet tampilan/RFID.
+// Tiap 1 detik kirim "AT+CGNSINF", lalu kumpulkan jawabannya sedikit-sedikit
+// setiap kali fungsi ini dipanggil lagi (bukan nunggu diam di satu tempat).
+// ============================================================================
+void feedGPS() {
+    unsigned long now = millis();
+
+    if (gpsPollState == GPS_POLL_IDLE) {
+        if (now - gpsLastPollMillis >= GPS_POLL_INTERVAL) {
+            gpsLastPollMillis = now;
+            while (gpsSerial.available()) gpsSerial.read();
+            gpsSerial.println("AT+CGNSINF");
+            gpsResponseBuffer = "";
+            gpsPollStartMillis = now;
+            gpsPollState = GPS_POLL_WAITING;
+        }
+    } else { // GPS_POLL_WAITING
+        while (gpsSerial.available()) {
+            char c = gpsSerial.read();
+            gpsResponseBuffer += c;
+            gpsByteCount++;
+            gpsLastByteMillis = now;
+        }
+
+        bool sudahDapat = gpsResponseBuffer.indexOf("+CGNSINF:") != -1 && gpsResponseBuffer.indexOf("OK") != -1;
+        bool timeout     = (now - gpsPollStartMillis) >= GPS_POLL_TIMEOUT;
+
+        if (sudahDapat || timeout) {
+            if (sudahDapat) parseGpsResponse(gpsResponseBuffer);
+            gpsPollState = GPS_POLL_IDLE;
+        }
     }
 
-    if (sim808FixCount > 0 || sim808NoFixCount > 0) {
-        Serial.println();
-        Serial.println("STATISTIK:");
-        Serial.printf("Jumlah FIX     : %lu\n", sim808FixCount);
-        Serial.printf("Jumlah No FIX  : %lu\n", sim808NoFixCount);
-        Serial.printf("Lama GPS ON    : %lu detik\n", (now - sim808GpsStartTime) / 1000);
-        Serial.println("================================================");
+    // GPS dianggap kehilangan fix kalau sudah 30 detik gak ada update baru
+    if (gpsHasFix && (now - gpsLastFixMillis > 30000)) {
+        gpsHasFix = false;
+        needsRedraw = true;
+        if (now - gpsLastFixMillis > 60000) {
+            firstGpsFixSent = false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // CETAK LATITUDE & LONGITUDE KE SERIAL MONITOR SETIAP 2 DETIK
+    // Dicetak TERUS meskipun GPS belum dapat fix, supaya kelihatan di
+    // Serial Monitor apakah modul GPS memang mengirim data atau tidak
+    // (berguna untuk debug wiring / baudrate / posisi antena).
+    // ------------------------------------------------------------------
+    if (now - gpsDebugPrintMillis >= 2000) {
+        gpsDebugPrintMillis = now;
+        if (gpsHasFix) {
+            Serial.printf("[GPS] latitude=%.6f  longitude=%.6f  status=FIX  umur=%lums\n",
+                          currentLatitude, currentLongitude, now - gpsLastFixMillis);
+        } else {
+            Serial.printf("[GPS] latitude=0.000000  longitude=0.000000  status=BELUM FIX  (byte diterima=%lu, jawaban valid=%lu)\n",
+                          (unsigned long)gpsByteCount, (unsigned long)gpsSentenceCount);
+        }
     }
 }
 
@@ -1097,6 +1068,7 @@ String stateToString(SystemState s) {
         case STATE_ALL_WORKERS_OUT: return "ALL_WORKERS_OUT";
         case STATE_UNLOCKING: return "UNLOCKING";
         case STATE_SYSTEM_READY_FINAL: return "SYSTEM_READY_FINAL";
+        case STATE_WELCOME: return "WELCOME";
         default: return "UNKNOWN";
     }
 }
@@ -1119,9 +1091,47 @@ void buzzTick() {
     digitalWrite(PIN_BUZZER, LOW);
 }
 
+// ============================================================================
+// BUNYI HITUNG MUNDUR (DIPAKAI SAMA PERSIS UNTUK COUNTDOWN MASUK & KELUAR)
+// ============================================================================
+void countdownBeep(int detik) {
+    if (detik <= 3) {
+        digitalWrite(PIN_BUZZER, HIGH); amanDelay(500);
+        digitalWrite(PIN_BUZZER, LOW);  amanDelay(500);
+    } else {
+        digitalWrite(PIN_BUZZER, HIGH); amanDelay(60);
+        digitalWrite(PIN_BUZZER, LOW);  amanDelay(940);
+    }
+}
+
 void clearMainScreenArea() {
-    tft.fillRect(0, 42, 480, 228, ELOTO_BG); 
-    tft.drawRoundRect(8, 49, 464, 212, 6, TFT_DARKGREY); 
+    tft.fillRect(0, 42, 480, 228, ELOTO_BG);
+    tft.drawRoundRect(8, 49, 464, 212, 6, TFT_DARKGREY);
+}
+
+// Decorative corner accents untuk layar splash/boot
+void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    int16_t len = 20;
+    // Top-left
+    tft.drawFastHLine(x, y, len, color);
+    tft.drawFastVLine(x, y, len, color);
+    // Top-right
+    tft.drawFastHLine(x + w - len, y, len, color);
+    tft.drawFastVLine(x + w - 1, y, len, color);
+    // Bottom-left
+    tft.drawFastHLine(x, y + h - 1, len, color);
+    tft.drawFastVLine(x, y + h - len, len, color);
+    // Bottom-right
+    tft.drawFastHLine(x + w - len, y + h - 1, len, color);
+    tft.drawFastVLine(x + w - 1, y + h - len, len, color);
+}
+
+// Garis dekoratif horizontal
+void drawDecorativeLine(int16_t y, uint16_t color) {
+    tft.drawFastHLine(60, y, 360, color);
+    tft.fillCircle(240, y, 3, color);
+    tft.fillCircle(60, y, 2, color);
+    tft.fillCircle(420, y, 2, color);
 }
 
 // ============================================================================
@@ -1131,26 +1141,34 @@ void displayCardNotification(String uid, String name, String role, String status
     digitalWrite(SD_CS_PIN, HIGH);
     tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
     tft.drawRoundRect(14, 54, 452, 204, 8, ELOTO_HEADER);
-    
+
     tft.setTextDatum(MC_DATUM);
     setStoryFont(12);
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     tft.drawString(statusMsg, 240, 72);
-    
+
     tft.fillRect(25, 91, 150, 150, ELOTO_BG);
     tft.drawRect(25, 91, 150, 150, ELOTO_TEXT);
     if (!drawPhotoFromAPI(uid, 25, 91, 150, 150)) {
         drawSinglePersonIcon(100, 166, 2.5, ELOTO_HEADER, false);
     }
-    
+
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     drawTextFit(name, 190, 106, 260, ELOTO_HEADER, ELOTO_BG, 9);
-    drawTextFit("SID      : " + formatSid(lastScannedSID), 190, 142, 260, ELOTO_TEXT, ELOTO_BG, 9);
-    drawTextFit("JABATAN  : " + role, 190, 174, 260, ELOTO_TEXT, ELOTO_BG, 9);
-    
-    tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-    tft.drawString("BERHASIL TERVERIFIKASI", 190, 206);
+
+    // Mode registrasi: tampilkan RFID UID di LCD supaya admin bisa catat
+    if (statusMsg == "REGISTRASI OK!") {
+        drawTextFit("RFID UID : " + uid, 190, 130, 260, ELOTO_HEADER, ELOTO_BG, 9);
+        drawTextFit("SUDAH DIKIRIM KE SERVER", 190, 162, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+        tft.drawString("DAFTARKAN DI DASHBOARD", 190, 206);
+    } else {
+        drawTextFit("SID      : " + formatSid(lastScannedSID), 190, 142, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        drawTextFit("JABATAN  : " + role, 190, 174, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+        tft.drawString("BERHASIL TERVERIFIKASI", 190, 206);
+    }
     drawTftFooter("", "");
     
     uint32_t displayDuration = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
@@ -1172,12 +1190,12 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
     digitalWrite(SD_CS_PIN, HIGH);
     tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
     tft.drawRoundRect(14, 54, 452, 204, 8, ELOTO_HEADER);
-    
+
     tft.setTextDatum(MC_DATUM);
     setStoryFont(12);
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     tft.drawString(title, 240, 72);
-    
+
     if (name.length() > 0 && name != "UNKNOWN" && name != "Tidak Terdaftar") {
         int16_t photoX = 25;
         int16_t photoY = 92;
@@ -1185,25 +1203,26 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
         tft.fillRect(photoX, photoY, photoSize, photoSize, ELOTO_BG);
         tft.drawRect(photoX, photoY, photoSize, photoSize, ELOTO_TEXT);
         drawSinglePersonIcon(photoX + (photoSize / 2), photoY + (photoSize / 2), 1.5, ELOTO_HEADER, false);
-        
+
         tft.setTextDatum(TL_DATUM);
         drawTextFit("NAMA    : " + name, 138, 104, 310, ELOTO_HEADER, ELOTO_BG, 9);
         drawTextFit("JABATAN : " + role, 138, 136, 310, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("SID     : " + formatSid(sid), 138, 168, 310, ELOTO_TEXT, ELOTO_BG, 9);
-        
+
         setStoryFont(9);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
         tft.drawString(bottomHint, 240, 228);
     } else {
-        setStoryFont(24);
+        // Kartu tidak dikenal — tampilkan pesan tanpa kode RFID
         tft.setTextDatum(MC_DATUM);
+        setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        tft.drawString("[ X ]", 240, 130);
-        
+        tft.drawString("KARTU TIDAK TERDAFTAR", 240, 130);
+
         setStoryFont(9);
         tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-        tft.drawString(bottomHint, 240, 190);
+        tft.drawString(bottomHint, 240, 170);
     }
     
     drawTftFooter("", "");
@@ -1268,7 +1287,7 @@ void saveSessionToSD() {
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
         if (SD.exists("/session.json")) SD.remove("/session.json");
-        
+
         File sessionFile = SD.open("/session.json", FILE_WRITE);
         if (sessionFile) {
             DynamicJsonDocument doc(2048);
@@ -1279,12 +1298,24 @@ void saveSessionToSD() {
             doc["spv_role"]            = supervisorRole;
             doc["target_count"]        = targetMekanikCount;
             doc["top_index"]           = safetyQueue.topIndex;
-            
+            doc["is_session_active"]   = isSessionActive;
+            doc["session_elapsed_ms"]  = isSessionActive ? (millis() - sessionStartTime) : 0;
+            doc["is_adding_from_menu"] = isAddingFromMenu;
+            doc["selected_worker_idx"] = selectedWorkerIndex;
+            doc["selected_menu_idx"]   = selectedMenuIndex;
+            doc["selected_footer"]     = selectedFooterAction;
+            doc["mekanik_display"]     = lastMekanikDisplayCount;
+            doc["mekanik_init_out"]    = initialMekanikOutCount;
+            doc["fuelman_uid"]         = activeFuelmanUID;
+            doc["fuelman_name"]        = activeFuelmanName;
+            doc["last_scanned_uid"]    = lastScannedUID;
+            doc["last_scanned_sid"]    = lastScannedSID;
+
             if (gpsHasFix) {
                 doc["last_lat"] = currentLatitude;
                 doc["last_lon"] = currentLongitude;
             }
-            
+
             JsonArray q = doc.createNestedArray("queue");
             for (int i = 0; i <= safetyQueue.topIndex; i++) {
                 JsonObject obj = q.createNestedObject();
@@ -1314,7 +1345,7 @@ void clearSessionFromSD() {
 bool loadSessionFromSD() {
     if (!sdCardMounted || sdMutex == NULL) return false;
     bool success = false;
-    
+
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
         if (SD.exists("/session.json")) {
@@ -1323,19 +1354,29 @@ bool loadSessionFromSD() {
                 DynamicJsonDocument doc(2048);
                 DeserializationError err = deserializeJson(doc, sessionFile);
                 sessionFile.close();
-                
+
                 if (!err) {
                     int stateInt = doc["state"] | STATE_IDLE;
                     if (stateInt < STATE_BOOT_IP || stateInt > STATE_SYSTEM_READY_FINAL) stateInt = STATE_IDLE;
                     currentState = (SystemState)stateInt;
-                    
+
                     supervisorUID      = doc["spv_uid"].as<String>();
                     String savedSupervisorSid = doc["spv_sid"] | "-----";
                     supervisorName     = doc["spv_name"].as<String>();
                     supervisorRole     = doc["spv_role"].as<String>();
                     targetMekanikCount = doc["target_count"] | 0;
                     safetyQueue.topIndex = doc["top_index"] | -1;
-                    
+                    isAddingFromMenu   = doc["is_adding_from_menu"] | false;
+                    selectedWorkerIndex = doc["selected_worker_idx"] | 0;
+                    selectedMenuIndex  = doc["selected_menu_idx"] | 0;
+                    selectedFooterAction = doc["selected_footer"] | 1;
+                    lastMekanikDisplayCount = doc["mekanik_display"] | -99;
+                    initialMekanikOutCount  = doc["mekanik_init_out"] | -1;
+                    activeFuelmanUID   = doc["fuelman_uid"] | "";
+                    activeFuelmanName  = doc["fuelman_name"] | "";
+                    lastScannedUID     = doc["last_scanned_uid"] | "—";
+                    lastScannedSID     = doc["last_scanned_sid"] | "-----";
+
                     JsonArray q = doc["queue"].as<JsonArray>();
                     int idx = 0;
                     for (JsonObject obj : q) {
@@ -1349,12 +1390,28 @@ bool loadSessionFromSD() {
                     }
                     sanitizeQueueDeadlock();
                     rebuildCachedQueueString();
-                    
-                    if (stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
+
+                    bool savedSessionActive = doc["is_session_active"] | false;
+                    unsigned long savedElapsed = doc["session_elapsed_ms"] | 0UL;
+
+                    if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
                         isSessionActive = true;
-                        sessionStartTime = millis(); 
+                        sessionStartTime = millis() - savedElapsed;
+                    } else {
+                        isSessionActive = false;
+                        sessionStartTime = 0;
                     }
-                    
+
+                    // Restore GPS coordinates terakhir (sebelum GPS module fix baru)
+                    if (doc.containsKey("last_lat") && doc.containsKey("last_lon")) {
+                        double savedLat = doc["last_lat"] | 0.0;
+                        double savedLon = doc["last_lon"] | 0.0;
+                        if (savedLat != 0.0 && savedLon != 0.0) {
+                            currentLatitude = savedLat;
+                            currentLongitude = savedLon;
+                        }
+                    }
+
                     success = true;
                 }
             }
@@ -1400,7 +1457,6 @@ void loadUsersToRAM() {
         digitalWrite(SD_CS_PIN, HIGH);
         xSemaphoreGive(sdMutex);
     }
-    resetPhotoPrecache(); // daftar pekerja berubah -> mulai lagi putaran cek foto (yang sudah ada tetap dilewati, bukan didownload ulang)
 }
 
 void pushQueue(String uid, String sid, String name, String role) {
@@ -1459,19 +1515,19 @@ int findWorkerIndex(String uid) {
     return -1;
 }
 
-bool syncDatabaseToSDCard() {
-    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return false;
-    if (ESP.getFreeHeap() < 30000) return false;
-    
-    bool synced = false;
-    WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2500);
+void syncDatabaseToSDCard() {
+    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
+    if (ESP.getFreeHeap() < 30000) return;
+
+    WiFiClient client; client.setTimeout(1500);
     HTTPClient http;
     http.begin(client, getApiUrl("users"));
-        http.addHeader("X-Device-Token", device_token);
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
-    http.setTimeout(3500);
-    
+    http.addHeader("X-Device-Token", device_token);
+    http.setTimeout(2000);
+
     int httpCode = http.GET();
+    Serial.printf("[SYNC] GET /api/users — HTTP %d\n", httpCode);
     if (httpCode == HTTP_CODE_OK) {
         String jsonStr = http.getString();
         DynamicJsonDocument doc(6144);
@@ -1479,11 +1535,11 @@ bool syncDatabaseToSDCard() {
         JsonArray arr = !err && doc["data"].is<JsonArray>() ? doc["data"].as<JsonArray>() : JsonArray();
         
         if (!err && !arr.isNull()) {
+            int syncCount = 0;
             if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
                 digitalWrite(TFT_CS_PIN, HIGH);
-                SD.remove("/users.tmp");
-                File userFile = SD.open("/users.tmp", FILE_WRITE);
-                bool cacheWriteOk = true;
+                if (SD.exists("/users.csv")) SD.remove("/users.csv");
+                File userFile = SD.open("/users.csv", FILE_WRITE);
                 if (userFile) {
                     for (JsonObject u : arr) {
                         String uid = "";
@@ -1495,34 +1551,29 @@ bool syncDatabaseToSDCard() {
                         String name = u.containsKey("nama") ? u["nama"].as<String>() : "UNKNOWN";
                         String role = u.containsKey("role") ? u["role"].as<String>() : "MEKANIK";
                         name.replace(",", " ");
-                        name.replace("\r", "");
-                        name.replace("\n", "");
                         role.replace(",", " ");
-                        role.replace("\r", "");
-                        role.replace("\n", "");
                         role.toUpperCase();
                         bool isSpv = checkIsSupervisorRole(role);
                         
                         if (uid != "" && uid != "NULL") {
-                            if (!userFile.println(uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0))) cacheWriteOk = false;
+                            userFile.println(uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0));
+                            syncCount++;
                         }
                     }
                     userFile.close();
-                    if (cacheWriteOk) {
-                        SD.remove("/users.bak");
-                        if (SD.exists("/users.csv")) SD.rename("/users.csv", "/users.bak");
-                        if (!SD.rename("/users.tmp", "/users.csv")) SD.rename("/users.bak", "/users.csv");
-                        else synced = true;
-                    }
                 }
                 digitalWrite(SD_CS_PIN, HIGH);
                 xSemaphoreGive(sdMutex);
             }
             loadUsersToRAM();
+            Serial.printf("[SYNC] Berhasil sync %d user ke SD Card & RAM cache\n", syncCount);
         }
+    } else if (httpCode == 401 || httpCode == 403) {
+        Serial.printf("[SYNC] GAGAL: HTTP %d — Device token tidak cocok! Jalankan: node scripts/set-device-token.js\n", httpCode);
+    } else {
+        Serial.printf("[SYNC] GAGAL: HTTP %d\n", httpCode);
     }
     http.end();
-    return synced;
 }
 
 WorkerInfo searchUserFromSDCard(String uid) {
@@ -1570,7 +1621,7 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-void saveOfflineLogToSDCard(String event, String uid, String eventId) {
+void saveOfflineLogToSDCard(String event, String uid) {
     if (!sdCardMounted || sdMutex == NULL) return;
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
@@ -1578,7 +1629,7 @@ void saveOfflineLogToSDCard(String event, String uid, String eventId) {
         if (logFile) {
             String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
             String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-            logFile.println(eventId + "," + event + "," + uid + "," + latitude + "," + longitude);
+            logFile.println(String(millis()) + "," + event + "," + uid + "," + latitude + "," + longitude);
             logFile.close();
         } 
         digitalWrite(SD_CS_PIN, HIGH);
@@ -1612,13 +1663,11 @@ void uploadOfflineLogsSDCard() {
                             }
                             uid.trim(); latitude.trim(); longitude.trim();
                             
-                            WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2000);
+                            WiFiClient client; client.setTimeout(2000);
                             HTTPClient http;
                             http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
-        http.addHeader("X-Device-Token", device_token);
                             http.addHeader("Content-Type", "application/json");
                             DynamicJsonDocument doc(512);
-                            doc["event_id"] = line.substring(0, p1); doc["replay"] = true;
                             doc["id_box"] = getDeviceId(); doc["event"] = event; doc["uid"] = uid;
                             doc["is_tap"] = isTapEventName(event);
                             doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
@@ -1653,59 +1702,76 @@ WorkerInfo fetchCardDataAPI(String uid) {
     card.isSpv = false;
     card.isRegistered = false;
     card.isAssigned = true;
-    
+
     String cleanUID = normalizeRfidUid(uid);
     String decPadded = hexToDecStringPadded(cleanUID);
     String decUnpadded = hexToDecStringUnpadded(cleanUID);
-    
+
+    Serial.printf("[RFID] Lookup UID: %s (dec: %s / %s) — RAM: %d user — SD: %s\n",
+                  cleanUID.c_str(), decPadded.c_str(), decUnpadded.c_str(),
+                  ramUserCount, sdCardMounted ? "OK" : "N/A");
+
+    // 1. Cek RAM cache dulu (paling cepat)
     for (int i = 0; i < ramUserCount; i++) {
-        if (ramUserCache[i].uid.equalsIgnoreCase(cleanUID) || 
-            ramUserCache[i].uid.equalsIgnoreCase(decPadded) || 
+        if (ramUserCache[i].uid.equalsIgnoreCase(cleanUID) ||
+            ramUserCache[i].uid.equalsIgnoreCase(decPadded) ||
             ramUserCache[i].uid.equalsIgnoreCase(decUnpadded)) {
             card = ramUserCache[i];
             card.uid = cleanUID;
             card.isSpv = checkIsSupervisorRole(card.role);
-            return card; 
+            Serial.printf("[RFID] ✓ RAM cache: %s [%s]\n", card.name.c_str(), card.role.c_str());
+            return card;
         }
     }
-    
+
+    // 2. Cek SD Card (users.csv)
     if (sdCardMounted) {
         card = searchUserFromSDCard(cleanUID);
         if (!card.isRegistered) card = searchUserFromSDCard(decPadded);
         if (!card.isRegistered) card = searchUserFromSDCard(decUnpadded);
-        if (card.isRegistered) return card;
+        if (card.isRegistered) {
+            Serial.printf("[RFID] ✓ SD Card: %s [%s]\n", card.name.c_str(), card.role.c_str());
+            // Update RAM cache
+            if (ramUserCount < MAX_RAM_USERS) {
+                ramUserCache[ramUserCount] = card;
+                ramUserCount++;
+            }
+            return card;
+        }
     }
-    
+
+    // 3. API backend — kalau RAM kosong DAN SD kosong, ini jadi HARUS berhasil
     if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 30000) {
-        WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
+        WiFiClient client; client.setTimeout(300);
         HTTPClient http;
         String url = getApiUrl("users/check-card");
         http.begin(client, url);
-        http.addHeader("X-Device-Token", device_token);
         http.addHeader("Content-Type", "application/json");
-        http.setTimeout(800);
+        http.addHeader("X-Device-Token", device_token);
+        http.setTimeout(400);
         DynamicJsonDocument requestDoc(256);
         requestDoc["rfid_uid"] = cleanUID;
         String requestBody;
         serializeJson(requestDoc, requestBody);
-        
+
         int httpCode = http.POST(requestBody);
+        Serial.printf("[RFID] API check-card: HTTP %d untuk %s\n", httpCode, cleanUID.c_str());
+
         if (httpCode == HTTP_CODE_OK) {
             String responseStr = http.getString();
             DynamicJsonDocument doc(512);
             if (!deserializeJson(doc, responseStr)) {
                 JsonObject userData = doc["data"].as<JsonObject>();
-                String status = (doc["success"] | false) ? "success" : "";
                 String apiName = userData["nama"] | "UNKNOWN";
                 String apiRole = normalizeUserRole(userData["role"] | "MEKANIK");
                 apiName.trim();
-                
+
                 bool knownName = apiName.length() > 0 &&
                                  !apiName.equalsIgnoreCase("UNKNOWN") &&
                                  !apiName.equalsIgnoreCase("NOT_FOUND") &&
                                  !apiName.equalsIgnoreCase("TIDAK TERDAFTAR");
-                                 
-                if (knownName && (status.equalsIgnoreCase("success") || knownName)) {
+
+                if (knownName) {
                     card.uid = cleanUID;
                     card.sid = formatSid(userData["sid"] | "");
                     card.name = apiName;
@@ -1713,140 +1779,44 @@ WorkerInfo fetchCardDataAPI(String uid) {
                     card.isSpv = checkIsSupervisorRole(apiRole);
                     card.isRegistered = true;
                     card.isAssigned = true;
+                    Serial.printf("[RFID] ✓ API: %s [%s]\n", card.name.c_str(), card.role.c_str());
                 }
             }
+        } else if (httpCode == 401 || httpCode == 403) {
+            Serial.printf("[RFID] ✗ API HTTP %d — DEVICE TOKEN TIDAK COCOK!\n", httpCode);
+        } else {
+            Serial.printf("[RFID] ✗ API HTTP %d\n", httpCode);
         }
         http.end();
+    } else {
+        Serial.println("[RFID] ✗ WiFi OFF — tidak bisa cek API");
     }
     return card;
-}
-
-// ============================================================================
-// PRE-CACHE FOTO SEMUA PEKERJA SAAT ONLINE (ANTI DUPLIKAT, JALAN PELAN-PELAN)
-// ============================================================================
-// Tujuan: begitu device online, foto SEMUA pekerja terdaftar (di /users.csv)
-// otomatis diunduh & disimpan ke /foto/{UID}.jpg di background - supaya nanti
-// pas device offline, foto siapa pun yang tap tetap muncul, bukan cuma orang
-// yang kebetulan pernah tap saat online.
-//
-// Aturan anti-duplikat: SEBELUM download, selalu dicek dulu apakah file foto
-// itu SUDAH ADA di SD. Kalau sudah ada -> dilewati, TIDAK didownload ulang.
-// Dicek lagi sekali lagi tepat sebelum ditulis (double-check) untuk jaga-jaga
-// race condition kalau foto yang sama sempat kesimpan lewat jalur lain
-// (misalnya orang itu keburu tap manual) di saat yang hampir bersamaan.
-int precacheIndex = 0;
-unsigned long lastPrecacheAttemptMs = 0;
-
-void resetPhotoPrecache() {
-    precacheIndex = 0;
-}
-
-// Panggil fungsi ini berkala (sekali per putaran networkTaskCore0). Fungsi ini
-// sendiri yang mengatur jeda antar percobaan, jadi aman dipanggil sesering apa
-// pun tanpa membanjiri server atau mengunci bus SD lama-lama.
-void precacheNextWorkerPhoto() {
-    if (!sdCardMounted || sdMutex == NULL) return;
-    if (WiFi.status() != WL_CONNECTED) return;
-    if (ramUserCount <= 0) return;
-    if (precacheIndex >= ramUserCount) return; // satu putaran penuh sudah selesai
-
-    // Jeda antar percobaan supaya tidak menembak banyak request beruntun ke server
-    if (millis() - lastPrecacheAttemptMs < 2000) return;
-    lastPrecacheAttemptMs = millis();
-
-    String uid = ramUserCache[precacheIndex].uid;
-    uid.trim(); uid.toUpperCase();
-    precacheIndex++; // giliran berikutnya lanjut ke index selanjutnya
-
-    if (uid == "") return;
-    String photoPath = "/foto/" + uid + ".jpg";
-
-    // 1) Cek dulu, sudah ada belum di SD?
-    bool alreadyCached = false;
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
-        digitalWrite(TFT_CS_PIN, HIGH);
-        alreadyCached = SD.exists(photoPath);
-        digitalWrite(SD_CS_PIN, HIGH);
-        xSemaphoreGive(sdMutex);
-    }
-    if (alreadyCached) return; // SUDAH ADA -> lewati, anti duplikat
-
-    if (ESP.getFreeHeap() < 40000) return; // jaga-jaga heap sempit
-
-    // 2) Belum ada -> download dari server
-    WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(600);
-    HTTPClient http;
-    String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
-    http.begin(client, url);
-        http.addHeader("X-Device-Token", device_token);
-    http.addHeader("Accept", "image/jpeg");
-    http.setTimeout(3000);
-
-    int httpCode = http.GET();
-    if (httpCode == HTTP_CODE_OK) {
-        String jpeg = http.getString();
-        if (jpeg.length() > 100 && (uint8_t)jpeg[0] == 0xFF && (uint8_t)jpeg[1] == 0xD8) {
-            if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) == pdTRUE) {
-                digitalWrite(TFT_CS_PIN, HIGH);
-                // Cek SEKALI LAGI persis sebelum menulis (anti race/duplikat)
-                if (!SD.exists(photoPath)) {
-                    File f = SD.open(photoPath, FILE_WRITE);
-                    if (f) {
-                        f.write((const uint8_t*)jpeg.c_str(), jpeg.length());
-                        f.close();
-                        Serial.println("[PRECACHE] Foto baru tersimpan: " + photoPath);
-                    }
-                }
-                digitalWrite(SD_CS_PIN, HIGH);
-                xSemaphoreGive(sdMutex);
-            }
-        }
-    }
-    http.end();
-}
-
-void pollDeviceCommand() {
-    if (WiFi.status() != WL_CONNECTED || device_token.length() < 32 || server_ca.length() == 0) return;
-    WiFiClientSecure client; client.setCACert(server_ca.c_str());
-    HTTPClient http;
-    http.begin(client, getApiUrl("commands/") + getDeviceIdPath() + "/pending");
-    http.addHeader("X-Device-Token", device_token);
-    http.setTimeout(5000);
-    if (http.GET() == 200) {
-        DynamicJsonDocument doc(1024);
-        if (!deserializeJson(doc, http.getString()) && doc["data"]["pending_cmd"] == "SYNC_USERS") {
-            String id = doc["data"]["id"].as<String>();
-            http.end();
-            if (!syncDatabaseToSDCard()) return; // Retry until cache refresh succeeds.
-            http.begin(client, getApiUrl("commands/") + getDeviceIdPath() + "/clear");
-            http.addHeader("X-Device-Token", device_token);
-            http.addHeader("Content-Type", "application/json");
-            http.PATCH("{\"commandId\":\"" + id + "\"}");
-        }
-    }
-    http.end();
 }
 
 void networkTaskCore0(void * pvParameters) {
     unsigned long lastWifiCheckTask = 0;
     unsigned long lastHeartbeatTask = 0;
     unsigned long lastDbSyncTask    = 0;
+    unsigned long lastReconnectAttempt = 0;
     bool wasWifiConnected = (WiFi.status() == WL_CONNECTED);
     
     for (;;) {
         NetworkJob job;
         if (xQueueReceive(networkQueue, &job, pdMS_TO_TICKS(50)) == pdTRUE) {
             if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 25000) {
-                WiFiClientSecure client; client.setCACert(server_ca.c_str()); client.setTimeout(2000);
+                WiFiClient client; client.setTimeout(2000);
                 HTTPClient http;
                 http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
-        http.addHeader("X-Device-Token", device_token);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
+                http.addHeader("X-Device-Token", device_token);
                 http.setTimeout(3000);
                 
                 DynamicJsonDocument doc(2048);
-                doc["event_id"] = String(job.eventId);
+                // Generate unique event_id for deduplication
+                String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
+                doc["event_id"]       = eventId;
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
                 doc["last_uid"]       = String(job.uid); doc["uid"] = String(job.uid);
                 doc["is_tap"]         = isTapEventName(String(job.event));
@@ -1854,9 +1824,11 @@ void networkTaskCore0(void * pvParameters) {
                 doc["ip"]             = WiFi.localIP().toString(); doc["ssid"] = WiFi.SSID();
                 if (gpsHasFix) {
                     doc["lat"] = currentLatitude;
+                    doc["lon"] = currentLongitude;
                     doc["lng"] = currentLongitude;
                 } else {
                     doc["lat"] = nullptr;
+                    doc["lon"] = nullptr;
                     doc["lng"] = nullptr;
                 }
                 doc["gps_fix"]        = gpsHasFix; doc["state"] = stateToString(currentState);
@@ -1873,10 +1845,10 @@ void networkTaskCore0(void * pvParameters) {
                 }
                 String jsonPayload; serializeJson(doc, jsonPayload);
                 int httpCode = http.POST(jsonPayload);
-                if (httpCode < 200 || httpCode >= 300) saveOfflineLogToSDCard(String(job.event), String(job.uid), String(job.eventId));
+                if (httpCode < 200 || httpCode >= 300) saveOfflineLogToSDCard(String(job.event), String(job.uid));
                 http.end();
-            } else {
-                saveOfflineLogToSDCard(String(job.event), String(job.uid), String(job.eventId));
+            } else if (WiFi.status() != WL_CONNECTED) {
+                saveOfflineLogToSDCard(String(job.event), String(job.uid));
             }
         }
         
@@ -1884,40 +1856,43 @@ void networkTaskCore0(void * pvParameters) {
             lastWifiCheckTask = millis();
             if (WiFi.status() != WL_CONNECTED) {
                 wasWifiConnected = false;
-            } else if ((!wasWifiConnected || millis() - lastDbSyncTask > 300000) && ESP.getFreeHeap() > 30000) {
-                bool justReconnected = !wasWifiConnected; 
+                // Auto-reconnect setiap 30 detik
+                if (millis() - lastReconnectAttempt > 30000) {
+                    lastReconnectAttempt = millis();
+                    WiFi.disconnect();
+                    delay(100);
+                    WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+                    Serial.println("[WIFI] Auto-reconnect attempt...");
+                }
+            } else if ((!wasWifiConnected || startupSyncPending || millis() - lastDbSyncTask > 300000) && ESP.getFreeHeap() > 30000) {
+                bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
-                lastDbSyncTask = millis(); 
-                syncDatabaseToSDCard(); 
+                lastDbSyncTask = millis();
+                Serial.println("[SYNC] Sinkronisasi database ke SD Card...");
+                syncDatabaseToSDCard();
                 uploadOfflineLogsSDCard();
-                if (justReconnected) {
+                startupSyncPending = false;  // sync pertama sudah dilakukan
+                if (justReconnected || !startupSyncPending) {
                     logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
                     needsRedraw = true;
-                    resetPhotoPrecache(); // WiFi baru connect/reconnect -> mulai lagi putaran cek foto (yang sudah ada tetap dilewati)
                 }
+                Serial.printf("[SYNC] Selesai. User ter-cache: %d\n", ramUserCount);
             }
         }
         
         if (millis() - lastHeartbeatTask > 8000) {
             lastHeartbeatTask = millis(); 
             logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
-            pollDeviceCommand();
         }
-
-        precacheNextWorkerPhoto(); // aman dipanggil tiap putaran, ada jeda & syarat internal sendiri
         vTaskDelay(pdMS_TO_TICKS(15));
     }
 }
 
 void logAuditAsync(String event, String uid) {
     NetworkJob job; memset(&job, 0, sizeof(NetworkJob));
-    snprintf(job.eventId, sizeof(job.eventId), "%08lx%08lx%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random());
     event.toCharArray(job.event, sizeof(job.event)); 
     uid.toCharArray(job.uid, sizeof(job.uid));
-    if (xQueueSend(networkQueue, &job, 0) != pdTRUE) {
-        saveOfflineLogToSDCard(event, uid, String(job.eventId));
-        Serial.println("[AUDIT] Network queue full; event sent to offline storage");
-    }
+    xQueueSend(networkQueue, &job, 0);
     
     AuditEntry &slot = auditRing[auditHead];
     slot.event = event; slot.uid = uid; slot.ok = true; slot.ts = millis();
@@ -1953,11 +1928,27 @@ void processRfidLogic(String uid) {
     if (operationalState == STATE_REGISTER_RFID) {
         if (card.isRegistered) {
             buzzFailed(); logAuditAsync("REGISTER_CARD_ALREADY_EXISTS", uid);
-            displayErrorCardPopup(uid, "SUDAH TERDAFTAR", card.name, card.role, card.sid, "KARTU SUDAH TERDAFTAR MASUK");
+            // Simpan info ke variabel registrasi (LCD tetap tampil)
+            regHasCard = true;
+            regLastUID = uid;
+            regLastSID = card.sid;
+            regLastName = card.name;
+            regLastRole = card.role;
+            regLastStatus = "SUDAH TERDAFTAR!";
+            regLastSuccess = false;
         } else {
             buzzSuccess(); logAuditAsync("REGISTER_NEW_CARD", uid);
-            displayCardNotification(uid, "KARTU BARU", "MEKANIK", "REGISTRASI OK!", true);
+            // Simpan info ke variabel registrasi (LCD tetap tampil)
+            regHasCard = true;
+            regLastUID = uid;
+            regLastSID = "-----";
+            regLastName = "KARTU BARU";
+            regLastRole = "MEKANIK";
+            regLastStatus = "REGISTRASI OK!";
+            regLastSuccess = true;
         }
+        forceFullRedraw = true;
+        needsRedraw = true;
         return;
     }
     
@@ -2077,7 +2068,6 @@ void connectWiFiRoutine() {
     WiFi.disconnect();
     delay(40);
     WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
     
     unsigned long startConn = millis();
     unsigned long lastScreenUpdate = 0;
@@ -2102,9 +2092,11 @@ void connectWiFiRoutine() {
     
     if (ipAssigned) {
         buzzSuccess();
-        selectedFooterAction = 1; 
+        selectedFooterAction = 1;
         currentState = STATE_SHOW_IP;
         logAuditAsync("WIFI_CONNECTED", WiFi.localIP().toString());
+        // Sync database ke SD Card SEGERA setelah WiFi connect
+        startupSyncPending = true;
     } else {
         buzzFailed();
         selectedFooterAction = 1; 
@@ -2115,11 +2107,15 @@ void connectWiFiRoutine() {
 }
 
 void executeFooterChoice() {
-    if (currentState == STATE_BOOT_IP) {
+    if (currentState == STATE_WELCOME) {
         if (selectedFooterAction == 0) {
-            selectedFooterAction = 1; 
-            currentState = STATE_SYSTEM_READY;
+            // DAFTAR KARTU → Masuk mode registrasi RFID
+            buzzSuccess();
+            currentState = STATE_REGISTER_RFID;
+            regHasCard = false;  // reset registrasi display
+            logAuditAsync("ENTER_REGISTER_MODE", "ADMIN");
         } else {
+            // LANJUT → Connect WiFi
             connectWiFiRoutine();
         }
     } else if (currentState == STATE_SERVER_OFFLINE) {
@@ -2130,17 +2126,17 @@ void executeFooterChoice() {
             currentState = STATE_SYSTEM_READY; 
         }
     } else if (currentState == STATE_SHOW_IP) {
-        currentState = (selectedFooterAction == 0) ? STATE_BOOT_IP : STATE_SYSTEM_READY;
+        currentState = (selectedFooterAction == 0) ? STATE_WELCOME : STATE_SYSTEM_READY;
     } else if (currentState == STATE_SYSTEM_READY) {
         if (selectedFooterAction == 0) {
-            currentState = (WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0") ? STATE_SHOW_IP : STATE_BOOT_IP;
+            currentState = (WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0") ? STATE_SHOW_IP : STATE_WELCOME;
         } else {
-            buzzSuccess(); 
-            digitalWrite(PIN_RELAY, HIGH); 
+            buzzSuccess();
+            digitalWrite(PIN_RELAY, HIGH);
             relayOpen = true;
-            saveSessionToSD(); 
+            saveSessionToSD();
             logAuditAsync("LOCK_INITIALIZED", "—");
-            
+
             isSessionActive = true;
             sessionStartTime = millis();
 
@@ -2150,22 +2146,17 @@ void executeFooterChoice() {
                 notificationMessage = String(detik);
                 needsRedraw = true;
                 drawScreen();
-                
-                if (detik <= 3) {
-                    digitalWrite(PIN_BUZZER, HIGH); amanDelay(500); 
-                    digitalWrite(PIN_BUZZER, LOW);  amanDelay(500);
-                } else {
-                    digitalWrite(PIN_BUZZER, HIGH); amanDelay(60); 
-                    digitalWrite(PIN_BUZZER, LOW);  amanDelay(940);
-                }
+                countdownBeep(detik);
             }
-            digitalWrite(PIN_RELAY, LOW); 
-            relayOpen = false; 
-            amanDelay(100); 
-            clearRfidBuffer(); 
-            
+            digitalWrite(PIN_RELAY, LOW);
+            relayOpen = false;
+            amanDelay(100);
+            clearRfidBuffer();
+
             isAddingFromMenu = false;
-            currentState = STATE_WAIT_SPV_IN; 
+            currentState = STATE_WAIT_SPV_IN;
+            // Force sync user data sebelum tapping dimulai
+            startupSyncPending = true;
         }
     } else if (currentState == STATE_START_CONFIRM) {
         if (selectedFooterAction == 0) currentState = STATE_IDLE;
@@ -2245,17 +2236,7 @@ void executeFooterChoice() {
                 notificationMessage = String(detik);
                 needsRedraw = true;
                 drawScreen();
-
-                // Disamakan dengan pola bunyi hitung mundur MASUK:
-                // 3 detik terakhir bunyi lebih mendesak (500ms nyala / 500ms mati),
-                // sebelumnya tik singkat tiap detik (60ms nyala / 940ms mati)
-                if (detik <= 3) {
-                    digitalWrite(PIN_BUZZER, HIGH); amanDelay(500);
-                    digitalWrite(PIN_BUZZER, LOW);  amanDelay(500);
-                } else {
-                    digitalWrite(PIN_BUZZER, HIGH); amanDelay(60);
-                    digitalWrite(PIN_BUZZER, LOW);  amanDelay(940);
-                }
+                countdownBeep(detik);   // sama persis dengan bunyi countdown MASUK
             }
             exitCountdownActive = false;
 
@@ -2278,8 +2259,8 @@ void executeFooterChoice() {
             sessionStartTime = 0;
             
             logAuditAsync("SESSION_CLOSED_NORMAL", "SYSTEM");
-            
-            currentState = STATE_BOOT_IP;
+
+            currentState = STATE_WELCOME;
         }
     }
     forceFullRedraw = true;
@@ -2305,13 +2286,31 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             }
         }
         else if (currentState == STATE_REGISTER_RFID && activeKey == KEY_5) {
-            buzzSuccess(); currentState = STATE_BOOT_IP;
+            buzzSuccess(); currentState = STATE_WELCOME;
+            regHasCard = false;  // reset registrasi display
             logAuditAsync("EXIT_REGISTER_MODE", "ADMIN");
         }
         forceFullRedraw = true;
         needsRedraw = true; clearRfidBuffer(); return;
     }
-    
+
+    if (currentState == STATE_WELCOME) {
+        // Footer choice: DAFTAR KARTU (kiri) / LANJUT (kanan)
+        // KEY_4/KEY_1 switch selection, KEY_5 executes - handled by hasFooterChoice below
+    }
+
+    if (currentState == STATE_REGISTER_RFID) {
+        if (activeKey == KEY_5 || activeKey == KEY_4) {
+            buzzTick();
+            currentState = STATE_WELCOME;
+            regHasCard = false;  // reset registrasi display
+            logAuditAsync("EXIT_REGISTER_MODE", "ADMIN");
+            forceFullRedraw = true;
+            needsRedraw = true;
+            return;
+        }
+    }
+
     if (currentState == STATE_WAIT_SPV_IN) {
         if (activeKey == KEY_5 || activeKey == KEY_4) {
             buzzTick();
@@ -2520,62 +2519,105 @@ void drawScreen() {
     
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    if (currentState == STATE_BOOT_IP) {
+
+    if (currentState == STATE_WELCOME) {
+        drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
+
         tft.setTextDatum(MC_DATUM);
         setStoryFont(24);
-        drawGearIcon(240, 205, TFT_LIGHTGREY);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        tft.drawString("SELAMAT DATANG", 240, 95);
+        tft.drawString("E-LOTO", 240, 82);
+
+        drawDecorativeLine(108, ELOTO_DARK_RED);
+
+        setStoryFont(18);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString("SELAMAT DATANG", 240, 130);
+
+        setStoryFont(9);
+        tft.setTextColor(ELOTO_DARK_RED, TFT_BLACK);
+        tft.drawString("SISTEM LOTO KESELAMATAN KERJA", 240, 165);
+
+        setStoryFont(9);
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawString("LOCKOUT / TAGOUT", 240, 195);
+
+        drawDecorativeLine(220, ELOTO_DARK_RED);
+
+        drawTftFooter("DAFTAR KARTU", "LANJUT");
+    }
+    else if (currentState == STATE_BOOT_IP) {
+        drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
+
+        tft.setTextDatum(MC_DATUM);
+        drawGearIcon(240, 150, TFT_LIGHTGREY);
+
+        setStoryFont(18);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("E-LOTO", 240, 85);
+
+        drawDecorativeLine(105, ELOTO_DARK_RED);
+
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("PILIH METODE OPERASIONAL", 240, 140);
-        drawTftFooter("OFFLINE", "ONLINE");
-    } 
+        tft.drawString("MEMULAI SISTEM...", 240, 115);
+
+        setStoryFont(9);
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawString("Mohon tunggu sebentar", 240, 200);
+
+        drawTftFooter("", "");
+    }
     else if (currentState == STATE_CONNECTING) {
         tft.setTextDatum(MC_DATUM);
         drawWifiIcon(105, 156, TFT_LIGHTGREY);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.drawString("CONNECTING WIFI", 240, 72);
-        
+
+        drawDecorativeLine(95, ELOTO_DARK_RED);
+
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setTextDatum(TL_DATUM);
-        tft.drawString("NAMA WIFI", 215, 120);
-        
-        tft.fillRect(215, 135, 250, 40, TFT_BLACK); 
-        tft.fillRect(215, 200, 250, 25, TFT_BLACK); 
-        
+        tft.drawString("NAMA WIFI", 215, 115);
+
+        tft.fillRect(215, 130, 250, 40, TFT_BLACK);
+        tft.fillRect(215, 195, 250, 25, TFT_BLACK);
+
         setStoryFont(12);
         if (WiFi.status() == WL_CONNECTED) {
-            drawTextFit(WiFi.SSID(), 215, 153, 250, TFT_WHITE, TFT_BLACK, 12);
+            drawTextFit(WiFi.SSID(), 215, 148, 250, TFT_WHITE, TFT_BLACK, 12);
         } else {
-            drawTextFit("MENCARI SINYAL...", 215, 153, 250, TFT_LIGHTGREY, TFT_BLACK, 12);
+            drawTextFit("MENCARI SINYAL...", 215, 148, 250, TFT_LIGHTGREY, TFT_BLACK, 12);
         }
-        
+
         setStoryFont(12);
-        tft.drawString("STATUS", 215, 190);
+        tft.drawString("STATUS", 215, 185);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        
+
         String statusTxt = "MEMINDAI...";
         if(WiFi.status() == WL_CONNECTED) {
             statusTxt = (WiFi.localIP().toString() == "0.0.0.0") ? "MENDAPAT IP..." : "TERHUBUNG";
         }
-        tft.drawString(statusTxt, 215, 218);
+        tft.drawString(statusTxt, 215, 213);
         drawTftFooter("", "");
     } 
     else if (currentState == STATE_SERVER_OFFLINE) {
+        drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
+
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, TFT_BLACK);
         tft.drawString("JARINGAN TIDAK DITEMUKAN", 240, 75);
-        setStoryFont(24);
-        tft.setTextColor(ELOTO_HEADER, TFT_BLACK);
-        tft.drawString("[ X ]", 240, 125);
+
+        drawDecorativeLine(95, ELOTO_DARK_RED);
+
+        drawWifiIcon(240, 130, TFT_LIGHTGREY);
+
         setStoryFont(9);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("WIFI GAGAL TERHUBUNG", 240, 180);
+        tft.drawString("WIFI GAGAL TERHUBUNG", 240, 175);
         tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
         tft.drawString("PILIH COBA LAGI ATAU MODE OFFLINE", 240, 210);
         drawTftFooter("COBA LAGI", "MODE OFFLINE");
@@ -2594,17 +2636,27 @@ void drawScreen() {
         setStoryFont(18);
         tft.setTextColor(TFT_CYAN, TFT_BLACK);
         tft.drawString(WiFi.localIP().toString(), 240, 210);
+        drawDecorativeLine(240, ELOTO_DARK_RED);
         drawTftFooter("KEMBALI", "LANJUT");
     } 
     else if (currentState == STATE_SYSTEM_READY || currentState == STATE_SYSTEM_READY_FINAL) {
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(18);
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.drawString("SYSTEM READY", 240, 85);
+
+        drawDecorativeLine(108, ELOTO_DARK_RED);
+
         tft.setTextDatum(TL_DATUM);
         setStoryFont(12);
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("SYSTEM READY", 20, 72);
-        setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("SIAPKAN TALI SLING UNTUK", 20, 118);
-        tft.drawString("MENGUNCI", 20, 150);
+        tft.drawString("SIAPKAN TALI SLING UNTUK", 20, 130);
+        tft.drawString("MENGUNCI", 20, 160);
+
+        setStoryFont(9);
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("Tekan LANJUT untuk memulai", 240, 220);
         drawTftFooter("KEMBALI", "LANJUT");
     } 
     else if (currentState == STATE_COUNTDOWN) {
@@ -2892,19 +2944,76 @@ void drawScreen() {
         }
     }
     else if (currentState == STATE_MAINTENANCE_DONE) {
+        drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
+
         tft.setTextDatum(MC_DATUM);
-        setStoryFont(12);
+        setStoryFont(18);
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("MAINTENANCE SELESAI", 240, 95);
+        tft.drawString("MAINTENANCE SELESAI", 240, 90);
+
+        drawDecorativeLine(115, ELOTO_DARK_RED);
+
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("SEMUA PROSES LOTO SUDAH", 240, 145);
-        tft.drawString("BERHASIL DITUTUP", 240, 175);
-        
+        tft.drawString("SEMUA PROSES LOTO SUDAH", 240, 140);
+        tft.drawString("BERHASIL DITUTUP", 240, 170);
+
         setStoryFont(9);
-        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-        tft.drawString("UNIT AMAN DIGUNAKAN", 240, 225);
+        tft.setTextColor(ELOTO_DARK_RED, TFT_BLACK);
+        tft.drawString("UNIT AMAN DIGUNAKAN", 240, 220);
         drawTftFooter("", "");
+    }
+    else if (currentState == STATE_REGISTER_RFID) {
+        drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
+
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(12);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("MODE REGISTRASI KARTU", 240, 75);
+
+        drawDecorativeLine(95, ELOTO_DARK_RED);
+
+        if (regHasCard) {
+            // Tampilkan info kartu terakhir yang di-tap (tetap sampai kartu berikutnya)
+            tft.fillRect(25, 100, 150, 140, TFT_BLACK);
+            tft.drawRect(25, 100, 150, 140, TFT_WHITE);
+            if (!drawPhotoFromAPI(regLastUID, 25, 100, 150, 140)) {
+                drawSinglePersonIcon(100, 170, 2.0, ELOTO_HEADER, false);
+            }
+
+            tft.setTextDatum(TL_DATUM);
+            setStoryFont(9);
+            tft.setTextColor(ELOTO_HEADER, TFT_BLACK);
+            drawTextFit("STATUS : " + regLastStatus, 190, 108, 260, regLastSuccess ? TFT_GREEN : TFT_RED, TFT_BLACK, 9);
+
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            drawTextFit("NAMA   : " + regLastName, 190, 138, 260, TFT_WHITE, TFT_BLACK, 9);
+            drawTextFit("ROLE   : " + regLastRole, 190, 160, 260, TFT_WHITE, TFT_BLACK, 9);
+
+            if (regLastSuccess) {
+                drawTextFit("UID    : " + regLastUID, 190, 182, 260, TFT_LIGHTGREY, TFT_BLACK, 9);
+                tft.setTextDatum(MC_DATUM);
+                setStoryFont(9);
+                tft.setTextColor(TFT_GREEN, TFT_BLACK);
+                tft.drawString("TAP KARTU BERIKUTNYA ATAU TEKAN KEMBALI", 240, 230);
+            } else {
+                tft.setTextDatum(MC_DATUM);
+                setStoryFont(9);
+                tft.setTextColor(TFT_RED, TFT_BLACK);
+                tft.drawString("KARTU SUDAH TERDAFTAR - TAP LAGI", 240, 230);
+            }
+        } else {
+            // Belum ada kartu di-tap — tampilkan icon RFID
+            drawRfidIcon(240, 140, TFT_WHITE);
+            setStoryFont(12);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawString("TAP KARTU RFID BARU", 240, 200);
+            drawDecorativeLine(220, ELOTO_DARK_RED);
+            setStoryFont(9);
+            tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+            tft.drawString("KARTU AKAN MUNCUL DI DASHBOARD", 240, 240);
+        }
+        drawTftFooterSingle("KEMBALI");
     }
     else {
         String lcd0; String lcd1;
@@ -2923,7 +3032,6 @@ void drawScreen() {
 }
 
 void handleStatus() {
-    if (device_token.length() < 32 || server.header("X-Device-Token") != device_token) { server.send(401, "application/json", "{\"success\":false}"); return; }
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     server.sendHeader("Access-Control-Allow-Headers", "*");
@@ -2940,9 +3048,11 @@ void handleStatus() {
     if (gpsHasFix) {
         doc["lat"] = currentLatitude;
         doc["lon"] = currentLongitude;
+        doc["lng"] = currentLongitude;
     } else {
         doc["lat"] = nullptr;
         doc["lon"] = nullptr;
+        doc["lng"] = nullptr;
     }
     
     doc["gps_fix"] = gpsHasFix; doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
@@ -2950,9 +3060,7 @@ void handleStatus() {
     doc["gps_sentences"] = gpsSentenceCount;
     doc["gps_last_byte_ms"] = gpsLastByteMillis;
     doc["gps_last_fix_ms"] = gpsLastFixMillis;
-    doc["gps_fix_count"] = sim808FixCount;
-    doc["gps_nofix_count"] = sim808NoFixCount;
-    doc["gps_sim808_ok"] = sim808Initialized;
+    doc["gps_respon_valid"] = gpsSentenceCount;
     doc["uptime_ms"] = millis(); doc["is_online"] = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
     
     JsonArray q = doc.createNestedArray("queue");
@@ -2975,60 +3083,64 @@ void handleNotFound() {
 }
 
 void setup() {
-    // 1) Serial paling awal, supaya semua log (termasuk log SD di bawah) kelihatan dari detik pertama
+    // --- 1. Serial paling awal, supaya semua log kelihatan sejak detik pertama ---
     Serial.begin(115200);
+    delay(50);
     Serial.println();
     Serial.println("[ELOTO] Booting...");
 
-    // 2) Siapkan kedua pin CS sebagai OUTPUT dan non-aktifkan (HIGH) dari awal,
-    //    supaya TFT dan SD tidak sama-sama "aktif" saat bus SPI baru dinyalakan
-    pinMode(TFT_CS_PIN, OUTPUT); 
+    // Initialize random seed for unique event_id generation
+    randomSeed(analogRead(0) + micros());
+
+    // --- 2. Siapkan & non-aktifkan (HIGH) SEMUA chip-select SEBELUM bus SPI dinyalakan ---
+    //     Ini WAJIB dilakukan sebelum SPI.begin()/tft.init(), supaya TFT dan SD card
+    //     tidak sama-sama "mendengar" clock SPI saat salah satu belum siap (penyebab
+    //     tabrakan bus & SD yang kadang kebaca kadang tidak).
+    pinMode(TFT_CS_PIN, OUTPUT);
     digitalWrite(TFT_CS_PIN, HIGH);
-    pinMode(SD_CS_PIN, OUTPUT);  
+    pinMode(SD_CS_PIN, OUTPUT);
     digitalWrite(SD_CS_PIN, HIGH);
 
-    // 3) Nyalakan bus SPI SATU KALI di sini, SEBELUM tft.init() (urutan lama kebalik,
-    //    itu salah satu penyebab SD kadang gagal terdeteksi saat cold boot)
-    SPI.begin(18, 19, 23, SD_CS_PIN);
+    // --- 3. Nyalakan bus SPI (VSPI) SATU KALI SAJA, SEBELUM tft.init() ---
+    //     TFT dan SD Card di shield KHURSLAB ini memakai bus SPI yang SAMA
+    //     (SCK=18, MISO=19, MOSI=23) dan hanya beda pin CS (TFT=15, SD=5).
+    //     Kalau SPI.begin() dipanggil SETELAH tft.init(), ada risiko bus
+    //     dikonfigurasi ulang saat TFT sudah mulai memakainya -> inilah
+    //     salah satu penyebab utama SD Card gagal terbaca / kadang OK kadang tidak.
+    SPI.begin(18, 19, 23, -1);   // -1 = SS tidak dikelola otomatis, CS diatur manual per device
 
-    // 4) Baru setelah bus siap, inisialisasi TFT
+    // --- 4. Baru inisialisasi TFT, setelah bus SPI stabil ---
     tft.init();
     tft.setRotation(1);
     tft.setSwapBytes(true);
-    tft.fillScreen(TFT_BLACK); 
-    
+    tft.fillScreen(TFT_BLACK);
+
     tft.setTextColor(ELOTO_TEXT);
     tft.setTextDatum(MC_DATUM);
     setStoryFont(12);
     tft.drawString("MEMULAI SISTEM...", 240, 160);
 
-    Serial.println("[ELOTO] GPS SIM808 aktif: UART2 RX=GPIO16 TX=GPIO17 baud=9600");
-    
+    Serial.println("[ELOTO] GPS monitor aktif: UART2 RX=GPIO16 TX=GPIO17 baud=9600");
+
     sdMutex = xSemaphoreCreateMutex();
     networkQueue = xQueueCreate(10, sizeof(NetworkJob));
 
-    // 5) Pastikan TFT benar-benar nganggur sebelum SD dicoba
-    digitalWrite(TFT_CS_PIN, HIGH);
-
-    // Catatan: initializeSDCard() TIDAK menyentuh WiFi/jaringan sama sekali -
-    // dia murni bicara ke slot microSD lewat SPI lokal. Status hasilnya
-    // ditampilkan lewat badge "SD OK"/"SD --" di header (drawTftHeader),
-    // yang otomatis ikut ter-refresh terus selama layar hidup - jadi tidak
-    // perlu tulisan sementara lagi di sini (itu penyebab dulu kadang kelihatan
-    // kadang tidak, karena keburu ketimpa clearMainScreenArea()).
+    // --- 5. Baru mount SD Card, setelah TFT & bus SPI benar-benar siap ---
+    //     Fungsi initializeSDCard() sudah diperbaiki agar deteksi lebih cepat & stabil
+    //     (lihat definisinya) sehingga proses booting tidak lama lagi.
     if (initializeSDCard()) {
-        sdCardMounted = true; 
-        loadUsersToRAM(); 
-        loadConfigFromSD(); 
-    } else { 
-        sdCardMounted = false; 
+        sdCardMounted = true;
+        loadUsersToRAM();
+        loadConfigFromSD();
+    } else {
+        sdCardMounted = false;
     }
     
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(tft_output);
     gpsSerial.setRxBufferSize(1024);
     gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
-    initSIM808();
+    // GPS init DITUNDA agar welcome screen langsung muncul (akan dijalankan di loop pertama)
     rd6300Serial.begin(9600, SERIAL_8N1, RD6300_RX_PIN, RD6300_TX_PIN);
     
     pinMode(PIN_RELAY, OUTPUT); 
@@ -3040,8 +3152,6 @@ void setup() {
     
     WiFi.mode(WIFI_STA); 
     WiFi.disconnect(); 
-    const char* authHeaders[] = { "X-Device-Token" };
-    server.collectHeaders(authHeaders, 1);
     server.on("/status", HTTP_GET, handleStatus);
     server.on("/status", HTTP_OPTIONS, handleOptions);
     server.onNotFound(handleNotFound); 
@@ -3052,11 +3162,14 @@ void setup() {
     clearMainScreenArea();
     
     if (sdCardMounted && loadSessionFromSD()) {
-        buzzSuccess(); 
-        currentState = STATE_BOOT_IP;
+        // Session restored - jangan override currentState (sudah benar dari loadSessionFromSD)
+        buzzSuccess();
+        // Reconnect WiFi di background, jangan block boot sequence
+        WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+        Serial.println("[RESTORE] Session dipulihkan dari SD card, WiFi reconnect di background...");
     } else {
         bootIpTimer = millis();
-        currentState = STATE_BOOT_IP;
+        currentState = STATE_WELCOME;
     }
     
     forceFullRedraw = true; 
@@ -3065,12 +3178,41 @@ void setup() {
 }
 
 void loop() {
+    // GPS init dijalankan di background task supaya tidak memblok tampilan
+    if (!gpsInitDone) {
+        gpsInitDone = true;  // flag di-set di sini supaya task hanya di-spawn sekali
+        xTaskCreatePinnedToCore(gpsInitTask, "GPSInit", 4096, NULL, 1, NULL, 1);
+    }
+
     server.handleClient();
     feedGPS();
+
+    // WiFi auto-reconnect di main loop (safety net)
+    static unsigned long lastWifiLoopRetry = 0;
+    if (WiFi.status() != WL_CONNECTED && millis() - lastWifiLoopRetry > 60000) {
+        lastWifiLoopRetry = millis();
+        WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+        Serial.println("[WIFI] Loop reconnect attempt...");
+    }
     
     if (millis() - lastClockUpdateMillis >= 1000) {
         lastClockUpdateMillis = millis();
         updateHeaderClock();
+        // Auto-update indicator GPS/SD/WiFi setiap detik (tanpa full redraw)
+        bool wifiNow = WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0";
+        tft.fillRoundRect(312, 8, 62, 25, 4, hasValidGpsFix() ? TFT_GREEN : TFT_YELLOW);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(TFT_BLACK, hasValidGpsFix() ? TFT_GREEN : TFT_YELLOW);
+        setStoryFont(9);
+        tft.drawString(hasValidGpsFix() ? "GPS OK" : "GPS --", 343, 21);
+
+        tft.fillRoundRect(378, 8, 62, 25, 4, sdCardMounted ? TFT_GREEN : TFT_RED);
+        tft.setTextColor(TFT_BLACK, sdCardMounted ? TFT_GREEN : TFT_RED);
+        tft.drawString(sdCardMounted ? "SD OK" : "SD --", 409, 21);
+
+        tft.fillRoundRect(444, 8, 28, 25, 4, wifiNow ? TFT_GREEN : TFT_RED);
+        tft.setTextColor(TFT_BLACK, wifiNow ? TFT_GREEN : TFT_RED);
+        tft.drawString(wifiNow ? "ON" : "--", 458, 21);
     }
     
     if (needsRedraw) {
@@ -3110,12 +3252,12 @@ void loop() {
                              currentState == STATE_WAIT_SPV_OUT);
                              
     if (rfidInputEnabled) {
-        if (millis() - lastScanTime >= 500) { 
+        if (millis() - lastScanTime >= 150) {
             String authUID = checkRfidSensor();
             if (authUID != "") {
-                if (authUID == lastScannedRfidUID && (millis() - lastScannedRfidTime < 3500)) {
+                if (authUID == lastScannedRfidUID && (millis() - lastScannedRfidTime < 1500)) {
                     clearRfidBuffer();
-                    return; 
+                    return;
                 }
                 lastScannedRfidUID = authUID;
                 
@@ -3138,10 +3280,13 @@ void loop() {
 void getLcdText(String &lcd0, String &lcd1) {
     lcd0 = "SISTEM READY";
     lcd1 = "TEKAN 1 UTK MULAI";
-    
-    if (currentState == STATE_BOOT_IP) {
+
+    if (currentState == STATE_WELCOME) {
         lcd0 = "SELAMAT DATANG";
-        lcd1 = "PILIH METODE OPERASIONAL";
+        lcd1 = "PILIH DAFTAR ATAU LANJUT";
+    } else if (currentState == STATE_BOOT_IP) {
+        lcd0 = "E-LOTO";
+        lcd1 = "MEMULAI SISTEM...";
     } else if (currentState == STATE_SYSTEM_READY || currentState == STATE_SYSTEM_READY_FINAL) {
         lcd0 = "SYSTEM READY";
         lcd1 = "SIAPKAN TALI SLING";
@@ -3193,6 +3338,9 @@ void getLcdText(String &lcd0, String &lcd1) {
     } else if (currentState == STATE_SPV_OUT_CONFIRM) {
         lcd0 = "SUPERVISOR VALID";
         lcd1 = "KONFIRMASI SELESAI";
+    } else if (currentState == STATE_REGISTER_RFID) {
+        lcd0 = "MODE REGISTRASI";
+        lcd1 = "TAP KARTU RFID";
     } else if (currentState == STATE_UNLOCKING) {
         lcd0 = "MEMBUKA GEMBOK...";
         lcd1 = "LEPASKAN TALI SLING LOTO";

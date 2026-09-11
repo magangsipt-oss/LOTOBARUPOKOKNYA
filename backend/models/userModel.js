@@ -54,6 +54,16 @@ const UserModel = {
     return rows[0] || null;
   },
 
+  // 3b. Flexible match: cari rfid_uid yang mengandung cleanUid (handles leading zeros / format beda)
+  getByRfidUidLike: async (rfidUid) => {
+    const clean = String(rfidUid || '').replace(/[\s.\-:]/g, '').toUpperCase();
+    if (!clean) return null;
+    const query = `SELECT sid, nama, role, rfid_uid, fp_id, foto, created_at
+      FROM users WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(rfid_uid), ' ', ''), '.', ''), '-', ''), ':', '') = ?`;
+    const [rows] = await pool.query(query, [clean]);
+    return rows[0] || null;
+  },
+
   // 4. Mengambil daftar pengguna berdasarkan peran/role
   getByRole: async (role) => {
     const normalized = String(role || '').trim();

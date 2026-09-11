@@ -9,7 +9,7 @@ async function start() {
   await pool.query('SELECT id FROM device_commands LIMIT 0');
   const [migrations] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260908-production-hardening.cjs']);
   if (!migrations.length) throw new Error('Production hardening migration is incomplete');
-  const server = app.listen(Number(process.env.PORT) || 5002, process.env.HOST || '127.0.0.1', () => console.log('E-LOTO backend ready'));
+  const server = app.listen(Number(process.env.PORT) || 5002, process.env.HOST || '0.0.0.0', () => console.log('E-LOTO backend ready on port ' + (Number(process.env.PORT) || 5002)));
   let closing = false;
   const shutdown = () => {
     if (closing) return;

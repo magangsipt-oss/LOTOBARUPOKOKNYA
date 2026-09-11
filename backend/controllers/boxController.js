@@ -1,3 +1,5 @@
+import http from 'node:http';
+import crypto from 'node:crypto';
 import BoxModel from '../models/boxModel.js';
 import { validateTelemetry } from '../domain/telemetry.js';
 import { recordTelemetry } from '../models/telemetryModel.js';
@@ -56,7 +58,7 @@ const boxController = {
   // 3. Menambahkan unit box baru
   createBox: async (req, res) => {
     try {
-      const { unit, ip, state, lat, lng, supervisorUid, rtsp_url } = req.body;
+      const { unit, ip, state, lat, lng, supervisorUid, rtsp_url, device_token } = req.body;
       const idBox = req.body.idBox ?? req.body.id_box;
 
       // Validasi: idBox dan unit wajib diisi
@@ -67,6 +69,12 @@ const boxController = {
         });
       }
 
+      // Hash device_token jika disediakan
+      let hashedToken = null;
+      if (device_token && typeof device_token === 'string' && device_token.trim()) {
+        hashedToken = crypto.createHash('sha256').update(device_token.trim()).digest('hex');
+      }
+
       const newIdBox = await BoxModel.create({
         idBox,
         unit,
@@ -75,13 +83,46 @@ const boxController = {
         lat: lat || 0,
         lng: lng || 0,
         supervisorUid: supervisorUid || '',
-        rtsp_url: rtsp_url || null
+        rtsp_url: rtsp_url || null,
+        device_token: hashedToken
       });
+
+      // Probe device — jika menyala, set online + GPS live
+      let deviceOnline = false;
+      let deviceData = {};
+      if (ip && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const response = await fetch(`http://${ip}/status`, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.id_box) {
+              deviceOnline = true;
+              deviceData = data;
+              const liveLat = data.lat ?? lat;
+              const liveLng = data.lng ?? data.lon ?? lng;
+              const pool = (await import('../config/database.js')).default;
+              await pool.query(
+                'UPDATE boxes SET is_online = 1, state = ?, last_ping = NOW(), lat = COALESCE(?, lat), lng = COALESCE(?, lng) WHERE id_box = ?',
+                [data.state || 'IDLE', liveLat, liveLng, newIdBox]
+              );
+            }
+          }
+        } catch { /* device offline, box stays as-is */ }
+      }
 
       return res.status(201).json({
         success: true,
-        message: 'Box baru berhasil didaftarkan ke sistem',
-        data: { idBox: newIdBox, unit, state: 'STATE_IDLE' }
+        message: deviceOnline ? 'Box berhasil didaftarkan dan device ONLINE!' : 'Box baru berhasil didaftarkan ke sistem',
+        data: {
+          idBox: newIdBox, unit,
+          state: deviceOnline ? (deviceData.state || 'ONLINE') : 'STATE_IDLE',
+          is_online: deviceOnline ? 1 : 0,
+          lat: deviceOnline ? (deviceData.lat ?? lat) : lat,
+          lng: deviceOnline ? (deviceData.lng ?? deviceData.lon ?? lng) : lng,
+        }
       });
     } catch (error) {
       console.error('Error createBox:', error.message);
@@ -204,9 +245,43 @@ const boxController = {
   updateTelemetry: async (req, res, next) => {
     try {
       const body = validateTelemetry(req.body);
-      const result = await recordTelemetry(req.params.idBox, body);
+      // Use authenticated boxId from token lookup, NOT req.params.idBox
+      // ESP32 may send a different device ID in the URL than what's in the database
+      const boxId = req.auth?.boxId || req.params.idBox;
+      const result = await recordTelemetry(boxId, body);
       res.json({ success: true, data: result });
     } catch (error) { next(error); }
+  },
+
+  // 8. Probe GPS dari device ESP32 berdasarkan IP address
+  probeDevice: async (req, res) => {
+    try {
+      const ip = String(req.params.ip || '').trim();
+      if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        return res.status(400).json({ success: false, message: 'IP address tidak valid.' });
+      }
+      const url = `http://${ip}/status`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) return res.status(502).json({ success: false, message: `Device merespon ${response.status}` });
+      const data = await response.json();
+      return res.json({
+        success: true,
+        data: {
+          lat: data.lat ?? null,
+          lng: data.lng ?? data.lon ?? null,
+          gps_fix: data.gps_fix ?? false,
+          state: data.state ?? null,
+          id_box: data.id_box ?? null,
+          wifi_connected: data.wifi_connected ?? false,
+        }
+      });
+    } catch (error) {
+      const msg = error.name === 'AbortError' ? 'Device tidak merespon (timeout 5 detik)' : `Gagal menghubungi device: ${error.message}`;
+      return res.status(502).json({ success: false, message: msg });
+    }
   }
 };
 export default boxController;

@@ -8,16 +8,19 @@ router.route('/')
   .get(boxController.getAllBoxes)
   .post(boxController.createBox);
 
-// 2. Rute untuk mengambil detail, memperbarui data, dan menghapus box berdasarkan ID Box
+// 2. Probe GPS dari device ESP32 berdasarkan IP address ( HARUS sebelum /:idBox )
+router.get('/probe/:ip', boxController.probeDevice);
+
+// 3. Rute untuk mengambil detail, memperbarui data, dan menghapus box berdasarkan ID Box
 router.route('/:idBox')
   .get(boxController.getBoxById)
   .put(boxController.updateBox)
   .delete(boxController.deleteBox);
 
-// 3. Rute khusus untuk memperbarui state box (IDLE / LOCKED / etc)
+// 4. Rute khusus untuk memperbarui state box (IDLE / LOCKED / etc)
 router.patch('/:idBox/state', boxController.updateBoxState);
 
-// 4. Rute untuk menerima dan menyimpan telemetri/hardware status dari ESP32
+// 5. Rute untuk menerima dan menyimpan telemetri/hardware status dari ESP32
 router.post('/:idBox/telemetry', boxController.updateTelemetry);
 
 export default router;

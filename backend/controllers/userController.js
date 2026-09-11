@@ -123,7 +123,7 @@ const userController = {
     }
   },
 
-  // 3. Memeriksa validitas kartu RFID (rfid_uid)
+  // 3. Memeriksa validitas kartu RFID (rfid_uid) — dengan normalisasi & fallback multi-format
   checkCard: async (req, res) => {
     try {
       const { rfid_uid } = req.body;
@@ -135,7 +135,29 @@ const userController = {
         });
       }
 
-      const user = await UserModel.getByRfidUid(rfid_uid);
+      // Normalisasi:hapus spasi, titik, strip, titik dua → uppercase
+      const normalize = (s) => String(s || '').replace(/[\s.\-:]/g, '').toUpperCase();
+      const cleanUid = normalize(rfid_uid);
+
+      // Coba exact match dulu
+      let user = await UserModel.getByRfidUid(cleanUid);
+
+      // Kalau tidak ketemu, coba tanpa leading zero (beberapa reader drop leading zero)
+      if (!user && cleanUid.length > 1 && cleanUid.startsWith('0')) {
+        const noLeading = cleanUid.replace(/^0+/, '');
+        user = await UserModel.getByRfidUid(noLeading);
+      }
+
+      // Kalau masih tidak ketemu, coba dengan leading zero ditambah (pad ke 10 digit)
+      if (!user && cleanUid.length < 10) {
+        const padded = cleanUid.padStart(10, '0');
+        user = await UserModel.getByRfidUid(padded);
+      }
+
+      // Kalau masih tidak ketemu, coba query LIKE ( Flexible match — handles minor format diffs)
+      if (!user) {
+        user = await UserModel.getByRfidUidLike(cleanUid);
+      }
 
       if (!user) {
         return res.status(404).json({
@@ -232,36 +254,41 @@ const userController = {
       const nama = body.nama || body.name || body.username || 'New User';
       const rfidUid = body.rfid_uid ?? body.rfidUid ?? body.card_number ?? body.cardNumber ?? null;
       const role = body.role || 'WORKER';
-      if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid) || !normalizeRole(role)) {
+      if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || !normalizeRole(role)) {
         return res.status(400).json({
           success: false,
-          message: 'SID, nama, RFID dan peran harus valid.',
+          message: 'SID, nama, dan peran harus valid.',
         });
       }
+      // RFID is optional - if provided, validate format; otherwise set to null
+      const validRfidUid = (typeof rfidUid === 'string' && /^[A-Za-z0-9_-]{1,50}$/.test(rfidUid)) ? rfidUid : null;
 
 
-      const existingCard = await UserModel.getByRfidUid(rfidUid);
-      if (existingCard) {
-        return res.status(400).json({
-          success: false,
-          message: `Nomor kartu RFID ${rfidUid} sudah terdaftar atas nama ${existingCard.nama || existingCard.name}`,
-        });
+      // Only check RFID uniqueness if a valid RFID is provided
+      if (validRfidUid) {
+        const existingCard = await UserModel.getByRfidUid(validRfidUid);
+        if (existingCard) {
+          return res.status(400).json({
+            success: false,
+            message: `Nomor kartu RFID ${validRfidUid} sudah terdaftar atas nama ${existingCard.nama || existingCard.name}`,
+          });
+        }
       }
 
-      const profile_photo = req.file ? await saveJpegPhoto(req.file.buffer, rfidUid) : await persistProfilePhoto(body.foto || body.profile_photo, rfidUid || sid);
+      const profile_photo = req.file ? await saveJpegPhoto(req.file.buffer, validRfidUid) : await persistProfilePhoto(body.foto || body.profile_photo, validRfidUid || sid);
 
       const newId = await UserModel.create({
         sid,
         nama,
         role,
-        rfidUid,
+        rfidUid: validRfidUid,
         foto: profile_photo,
       });
 
       return res.status(201).json({
         success: true,
         message: 'Pengguna baru berhasil didaftarkan',
-        data: { id: newId, sid: newId, name: nama, nama, card_number: rfidUid, rfid_uid: rfidUid, role, profile_photo },
+        data: { id: newId, sid: newId, name: nama, nama, card_number: validRfidUid, rfid_uid: validRfidUid, role, profile_photo },
       });
     } catch (error) {
       console.error('Error createUser:', error.message);
@@ -281,10 +308,14 @@ const userController = {
       const existing = await UserModel.getBySid(sid);
       if (!existing) return res.status(404).json({ success: false, message: 'Pengguna tidak ditemukan.' });
       const nama = body.nama ?? body.name ?? existing.nama;
-      const rfidUid = body.rfid_uid ?? body.rfidUid ?? existing.rfid_uid;
+      const rfidUidRaw = body.rfid_uid ?? body.rfidUid ?? existing.rfid_uid;
+      const rfidUid = (typeof rfidUidRaw === 'string' && rfidUidRaw.trim()) ? rfidUidRaw.trim() : null;
       const role = body.role ?? existing.role;
-      if (typeof nama !== 'string' || !nama.trim() || nama.length > 100 || !normalizeRole(role) || (rfidUid !== null && (typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid)))) {
+      if (typeof nama !== 'string' || !nama.trim() || nama.length > 100 || !normalizeRole(role)) {
         return res.status(400).json({ success: false, message: 'Data pengguna tidak valid.' });
+      }
+      if (rfidUid !== null && (typeof rfidUid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(rfidUid))) {
+        return res.status(400).json({ success: false, message: 'Format RFID tidak valid.' });
       }
       if (normalizeRole(existing.role) === 'admin' && normalizeRole(role) !== 'admin') {
         return res.status(409).json({ success: false, message: 'Perubahan peran administrator harus dilakukan melalui prosedur administrasi terpisah.' });

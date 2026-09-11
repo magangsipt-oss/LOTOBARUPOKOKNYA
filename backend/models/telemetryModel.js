@@ -15,7 +15,8 @@ export async function recordTelemetry(idBox, body) {
     const uid = body.uid || 'SYSTEM';
     let session = box.active_session_id;
     // Replayed records retain their event identity and never replace current hardware state.
-    if (event === 'SUPERVISOR_LOCK_IN' && !session && !body.replay) {
+    // Always create a fresh session on SUPERVISOR_LOCK_IN so the timer starts correctly.
+    if (event === 'SUPERVISOR_LOCK_IN' && !body.replay) {
       session = Number(box.session_counter) + 1;
       await c.query('UPDATE boxes SET session_counter = ?, active_session_id = ? WHERE id_box = ?', [session, session, idBox]);
     }

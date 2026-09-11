@@ -10,7 +10,7 @@ const BoxModel = {
     const query = `
             SELECT id_box, unit, ip, rtsp_url, ssid, state, lat, lng, lcd0, lcd1, relay_open,
               hw_data, supervisor_uid, active_fuelman, last_uid, last_event, uptime_ms,
-              CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 15 SECOND THEN 1 ELSE 0 END AS is_online,
+              CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 25 SECOND THEN 1 ELSE 0 END AS is_online,
               last_ping, updated_at, active_session_id,
               (SELECT MIN(t.created_at) FROM tapping_history t WHERE t.id_box = boxes.id_box AND t.session_id = boxes.active_session_id) AS session_started_at
       FROM boxes ORDER BY id_box ASC
@@ -36,13 +36,13 @@ const BoxModel = {
 
   // 3. Menambahkan box baru
   create: async (boxData) => {
-    const { idBox, unit, ip, state, lat, lng, supervisorUid, rtsp_url } = boxData;
+    const { idBox, unit, ip, state, lat, lng, supervisorUid, rtsp_url, device_token } = boxData;
     const query = `
-      INSERT INTO boxes (id_box, unit, ip, rtsp_url, state, lat, lng, supervisor_uid,
+      INSERT INTO boxes (id_box, unit, ip, rtsp_url, device_token, state, lat, lng, supervisor_uid,
                         last_event, last_uid, relay_open, uptime_ms, is_online, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 0, NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 0, NOW())
     `;
-    await pool.query(query, [idBox, unit, ip, rtsp_url || null, state || 'IDLE', lat, lng, supervisorUid]);
+    await pool.query(query, [idBox, unit, ip, rtsp_url || null, device_token || null, state || 'IDLE', lat, lng, supervisorUid]);
     return idBox;
   },
 

@@ -5,7 +5,12 @@ export const isTap = event => eventType(event) !== 'CHECK';
 export function validateTelemetry(body) {
   const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid('Invalid telemetry');
-  if (typeof body.event_id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.event_id)) invalid('event_id required');
+
+  // Auto-generate event_id if not provided (ESP32 may not send it)
+  if (!body.event_id || typeof body.event_id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.event_id)) {
+    body.event_id = `${body.event || 'heartbeat'}-${body.uid || 'system'}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  }
+
   for (const [key, max] of [['event',100],['uid',50],['state',50],['ip',50],['ssid',100],['lcd0',100],['lcd1',100],['supervisor_uid',50],['active_fuelman',100]]) {
     if (body[key] != null && (typeof body[key] !== 'string' || body[key].length > max)) invalid(`Invalid ${key}`);
   }

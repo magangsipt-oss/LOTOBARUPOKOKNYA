@@ -6,7 +6,7 @@ export const csrfToken = token => hashToken(`csrf:${token}`);
 export const secureEqual = (left, right) => typeof left === 'string' && typeof right === 'string' &&
   Buffer.byteLength(left) === Buffer.byteLength(right) && timingSafeEqual(Buffer.from(left), Buffer.from(right));
 export const cookieName = () => process.env.NODE_ENV === 'production' ? '__Host-eloto_session' : 'eloto_session';
-const cookieOptions = () => ({ httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/' });
+const cookieOptions = () => ({ httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/' });
 export function readSessionToken(req) {
   const item = (req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith(`${cookieName()}=`));
   const token = item?.slice(cookieName().length + 1);

@@ -27,6 +27,7 @@ export function createApp() {
   const app = express();
   const production = process.env.NODE_ENV === 'production';
   const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const devOrigins = production ? [] : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'];
   if (production && !frontend.startsWith('https://')) throw new Error('FRONTEND_URL must use HTTPS in production');
   if (production && (!process.env.DB_HOST || !process.env.DB_NAME || !process.env.DB_USER || process.env.DB_USER === 'root' || !process.env.DB_PASSWORD)) throw new Error('Configure a dedicated database account before production startup');
   if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY.split(',').map(s => s.trim()));
@@ -35,13 +36,22 @@ export function createApp() {
   app.disable('x-powered-by');
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
   app.use(cors({
-    origin: frontend,
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (origin === frontend || devOrigins.includes(origin)) return cb(null, true);
+      cb(new Error('Origin tidak diizinkan.'));
+    },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Device-Token'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Device-Token', 'User-Agent'],
     credentials: true
   }));
   app.use((req, res, next) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== frontend) {
+    // Allow device requests without Origin header (ESP32 telemetry)
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== frontend && !devOrigins.includes(req.headers.origin)) {
+      // Allow device token requests (X-Device-Token header present)
+      if (req.headers['x-device-token']) {
+        return next();
+      }
       return res.status(403).json({ success: false, message: 'Origin tidak diizinkan.' });
     }
     next();
@@ -56,6 +66,23 @@ export function createApp() {
     res.status(ready ? 200 : 503).json({ success: ready });
   });
   app.get('/', (_req, res) => res.json({ success: true, service: 'E-LOTO' }));
+
+  // Diagnostic endpoint for ESP32 connectivity check
+  app.get('/api/diagnostic/device', (req, res) => {
+    const deviceToken = req.headers['x-device-token'];
+    res.json({
+      success: true,
+      message: 'Backend reachable',
+      server_time: new Date().toISOString(),
+      has_device_token: Boolean(deviceToken),
+      device_token_length: deviceToken ? deviceToken.length : 0,
+      client_ip: req.ip || req.connection?.remoteAddress || 'unknown',
+      headers: {
+        origin: req.headers.origin || 'none',
+        host: req.headers.host || 'none'
+      }
+    });
+  });
   app.use('/api', authentication);
   // Independent budgets per authenticated principal; polling clients behind one NAT do not share a quota.
   app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300,

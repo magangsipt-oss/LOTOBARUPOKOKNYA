@@ -69,7 +69,7 @@ export function AppProvider({ children }) {
   const [tipeKerusakan, setTipeKerusakan] = useState('Mekanikal');
   const [estimasiWaktu, setEstimasiWaktu] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
-  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
+  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '', device_token: '' });
   const [editingBoxId, setEditingBoxId] = useState('');
   const [formAdminNewUser, setFormAdminNewUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -297,8 +297,8 @@ export function AppProvider({ children }) {
             const id_box = b.id_box || b.id;
             let extraHw = {};
             if (b.hw_data) { try { extraHw = typeof b.hw_data === 'string' ? JSON.parse(b.hw_data) : b.hw_data; } catch {} }
-            const realLat = (b.lat && !isNaN(Number(b.lat)) && Number(b.lat) !== 0) ? Number(b.lat) : (extraHw.lat ? Number(extraHw.lat) : 2.144691);
-            const realLng = (b.lng && !isNaN(Number(b.lng)) && Number(b.lng) !== 0) ? Number(b.lng) : ((b.lon && !isNaN(Number(b.lon)) && Number(b.lon) !== 0) ? Number(b.lon) : (extraHw.lng || extraHw.lon ? Number(extraHw.lng || extraHw.lon) : 117.477526));
+            const realLat = (b.lat && !isNaN(Number(b.lat)) && Number(b.lat) !== 0) ? Number(b.lat) : (extraHw.lat ? Number(extraHw.lat) : 0);
+            const realLng = (b.lng && !isNaN(Number(b.lng)) && Number(b.lng) !== 0) ? Number(b.lng) : ((b.lon && !isNaN(Number(b.lon)) && Number(b.lon) !== 0) ? Number(b.lon) : (extraHw.lng || extraHw.lon ? Number(extraHw.lng || extraHw.lon) : 0));
             if (realLat !== 0 && realLng !== 0) {
               const oldCoords = lastKnownCoordsRef.current[id_box];
               if (oldCoords) {
@@ -353,8 +353,8 @@ export function AppProvider({ children }) {
     lastProcessedEventRef.current = { event: hwData.last_event, uid: hwData.last_uid };
     setLocalAuditLog(prev => [{
       ts: Date.now(), event: hwData.last_event, uid: hwData.last_uid, ok: hwData.last_event_ok,
-      lat: selectedBox ? parseFloat(selectedBox.lat) : 2.144691,
-      lon: selectedBox ? parseFloat(selectedBox.lng) : 117.477526,
+      lat: selectedBox ? parseFloat(selectedBox.lat) : 0,
+      lon: selectedBox ? parseFloat(selectedBox.lng) : 0,
       isLocal: true
     }, ...prev].slice(0, 500));
   }, [hwData.last_event, hwData.last_uid, hwData.last_event_ok, isHwOnline, selectedBox]);
@@ -378,13 +378,20 @@ export function AppProvider({ children }) {
     const cleanIp = formAlatBerat.ip.replace(/[<>]/g, "").trim();
     const cleanLat = parseFloat(formAlatBerat.lat);
     const cleanUnitLng = parseFloat(formAlatBerat.lng);
-    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp || '192.168.1.100', lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng, rtsp_url: formAlatBerat.rtsp_url || null };
+    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp || '192.168.1.100', lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng, rtsp_url: formAlatBerat.rtsp_url || null, device_token: formAlatBerat.device_token || null };
     try {
       const hasil = editingBoxId
         ? await boxService.updateBox(editingBoxId, { ...newUnit, idBox: cleanId })
         : await boxService.createBox({ ...newUnit, idBox: cleanId });
       if (hasil.success || hasil.status === 'success') {
-        const savedBox = { ...newUnit, id: cleanId };
+        const d = hasil.data || {};
+        const savedBox = {
+          ...newUnit, id: cleanId,
+          is_online: d.is_online ?? 0,
+          lat: d.lat ?? newUnit.lat,
+          lng: d.lng ?? newUnit.lng,
+          state: d.state || 'STATE_IDLE',
+        };
         setBoxes(prev => editingBoxId ? prev.map(box => String(box.id) === String(cleanId) ? { ...box, ...savedBox } : box) : [...prev, savedBox]);
         setSelectedBox(prev => prev && String(prev.id) === String(cleanId) ? { ...prev, ...savedBox } : savedBox);
         selectedBoxIdRef.current = cleanId;
@@ -394,10 +401,10 @@ export function AppProvider({ children }) {
         setPeopleCountHistory([]);
         const wasEditing = Boolean(editingBoxId);
         setEditingBoxId('');
-        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
+        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '', device_token: '' });
         pemicuToast(wasEditing ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
       } else { pemicuToast(hasil.message, 'fail'); }
-    } catch { pemicuToast("Gagal mendaftarkan unit box ke server!", "fail"); }
+    } catch (err) { console.error('[BOX] Save error:', err); pemicuToast("Gagal mendaftarkan unit box ke server! " + (err.message || ''), "fail"); }
   };
 
   const handleEditAlatBerat = (box) => {
@@ -408,7 +415,7 @@ export function AppProvider({ children }) {
 
   const handleBatalEditAlatBerat = () => {
     setEditingBoxId('');
-    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '' });
+    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '', device_token: '' });
   };
 
   const handleHapusAlatBerat = async (idBox) => {
@@ -434,45 +441,70 @@ export function AppProvider({ children }) {
 
   const handleAutoGps = async () => {
     setIsSyncing(true);
-    pemicuToast("Mencari Sinyal Satelit GPS...", "ok");
+    pemicuToast("Menghubungi device...", "ok");
     let latHasil = null;
     let lngHasil = null;
-    try {
-      const resultAset = await boxService.getAllBoxes();
-      const dataAset = resultAset.data || resultAset;
-      const targetId = (formAlatBerat.id || '').toLowerCase().trim();
-      const boksTarget = Array.isArray(dataAset) ? dataAset.find(b =>
-        String(b.id_box || b.id).toLowerCase().trim() === targetId ||
-        (selectedBox && String(b.id_box || b.id).toLowerCase().trim() === String(selectedBox.id).toLowerCase().trim())
-      ) || dataAset[0] : null;
-      if (boksTarget) {
-        const validLat = parseFloat(boksTarget.lat);
-        const validLng = parseFloat(boksTarget.lng || boksTarget.lon);
-        if (!isNaN(validLat) && !isNaN(validLng) && validLat !== 0 && validLng !== 0) { latHasil = validLat; lngHasil = validLng; }
-      }
-    } catch {}
-    if ((!latHasil || !lngHasil) && formAlatBerat.id) {
+    let deviceName = null;
+
+    // 1. Langsung probe dari IP yang dimasukkan user
+    const deviceIp = (formAlatBerat.ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+    if (deviceIp) {
       try {
-        // Probe GPS via backend proxy
-        const proxyUrl = `${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/proxy/${encodeURIComponent(formAlatBerat.id)}`;
+        const probeUrl = `${import.meta.env.VITE_API_URL || '/api'}/boxes/probe/${encodeURIComponent(deviceIp)}`;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        const responseLoc = await fetch(proxyUrl, { signal: controller.signal, credentials: 'include' });
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        console.log('[SYNC] Probe URL:', probeUrl);
+        const resp = await fetch(probeUrl, { signal: controller.signal, credentials: 'include' });
         clearTimeout(timeoutId);
-        if (responseLoc.ok) {
-          const dataEsps = await responseLoc.json();
-          const vLat = parseFloat(dataEsps.lat);
-          const vLng = parseFloat(dataEsps.lon || dataEsps.lng);
-          if (!isNaN(vLat) && !isNaN(vLng) && vLat !== 0 && vLng !== 0) { latHasil = vLat; lngHasil = vLng; }
+        console.log('[SYNC] Probe response:', resp.status, resp.statusText);
+        if (resp.ok) {
+          const result = await resp.json();
+          console.log('[SYNC] Probe result:', result);
+          if (result.success && result.data) {
+            const vLat = parseFloat(result.data.lat);
+            const vLng = parseFloat(result.data.lng);
+            if (!isNaN(vLat) && !isNaN(vLng) && vLat !== 0 && vLng !== 0) {
+              latHasil = vLat;
+              lngHasil = vLng;
+            }
+            if (result.data.id_box) deviceName = result.data.id_box;
+          }
+        } else {
+          const errText = await resp.text();
+          console.error('[SYNC] Probe error:', resp.status, errText);
+        }
+      } catch (e) { console.error('[SYNC] Probe catch:', e.message); }
+    }
+
+    // 2. Fallback: coba dari database boxes
+    if (!latHasil || !lngHasil) {
+      try {
+        const resultAset = await boxService.getAllBoxes();
+        const dataAset = resultAset.data || resultAset;
+        const targetId = (formAlatBerat.id || '').toLowerCase().trim();
+        const boksTarget = Array.isArray(dataAset) ? dataAset.find(b =>
+          String(b.id_box || b.id).toLowerCase().trim() === targetId
+        ) || dataAset[0] : null;
+        if (boksTarget) {
+          const validLat = parseFloat(boksTarget.lat);
+          const validLng = parseFloat(boksTarget.lng || boksTarget.lon);
+          if (!isNaN(validLat) && !isNaN(validLng) && validLat !== 0 && validLng !== 0) { latHasil = validLat; lngHasil = validLng; }
         }
       } catch {}
     }
+
     if (latHasil && lngHasil) {
-      setFormAlatBerat(prev => ({ ...prev, lat: latHasil.toFixed(6), lng: lngHasil.toFixed(6) }));
-      pemicuToast(`✓ GPS Terkunci! (${latHasil.toFixed(4)}, ${lngHasil.toFixed(4)})`, "ok");
+      setFormAlatBerat(prev => ({
+        ...prev,
+        id: deviceName || prev.id, // Auto-fill ID from device if available
+        lat: latHasil.toFixed(6),
+        lng: lngHasil.toFixed(6),
+      }));
+      const nameInfo = deviceName ? ` [ID: ${deviceName}]` : '';
+      pemicuToast(`✓ GPS Terkiri! (${latHasil.toFixed(4)}, ${lngHasil.toFixed(4)})${nameInfo}`, "ok");
     } else {
-      setFormAlatBerat(prev => ({ ...prev, lat: "2.144691", lng: "117.477526" }));
-      pemicuToast("⚠️ Mode Dasar Berau (2.1446, 117.4775)", "ok");
+      setFormAlatBerat(prev => ({ ...prev, lat: "", lng: "" }));
+      pemicuToast("⚠️ Device tidak merespon. Pastikan IP benar & device online.", "info");
     }
     setIsSyncing(false);
   };
@@ -597,7 +629,7 @@ export function AppProvider({ children }) {
     const cleanNama = formEditUser.nama.trim();
     const cleanRfid = formEditUser.rfidUid.trim().toUpperCase();
     if (!cleanSid || !cleanNama) { pemicuToast("SID dan Nama Karyawan Wajib Diisi!", "fail"); return; }
-    const payloadUser = { sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid, foto: formEditUser.foto || 'assets/default-avatar.png' };
+    const payloadUser = { sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid || null, foto: formEditUser.foto || 'assets/default-avatar.png' };
     try {
       const hasil = await userService.updateUser(cleanSid, payloadUser);
       if (hasil.success || hasil.status === 'success') {
