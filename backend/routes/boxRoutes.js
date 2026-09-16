@@ -23,4 +23,7 @@ router.patch('/:idBox/state', boxController.updateBoxState);
 // 5. Rute untuk menerima dan menyimpan telemetri/hardware status dari ESP32
 router.post('/:idBox/telemetry', boxController.updateTelemetry);
 
+// 6. Rute untuk regenerate device token
+router.post('/:idBox/regenerate-token', boxController.regenerateToken);
+
 export default router;

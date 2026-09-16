@@ -14,6 +14,7 @@ export default function authorization(req, res, next) {
     if (req.method === 'POST' && /^\/boxes\/[^/]+\/telemetry$/.test(route)) return next();
     if (read && route === '/logs/tapping-history/stats' && (req.query.id_box || req.query.idBox) === box) return next();
     if (req.method === 'POST' && route === '/logs/people-counting' && req.body?.id_box === box) return next();
+    if (req.method === 'POST' && route === '/loto/presence' && req.body?.id_box === box) return next();
     if (read && route === `/commands/${box}/pending`) return next();
     if (req.method === 'PATCH' && route === `/commands/${box}/clear`) return next();
     return deny(res);
@@ -22,7 +23,7 @@ export default function authorization(req, res, next) {
   const { role, user } = req.auth;
   if (route === '/users/logout' || route === '/users/password') return next();
   // Telemetry and counting are device-originated, even for administrators.
-  if (/^\/boxes\/[^/]+\/(telemetry|state)$/.test(route) || route === '/logs/people-counting') return deny(res);
+  if (/^\/boxes\/[^/]+\/(telemetry|state)$/.test(route) || route === '/logs/people-counting' || route === '/loto/presence') return deny(res);
   if (role === 'admin') return next();
   if (req.method === 'PUT' && route === `/users/${user.sid}`) {
     // Profile edits cannot assign roles, badges or fingerprints.

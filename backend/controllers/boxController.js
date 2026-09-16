@@ -7,6 +7,11 @@ import { recordTelemetry } from '../models/telemetryModel.js';
 /**
  * Controller untuk mengelola alur data dan permintaan Box E-LOTO
  */
+
+function generateDeviceToken() {
+  return 'ELOTO-' + crypto.randomBytes(16).toString('hex').toUpperCase();
+}
+
 const boxController = {
   // 1. Mengambil semua data box
   getAllBoxes: async (req, res) => {
@@ -69,10 +74,15 @@ const boxController = {
         });
       }
 
-      // Hash device_token jika disediakan
+      // Hash device_token jika disediakan, atau generate otomatis
+      let plainToken = null;
       let hashedToken = null;
       if (device_token && typeof device_token === 'string' && device_token.trim()) {
-        hashedToken = crypto.createHash('sha256').update(device_token.trim()).digest('hex');
+        plainToken = device_token.trim();
+        hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
+      } else {
+        plainToken = generateDeviceToken();
+        hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
       }
 
       const newIdBox = await BoxModel.create({
@@ -122,6 +132,7 @@ const boxController = {
           is_online: deviceOnline ? 1 : 0,
           lat: deviceOnline ? (deviceData.lat ?? lat) : lat,
           lng: deviceOnline ? (deviceData.lng ?? deviceData.lon ?? lng) : lng,
+          device_token: plainToken,
         }
       });
     } catch (error) {
@@ -282,6 +293,20 @@ const boxController = {
       const msg = error.name === 'AbortError' ? 'Device tidak merespon (timeout 5 detik)' : `Gagal menghubungi device: ${error.message}`;
       return res.status(502).json({ success: false, message: msg });
     }
+  },
+
+  regenerateToken: async (req, res, next) => {
+    try {
+      const { idBox } = req.params;
+      const plainToken = generateDeviceToken();
+      const hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
+      const pool = (await import('../config/database.js')).default;
+      const [result] = await pool.query('UPDATE boxes SET device_token = ? WHERE id_box = ?', [hashedToken, idBox]);
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ success: false, message: 'Box tidak ditemukan' });
+      }
+      return res.json({ success: true, message: 'Token baru berhasil digenerate', data: { device_token: plainToken } });
+    } catch (error) { next(error); }
   }
 };
 export default boxController;

@@ -46,7 +46,41 @@ export async function recordTelemetry(idBox, body) {
       const [buffer] = await c.query('SELECT id FROM rfid_buffer WHERE id_box = ? AND rfid_uid = ? LIMIT 1', [idBox, uid]);
       if (!buffer.length) await c.query('INSERT INTO rfid_buffer (id_box, rfid_uid) VALUES (?, ?)', [idBox, uid]);
     }
-    if (!body.replay && ['SUPERVISOR_LOG_OUT', 'SESSION_CLOSED_NORMAL'].includes(event)) await c.query('UPDATE boxes SET active_session_id = NULL WHERE id_box = ?', [idBox]);
+    // ===== REFUELING: Auto-create & end refueling_logs =====
+    if (event === 'REFUEL_START') {
+      const [fuelUser] = await c.query('SELECT nama FROM users WHERE rfid_uid = ? OR sid = ? LIMIT 1', [uid, uid]);
+      const fuelName = fuelUser[0]?.nama || null;
+      const [refResult] = await c.query(
+        `INSERT INTO refueling_logs (id_box, fuelman_uid, fuelman_name, start_time, latitude, longitude, is_loto_active)
+         VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
+        [idBox, uid, fuelName, lat, lng, session ? 1 : 0]
+      );
+      // Store refueling_log_id in active_fuelman so we can end it later
+      await c.query('UPDATE boxes SET active_fuelman = ? WHERE id_box = ?',
+        [`${uid}|${refResult.insertId}`, idBox]);
+    }
+    if (event === 'REFUEL_END') {
+      // Find active refueling session for this box and end it
+      const [activeRefuel] = await c.query(
+        'SELECT id FROM refueling_logs WHERE id_box = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1', [idBox]);
+      if (activeRefuel.length) {
+        await c.query(
+          `UPDATE refueling_logs SET end_time = NOW(),
+           duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
+           WHERE id = ?`, [activeRefuel[0].id]);
+      }
+      // Clear active_fuelman
+      await c.query('UPDATE boxes SET active_fuelman = \'\', last_event = ? WHERE id_box = ?', [event, idBox]);
+    }
+    if (!body.replay && ['SUPERVISOR_LOG_OUT', 'SESSION_CLOSED_NORMAL'].includes(event)) {
+      await c.query('UPDATE boxes SET active_session_id = NULL WHERE id_box = ?', [idBox]);
+      // End any active refueling session when LOTO session closes
+      await c.query(
+        `UPDATE refueling_logs SET end_time = NOW(),
+         duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
+         WHERE id_box = ? AND end_time IS NULL`, [idBox]);
+      await c.query('UPDATE boxes SET active_fuelman = \'\', last_event = ? WHERE id_box = ?', [event, idBox]);
+    }
     await c.commit();
     return { duplicate: false, session_id: session };
   } catch (error) { await c.rollback(); throw error; }

@@ -62,6 +62,23 @@ export default async function authentication(req, res, next) {
           req.auth = { type: 'device', boxId: claimedBoxId };
           return next();
         }
+
+        // Auto-register: box baru dari ESP32 yang belum ada di database
+        if (!claimedBoxId && req.body && req.body.id_box) {
+          const newBoxId = req.body.id_box;
+          const [exists] = await pool.query('SELECT id_box FROM boxes WHERE id_box = ?', [newBoxId]);
+          if (exists.length === 0) {
+            const newIp = req.body.ip || '0.0.0.0';
+            const unit = req.body.ssid || newBoxId;
+            await pool.query(
+              'INSERT INTO boxes (id_box, unit, ip, device_token, state, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              [newBoxId, unit, newIp, tokenHash, 'STATE_WELCOME', 0, 0]
+            );
+            console.log(`[AUTH] Auto-registered new box: ${newBoxId} (ip: ${newIp})`);
+            req.auth = { type: 'device', boxId: newBoxId };
+            return next();
+          }
+        }
       }
     }
     return res.status(401).json({ success: false, message: 'Silakan login atau gunakan kredensial perangkat yang valid.' });

@@ -12,6 +12,7 @@ const Profile = lazy(() => import('./pages/Profile'));
 const Supervisors = lazy(() => import('./pages/Supervisors'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Users = lazy(() => import('./pages/Users'));
+const BleTagManager = lazy(() => import('./pages/BleTagManager'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -210,6 +211,9 @@ function AppContent() {
 
           {/* TAB: KELOLA PERSONEL (ADMIN) */}
           {activeTab === 'admin-tab' && sessionUser?.role === 'admin' && <Users />}
+
+          {/* TAB: KELOLA BLE TAG (ADMIN / PENGAWAS) */}
+          {activeTab === 'ble-tags' && (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && <BleTagManager />}
         </Suspense>
         </main>
 

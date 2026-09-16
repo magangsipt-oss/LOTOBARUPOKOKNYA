@@ -26,6 +26,9 @@ export default function Sidebar() {
   if (sessionUser?.role === 'admin') {
     navItems.push({ id: 'admin-tab', icon: 'fa-users-gear', label: 'Personel' });
   }
+  if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
+    navItems.push({ id: 'ble-tags', icon: 'fa-tag', label: 'BLE Tag' });
+  }
   if (sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'team-tab', icon: 'fa-people-group', label: 'Tim Kerja' });
   }

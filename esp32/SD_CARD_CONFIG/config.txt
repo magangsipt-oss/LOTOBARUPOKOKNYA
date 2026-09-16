@@ -1,5 +1,16 @@
+# WiFi networks (coba urut dari atas, yang pertama ketemu dipakai)
+WIFI_1_SSID=KEDAI KOPI DR 5G
+WIFI_1_PASS=
+WIFI_2_SSID=vivoV29
+WIFI_2_PASS=112233445566
+WIFI_3_SSID=Wi-Fi Hotspot
+WIFI_3_PASS=
+
+# Legacy fallback (kalau WIFI_X tidak ada di config)
 SSID=vivoV29
 PASS=112233445566
-SERVER=192.168.137.1:5002
+
+# Server (kosongkan = auto-discover via UDP broadcast)
+SERVER=
 TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
-DEVICE_ID=BOX ELOTO 1
+DEVICE_ID=ELOTO BOX 1

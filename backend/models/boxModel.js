@@ -10,7 +10,7 @@ const BoxModel = {
     const query = `
             SELECT id_box, unit, ip, rtsp_url, ssid, state, lat, lng, lcd0, lcd1, relay_open,
               hw_data, supervisor_uid, active_fuelman, last_uid, last_event, uptime_ms,
-              CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 25 SECOND THEN 1 ELSE 0 END AS is_online,
+              CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online,
               last_ping, updated_at, active_session_id,
               (SELECT MIN(t.created_at) FROM tapping_history t WHERE t.id_box = boxes.id_box AND t.session_id = boxes.active_session_id) AS session_started_at
       FROM boxes ORDER BY id_box ASC
@@ -29,7 +29,9 @@ const BoxModel = {
 
   // 2. Mengambil data box berdasarkan ID Box
   getByIdBox: async (idBox) => {
-    const query = 'SELECT * FROM boxes WHERE id_box = ?';
+    const query = `SELECT *,
+      CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
+      FROM boxes WHERE id_box = ?`;
     const [rows] = await pool.query(query, [idBox]);
     return rows[0] || null;
   },

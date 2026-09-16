@@ -188,13 +188,26 @@ const userController = {
       const uid = String(req.params.uid || '').trim();
       if (!uid) return res.status(400).send('UID wajib diisi');
 
+      // Parse ESP32 query params: ?size=150&quality=82
+      const size = Math.min(Math.max(parseInt(req.query.size, 10) || 512, 16), 2048);
+      const quality = Math.min(Math.max(parseInt(req.query.quality, 10) || 82, 10), 100);
+
       const normalizedUid = uid.replace(/[\s:-]/g, '').toUpperCase();
       const user = await UserModel.getByRfidUid(uid) ||
         await UserModel.getByRfidUid(normalizedUid) ||
         await UserModel.getBySid(uid);
+
+      // If no user found or no photo field at all, return 404
       if (!user || !user.foto) return res.status(404).send('Foto tidak ditemukan');
 
       const photo = String(user.foto).trim();
+
+      // Treat placeholder / non-existent asset paths as "no photo"
+      if (photo === 'assets/default-avatar.png' || photo === '' || photo === 'null') {
+        return res.status(404).send('Foto tidak ditemukan');
+      }
+
+      // If photo is a base64 data-URI, persist it to disk first
       const dataUri = photo.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/s);
       if (dataUri) {
         const result = await saveJpegPhoto(Buffer.from(dataUri[2], 'base64'), user.rfid_uid || user.sid || uid);
@@ -202,20 +215,40 @@ const userController = {
         user.foto = result;
       }
 
+      // Only allow serving files under uploads/user_profiles (no arbitrary path traversal)
       const filename = path.basename(String(user.foto).split('?')[0]);
+      if (!/^[A-Za-z0-9_-]+\.jpg$/.test(filename)) {
+        return res.status(404).send('Foto tidak ditemukan');
+      }
+
       const filePath = path.join(userProfilesDir, filename);
-      try { await fs.access(filePath); }
-      catch (error) {
+
+      // Check primary location
+      let resolvedPath;
+      try {
+        await fs.access(filePath);
+        resolvedPath = filePath;
+      } catch (error) {
         if (error.code !== 'ENOENT') throw error;
+        // Fall back to legacy-uploads directory
         const legacyRoot = path.join(userProfilesDir, '..', '..', 'legacy-uploads', 'user_profiles');
         const legacyPath = path.join(legacyRoot, filename);
-        await fs.access(legacyPath);
-        // Decode and re-encode legacy images; no arbitrary file content is served.
-        const image = await sharp(legacyPath, { limitInputPixels: 16000000 }).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).jpeg().toBuffer();
-        return res.type('jpeg').send(image);
+        try {
+          await fs.access(legacyPath);
+          resolvedPath = legacyPath;
+        } catch (legacyError) {
+          if (legacyError.code !== 'ENOENT') throw legacyError;
+          return res.status(404).send('Foto tidak ditemukan');
+        }
       }
-      res.setHeader('Content-Type', 'image/jpeg');
-      return res.sendFile(filename, { root: userProfilesDir });
+
+      // Resize with sharp using the requested size and quality, then send
+      const image = await sharp(resolvedPath, { limitInputPixels: 16000000 })
+        .resize(size, size, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality })
+        .toBuffer();
+
+      return res.type('jpeg').send(image);
     } catch (error) {
       if (error.code === 'ENOENT') return res.status(404).send('Foto tidak ditemukan');
       console.error('Error getPhoto:', error.message);

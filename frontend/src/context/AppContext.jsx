@@ -34,8 +34,9 @@ export function AppProvider({ children }) {
   const [tappingHistory, setTappingHistory] = useState([]);
   const [localAuditLog, setLocalAuditLog] = useState([]);
   const [deletedAuditIds, setDeletedAuditIds] = useState([]);
-  const [peopleCount, setPeopleCount] = useState({ detected_count: null, registered_count: null, stale: true });
-  const [peopleCountHistory, setPeopleCountHistory] = useState([]);
+  const [lotoCompliance, setLotoCompliance] = useState({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+  const [lotoComplianceHistory, setLotoComplianceHistory] = useState([]);
+  const [bleTags, setBleTags] = useState([]);
 
   const [toast, setToast] = useState({ show: false, msg: '', type: '' });
   const [modalInfo, setModalInfo] = useState({ open: false, title: '', icon: '', content: null });
@@ -237,17 +238,24 @@ export function AppProvider({ children }) {
           : (Array.isArray(historyResult?.data) ? historyResult.data : []);
         setTappingHistory(normalizedHistory);
 
-        // Fetch people counting for selected box (or first box if none selected)
+        // Fetch BLE LOTO compliance for selected box (or first box if none selected)
         const targetBoxId = reportBoxId;
         if (targetBoxId) {
-          const pcResult = await logService.getLatestPeopleCount(targetBoxId);
+          const pcResult = await logService.getLatestCompliance(targetBoxId);
           const pcData = pcResult.data || pcResult;
-          if (active && selectedBoxIdRef.current === targetBoxId && pcData && pcData.detected_count !== undefined) setPeopleCount(pcData);
+          if (active && selectedBoxIdRef.current === targetBoxId && pcData && pcData.ble_detected_count !== undefined) {
+            setLotoCompliance({ ...pcData, stale: false });
+          }
 
-          const pcHistory = await logService.getPeopleCountHistory(targetBoxId, 20);
+          const pcHistory = await logService.getComplianceHistory(targetBoxId, 20);
           const pcHistoryData = pcHistory.data || pcHistory;
-          if (active && selectedBoxIdRef.current === targetBoxId && Array.isArray(pcHistoryData)) setPeopleCountHistory(pcHistoryData);
+          if (active && selectedBoxIdRef.current === targetBoxId && Array.isArray(pcHistoryData)) setLotoComplianceHistory(pcHistoryData);
         }
+
+        // Fetch BLE tags list
+        const tagsResult = await logService.getAllBleTags();
+        const tagsData = tagsResult.data || tagsResult;
+        if (active && Array.isArray(tagsData)) setBleTags(tagsData);
       } catch { /* silent */ }
     };
 
@@ -325,7 +333,11 @@ export function AppProvider({ children }) {
         if (boksTerbaru) {
           // The boxes response already contains the authenticated telemetry snapshot.
           const isDeviceActive = Number(boksTerbaru.is_online) === 1;
-          const isSmoothOnline = isDeviceActive;
+          // Defense-in-depth: client-side staleness check (90s safety net)
+          const lastPingAge = boksTerbaru.last_ping
+            ? (Date.now() - new Date(boksTerbaru.last_ping).getTime()) / 1000
+            : Infinity;
+          const isSmoothOnline = isDeviceActive && lastPingAge < 90;
           if (isDeviceActive) {
             const directIp = boksTerbaru.ip || '';
             if (directIp && directIp !== '192.168.1.100') {
@@ -338,7 +350,7 @@ export function AppProvider({ children }) {
 
           setHwData(boxHardwareSnapshot(boksTerbaru));
         }
-      } catch { setIsHwOnline(false); setPeopleCount(prev => ({ ...prev, stale: true })); } finally { isFetchingRef.current = false; }
+      } catch { setIsHwOnline(false); setLotoCompliance(prev => ({ ...prev, stale: true })); } finally { isFetchingRef.current = false; }
     };
 
     muatDataOperasionalMesin();
@@ -362,8 +374,8 @@ export function AppProvider({ children }) {
   // ==================== HANDLERS ====================
 
   const handleSelectBox = useCallback((box) => {
-    setPeopleCount({ detected_count: null, registered_count: null, stale: true });
-    setPeopleCountHistory([]);
+    setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+    setLotoComplianceHistory([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
     setIsHwOnline(Number(box.is_online) === 1);
@@ -397,8 +409,8 @@ export function AppProvider({ children }) {
         selectedBoxIdRef.current = cleanId;
         setIsHwOnline(false);
         setHwData(boxHardwareSnapshot(savedBox));
-        setPeopleCount({ detected_count: null, registered_count: null, stale: true });
-        setPeopleCountHistory([]);
+        setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+        setLotoComplianceHistory([]);
         const wasEditing = Boolean(editingBoxId);
         setEditingBoxId('');
         setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', rtsp_url: '', device_token: '' });
@@ -429,8 +441,8 @@ export function AppProvider({ children }) {
             setSelectedBox(sisaBox[0] || null);
             setIsHwOnline(Number(sisaBox[0]?.is_online) === 1);
             setHwData(boxHardwareSnapshot(sisaBox[0]));
-            setPeopleCount({ detected_count: null, registered_count: null, stale: true });
-            setPeopleCountHistory([]);
+            setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+            setLotoComplianceHistory([]);
             selectedBoxIdRef.current = sisaBox[0] ? sisaBox[0].id : null;
           }
           pemicuToast(hasil.message || 'Boks dihapus', "ok");
@@ -888,25 +900,41 @@ export function AppProvider({ children }) {
   const sessionHistoryRows = (() => {
     const rawHistory = Array.isArray(tappingHistory) ? tappingHistory : [];
     const rows = [];
-    const latestByPerson = new Map();
+    // Group by box + person + session_id for proper session tracking
+    const sessionMap = new Map();
     rawHistory.forEach((entry, index) => {
       const uid = String(entry.rfid_uid || entry.rfidUid || '').trim();
       const boxId = String(entry.id_box || entry.idBox || 'Universal Box').trim();
+      const sessionId = entry.session_id ?? 'no-session';
       if (!uid) return;
-      const key = `${boxId.toLowerCase()}::${uid.toLowerCase()}`;
-      if (!latestByPerson.has(key)) latestByPerson.set(key, { entry, uid, boxId, index });
+      const key = `${boxId.toLowerCase()}::${uid.toLowerCase()}::${sessionId}`;
+      if (!sessionMap.has(key)) {
+        sessionMap.set(key, { entries: [], uid, boxId, sessionId });
+      }
+      sessionMap.get(key).entries.push({ ...entry, index });
     });
-    latestByPerson.forEach(({ entry, uid, boxId, index }) => {
-      const eventType = String(entry.event_type || entry.eventType || '').toUpperCase();
-      const eventTime = entry.created_at;
-      const eventIds = rawHistory.filter(item => String(item.id_box || item.idBox || 'Universal Box').trim().toLowerCase() === boxId.toLowerCase() && String(item.rfid_uid || item.rfidUid || '').trim().toLowerCase() === uid.toLowerCase()).map(item => Number(item.id)).filter(Number.isInteger);
+    sessionMap.forEach(({ entries, uid, boxId }) => {
+      // Find latest IN and OUT events for this person in this session
+      let latestIn = null;
+      let latestOut = null;
+      let latestEntry = entries[0]; // fallback
+      entries.forEach(e => {
+        const t = String(e.event_type || e.eventType || '').toUpperCase();
+        if (t === 'IN' && (!latestIn || e.created_at > latestIn.created_at)) latestIn = e;
+        if (t === 'OUT' && (!latestOut || e.created_at > latestOut.created_at)) latestOut = e;
+        if (!latestEntry || e.created_at > latestEntry.created_at) latestEntry = e;
+      });
+      const bestEvent = latestOut || latestIn || latestEntry;
+      const eventTime = bestEvent.created_at;
+      const eventIds = entries.map(e => Number(e.id)).filter(Number.isInteger);
+      const eventType = String(bestEvent.event_type || bestEvent.eventType || '').toUpperCase();
       rows.push({
-        id: `session-${entry.id || index}`, deleteId: entry.id, deleteIds: eventIds, id_box: boxId,
+        id: `session-${bestEvent.id || bestEvent.index || 0}`, deleteId: bestEvent.id, deleteIds: eventIds, id_box: boxId,
         sessionDate: String(eventTime || '').slice(0, 10) || 'tanpa-tanggal',
-        sessionStart: eventType === 'IN' ? eventTime : null,
-        sessionEnd: eventType === 'OUT' ? eventTime : null,
-        participants: [{ uid, nama: entry.nama || getUserProfileLocal(uid).nama, status: eventType === 'OUT' ? 'KELUAR' : eventType === 'IN' ? 'MASUK (TERAKHIR)' : 'TERCATAT' }],
-        totalPersonel: 1, eventText: entry.event_text || `TAPPING_${eventType || 'CHECK'}`
+        sessionStart: latestIn ? latestIn.created_at : null,
+        sessionEnd: latestOut ? latestOut.created_at : null,
+        participants: [{ uid, nama: bestEvent.nama || getUserProfileLocal(uid).nama, status: latestOut ? 'KELUAR' : 'MASUK' }],
+        totalPersonel: 1, eventText: bestEvent.event_text || `TAPPING_${eventType || 'CHECK'}`
       });
     });
     const liveParticipants = (Array.isArray(hwData.queue) ? hwData.queue : []).map(item => ({
@@ -967,7 +995,7 @@ export function AppProvider({ children }) {
     logPemeliharaan, setLogPemeliharaan,
     rfidBufferList, setRfidBufferList,
     tappingHistory, setTappingHistory,
-    peopleCount, peopleCountHistory,
+    lotoCompliance, lotoComplianceHistory, bleTags, setBleTags,
     localAuditLog, setLocalAuditLog,
     deletedAuditIds, setDeletedAuditIds,
     downtimeSeconds, isTrackingDowntime,

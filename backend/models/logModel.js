@@ -37,7 +37,7 @@ const LogModel = {
   getAllTappingHistory: async () => {
     const query = `
             SELECT t.id, t.id_box, t.session_id, t.rfid_uid, t.nama, t.event_type, t.event_text,
-              t.lat, t.lng, t.created_at, CASE WHEN b.is_online = 1 AND b.last_ping >= NOW() - INTERVAL 25 SECOND THEN 1 ELSE 0 END AS is_online
+              t.lat, t.lng, t.created_at, CASE WHEN b.is_online = 1 AND b.last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
             FROM tapping_history t LEFT JOIN boxes b ON b.id_box = t.id_box
             ORDER BY t.created_at DESC LIMIT 1000
     `;
@@ -49,7 +49,7 @@ const LogModel = {
   getTappingHistoryByBox: async (idBox) => {
     const query = `
             SELECT t.id, t.id_box, t.session_id, t.rfid_uid, t.nama, t.event_type, t.event_text,
-              t.lat, t.lng, t.created_at, CASE WHEN b.is_online = 1 AND b.last_ping >= NOW() - INTERVAL 25 SECOND THEN 1 ELSE 0 END AS is_online
+              t.lat, t.lng, t.created_at, CASE WHEN b.is_online = 1 AND b.last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
             FROM tapping_history t LEFT JOIN boxes b ON b.id_box = t.id_box
             WHERE t.id_box = ? ORDER BY t.created_at DESC LIMIT 500
     `;

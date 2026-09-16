@@ -42,14 +42,56 @@ const logService = {
     return response.data;
   },
 
-  // People Counting
+  // ===== BLE LOTO COMPLIANCE =====
+
+  // Get latest compliance status for a box
+  getLatestCompliance: async (idBox) => {
+    const response = await api.get(`/loto/compliance/${encodeURIComponent(idBox)}`);
+    return response.data;
+  },
+
+  // Get compliance history for a box
+  getComplianceHistory: async (idBox, limit = 20) => {
+    const response = await api.get(`/loto/compliance/${encodeURIComponent(idBox)}/history`, { params: { limit } });
+    return response.data;
+  },
+
+  // Get active BLE presence for a box (recent detections)
+  getActivePresence: async (idBox) => {
+    const response = await api.get(`/loto/presence/${encodeURIComponent(idBox)}`);
+    return response.data;
+  },
+
+  // BLE Tag management
+  getAllBleTags: async () => {
+    const response = await api.get('/loto/tags');
+    return response.data;
+  },
+
+  registerBleTag: async (data) => {
+    const response = await api.post('/loto/tags', data);
+    return response.data;
+  },
+
+  updateBleTag: async (id, data) => {
+    const response = await api.put(`/loto/tags/${id}`, data);
+    return response.data;
+  },
+
+  deleteBleTag: async (id) => {
+    const response = await api.delete(`/loto/tags/${id}`);
+    return response.data;
+  },
+
+  // ===== LEGACY PEOPLE COUNTING (redirect to compliance) =====
+
   getLatestPeopleCount: async (idBox) => {
-    const response = await api.get(`/logs/people-counting/${encodeURIComponent(idBox)}`);
+    const response = await api.get(`/loto/compliance/${encodeURIComponent(idBox)}`);
     return response.data;
   },
 
   getPeopleCountHistory: async (idBox, limit = 20) => {
-    const response = await api.get(`/logs/people-counting/${encodeURIComponent(idBox)}/history`, { params: { limit } });
+    const response = await api.get(`/loto/compliance/${encodeURIComponent(idBox)}/history`, { params: { limit } });
     return response.data;
   }
 };

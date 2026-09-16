@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import L from 'leaflet';
 import api from '../services/api';
+import refuelingService from '../services/refuelingService';
 import { boxCoordinates, DEFAULT_CENTER } from '../utils/mapCoordinates.js';
 import 'leaflet/dist/leaflet.css';
 import { useApp } from '../context/useApp';
@@ -29,7 +30,7 @@ export default function Dashboard() {
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     bukaModalUmum, bukaModalRadar,
     handleHapusRiwayatTapping,
-    peopleCount, peopleCountHistory,
+    lotoCompliance, lotoComplianceHistory,
   } = useApp();
 
   const isLiveTapPhotoVisible = isHwOnline &&
@@ -49,20 +50,25 @@ export default function Dashboard() {
   const currentPage = Math.min(boxPage, pageCount);
   const visibleBoxes = matchingBoxes.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-  const [streams, setStreams] = useState([]);
-  const [failedStreamId, setFailedStreamId] = useState(null);
-  const cameraConfigured = Boolean(selectedBox?.rtsp_url) || streams.some(stream => stream.id === selectedBox?.id && stream.configured);
-  const showCamera = cameraConfigured && failedStreamId !== selectedBox?.id;
-  const countMismatch = !peopleCount.stale && Number.isInteger(Number(peopleCount.detected_count)) && Number.isInteger(Number(peopleCount.registered_count)) && Number(peopleCount.detected_count) !== Number(peopleCount.registered_count);
+  const [streams] = useState([]);
+  const countMismatch = !lotoCompliance.stale && Number(lotoCompliance.missing_count) > 0;
 
-  useEffect(() => {
-    if (!isLoggedIn || activeTab !== 'dashboard') return;
-    let active = true;
-    api.get('/stream').then(({ data }) => {
-      if (active) setStreams(data.data || []);
-    }).catch(() => { if (active) setStreams([]); });
-    return () => { active = false; };
-  }, [isLoggedIn, activeTab, selectedBox?.id, selectedBox?.rtsp_url]);
+  // Riwayat Refueling
+  const [refuelingLogs, setRefuelingLogs] = useState([]);
+  const [refuelingLoading, setRefuelingLoading] = useState(false);
+  const fetchRefuelingLogs = async () => {
+    setRefuelingLoading(true);
+    try {
+      const res = selectedBox?.id
+        ? await refuelingService.getByBox(selectedBox.id)
+        : await refuelingService.getAll();
+      setRefuelingLogs(res?.data || []);
+    } catch { setRefuelingLogs([]); }
+    setRefuelingLoading(false);
+  };
+  useEffect(() => { if (isLoggedIn && activeTab === 'dashboard') fetchRefuelingLogs(); }, [isLoggedIn, activeTab, selectedBox?.id]);
+
+  useEffect(() => {}, [isLoggedIn, activeTab]);
 
   useEffect(() => () => {
     leafletMapInstanceRef.current?.remove();
@@ -204,27 +210,33 @@ export default function Dashboard() {
           <i className="fa-solid fa-id-card-clip text-lg text-red-600"></i>
         </div>
 
-        {/* PEOPLE COUNTING CARD */}
+        {/* BLE LOTO COMPLIANCE CARD */}
         <div onClick={() => {
-          bukaModalUmum('People Counting', 'fa-video', <div className="space-y-3">
-            <p>{peopleCount.stale ? 'Data kamera belum tersedia atau sudah kedaluwarsa.' : `Terdeteksi: ${peopleCount.stale ? '—' : peopleCount.detected_count}; terdaftar: ${peopleCount.stale ? '—' : peopleCount.registered_count}`}</p>
-            <table className="w-full text-left"><thead><tr><th>Waktu</th><th>Terdeteksi</th><th>Terdaftar</th></tr></thead>
-              <tbody>{peopleCountHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.detected_count}</td><td>{row.registered_count}</td></tr>)}</tbody>
+          bukaModalUmum('BLE LOTO Compliance', 'fa-shield-halved', <div className="space-y-3">
+            <p>{lotoCompliance.stale ? 'Data BLE belum tersedia atau sudah kedaluwarsa.' : `BLE Detected: ${lotoCompliance.ble_detected_count || 0}; Sudah LOTO: ${lotoCompliance.loto_tapped_count || 0}; Belum: ${lotoCompliance.missing_count || 0}`}</p>
+            {!lotoCompliance.stale && lotoCompliance.missing_sids && lotoCompliance.missing_sids.length > 0 && (
+              <div className="bg-red-50 border border-red-300 rounded-lg p-2">
+                <p className="text-xs font-bold text-red-700">Mekanik Belum Apply LOTO:</p>
+                <ul className="list-disc list-inside text-xs text-red-600">{lotoCompliance.missing_sids.map((sid, i) => <li key={i}>{sid}</li>)}</ul>
+              </div>
+            )}
+            <table className="w-full text-left"><thead><tr><th>Waktu</th><th>BLE Detected</th><th>Sudah LOTO</th><th>Belum</th></tr></thead>
+              <tbody>{lotoComplianceHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.ble_detected_count}</td><td>{row.loto_tapped_count}</td><td className={row.missing_count > 0 ? 'font-bold text-red-600' : ''}>{row.missing_count}</td></tr>)}</tbody>
             </table>
           </div>);
         }} className={`bg-white border p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98] ${countMismatch ? 'border-red-500 bg-red-50' : 'border-gray-200'}`}>
           <div>
-            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">People Counting <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
+            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">BLE LOTO Compliance <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
             <h3 className="text-lg font-black font-mono-tech mt-1">
-              <span className="text-green-600">{peopleCount.stale ? '—' : peopleCount.detected_count}</span>
+              <span className="text-blue-600">{lotoCompliance.stale ? '—' : (lotoCompliance.ble_detected_count || 0)}</span>
               <span className="text-slate-400 mx-1">/</span>
-              <span className="text-blue-600">{peopleCount.stale ? '—' : peopleCount.registered_count}</span>
+              <span className="text-green-600">{lotoCompliance.stale ? '—' : (lotoCompliance.loto_tapped_count || 0)}</span>
             </h3>
-            <p className="text-[9px] text-slate-400">Detected / Registered</p>
-            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ PERINGATAN: terdeteksi {Number(peopleCount.detected_count) < Number(peopleCount.registered_count) ? 'kurang' : 'lebih'} dari terdaftar</p>}
+            <p className="text-[9px] text-slate-400">BLE Detected / Sudah LOTO</p>
+            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ {lotoCompliance.missing_count} mekanik belum apply LOTO!</p>}
           </div>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'bg-green-100' : 'bg-amber-100'}`}>
-            <i className={`fa-solid fa-video text-lg ${!peopleCount.stale && peopleCount.detected_count === peopleCount.registered_count ? 'text-green-600' : 'text-amber-600'}`}></i>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${countMismatch ? 'bg-red-100' : 'bg-green-100'}`}>
+            <i className={`fa-solid fa-shield-halved text-lg ${countMismatch ? 'text-red-600' : 'text-green-600'}`}></i>
           </div>
         </div>
       </div>
@@ -252,30 +264,81 @@ export default function Dashboard() {
             <div ref={mapContainerRef} className="w-full h-[240px] sm:h-[350px] rounded-2xl border border-red-200 shadow-lg z-10" style={{ background: '#e5e7eb', minHeight: '240px' }} />
           </div>
 
-          {/* CCTV LIVE FEED */}
+          {/* BLE LOTO COMPLIANCE PANEL */}
           <div className="space-y-2">
             <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech">
-              <i className="fa-solid fa-video"></i> CCTV Live Feed
+              <i className="fa-solid fa-shield-halved"></i> BLE LOTO Compliance
               {selectedBox && <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">{selectedBox.id}</span>}
-              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[9px] font-bold">{showCamera ? 'LIVE' : 'OFFLINE'}</span>
+              <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${countMismatch ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                {lotoCompliance.stale ? 'OFFLINE' : (countMismatch ? 'ADA PELANGGARAN' : 'COMPLIANT')}
+              </span>
             </div>
-            <div className="relative rounded-2xl border border-red-200 shadow-lg overflow-hidden bg-black" style={{ minHeight: '200px' }}>
-              {showCamera ? (
-                <img
-                  key={selectedBox.id}
-                  src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/stream/${encodeURIComponent(selectedBox.id)}`}
-                  alt={`CCTV ${selectedBox.id}`}
-                  className="w-full h-auto max-h-[360px] object-contain"
-                  onError={() => setFailedStreamId(selectedBox.id)}
-                />
-              ) : null}
-              <div className={`${showCamera ? 'hidden' : 'flex'} absolute inset-0 items-center justify-center bg-slate-900 text-slate-400 flex-col gap-2`}>
-                <i className="fa-solid fa-video-slash text-3xl"></i>
-                <p className="text-xs">{selectedBox ? (cameraConfigured ? 'Stream tidak tersedia' : selectedBox.rtsp_url ? 'Kamera belum aktif' : 'Boks tanpa kamera') : 'Pilih boks terlebih dahulu'}</p>
-                <p className="text-[10px] text-slate-500">
-                  {selectedBox ? (selectedBox.rtsp_url || cameraConfigured ? 'Kamera belum terhubung. Periksa koneksi layanan kamera.' : 'Kamera opsional. Boks tetap dapat digunakan tanpa kamera.') : 'Klik boks di daftar untuk melihat CCTV'}
-                </p>
+            <div className={`relative rounded-2xl border shadow-lg overflow-hidden ${countMismatch ? 'border-red-400 bg-red-50' : 'border-green-300 bg-green-50'}`} style={{ minHeight: '200px' }}>
+              {/* Summary metrics */}
+              <div className="grid grid-cols-3 gap-2 p-4 border-b border-slate-200">
+                <div className="text-center p-3 rounded-xl bg-white border border-slate-200">
+                  <p className="text-[9px] font-bold uppercase text-slate-500">BLE Detected</p>
+                  <p className="text-2xl font-black text-blue-600">{lotoCompliance.stale ? '—' : (lotoCompliance.ble_detected_count || 0)}</p>
+                </div>
+                <div className="text-center p-3 rounded-xl bg-white border border-green-200">
+                  <p className="text-[9px] font-bold uppercase text-green-600">Sudah LOTO</p>
+                  <p className="text-2xl font-black text-green-600">{lotoCompliance.stale ? '—' : (lotoCompliance.loto_tapped_count || 0)}</p>
+                </div>
+                <div className={`text-center p-3 rounded-xl bg-white border ${countMismatch ? 'border-red-400' : 'border-slate-200'}`}>
+                  <p className={`text-[9px] font-bold uppercase ${countMismatch ? 'text-red-600' : 'text-slate-500'}`}>Belum LOTO</p>
+                  <p className={`text-2xl font-black ${countMismatch ? 'text-red-600 animate-pulse' : 'text-slate-400'}`}>{lotoCompliance.stale ? '—' : (lotoCompliance.missing_count || 0)}</p>
+                </div>
               </div>
+              {/* Detail table */}
+              <div className="p-4">
+                <p className="text-[10px] font-bold uppercase text-slate-500 mb-2">Detail Mekanik:</p>
+                <div className="overflow-x-auto max-h-[200px] overflow-y-auto">
+                  <table className="w-full text-left text-[11px] font-mono-tech">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-200">
+                        <th className="p-2">Status</th>
+                        <th className="p-2">SID</th>
+                        <th className="p-2">BLE Tag</th>
+                        <th className="p-2">LOTO Tap</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!lotoCompliance.stale && lotoCompliance.detected_sids && lotoCompliance.detected_sids.length > 0 ? (
+                        lotoCompliance.detected_sids.map((sid, i) => {
+                          const hasTapped = lotoCompliance.tapped_sids?.includes(sid);
+                          const isMissing = lotoCompliance.missing_sids?.includes(sid);
+                          return (
+                            <tr key={i} className={`border-b border-slate-100 ${isMissing ? 'bg-red-50' : 'bg-green-50/50'}`}>
+                              <td className="p-2">
+                                {isMissing
+                                  ? <span className="text-red-600 font-bold">❌ BELUM</span>
+                                  : <span className="text-green-600 font-bold">✅ AMAN</span>
+                                }
+                              </td>
+                              <td className="p-2 font-bold">{sid}</td>
+                              <td className="p-2 text-blue-600">BLE Active</td>
+                              <td className="p-2">{hasTapped ? '✅ Tapped' : '❌ Belum'}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan="4" className="p-6 text-center text-slate-400 italic">
+                            {lotoCompliance.stale ? 'Menunggu data BLE...' : 'Tidak ada mekanik terdeteksi'}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {/* Alert bar */}
+              {countMismatch && (
+                <div className="bg-red-600 text-white px-4 py-2 text-xs font-bold flex items-center gap-2">
+                  <i className="fa-solid fa-triangle-exclamation"></i>
+                  PERINGATAN: {lotoCompliance.missing_count} mekanik belum apply LOTO! Segera verifikasi!
+                </div>
+              )}
             </div>
           </div>
 
@@ -456,6 +519,66 @@ export default function Dashboard() {
                   </tr>
                 );
               }) : <tr><td colSpan="9" className="p-8 text-center text-slate-500 italic">Belum ada riwayat sesi tapping.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* TABEL RIWAYAT PENGISIAN BBM (REFUELING) */}
+      <div className="bg-white border border-amber-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="bg-amber-50 px-4 py-3 border-b border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-gas-pump text-amber-600"></i>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-wider text-amber-700 font-mono-tech">Riwayat Pengisian BBM</h3>
+              <p className="text-[10px] text-slate-600 mt-0.5">Log aktivitas pengisian bahan bakar oleh Petugas BBM</p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold text-amber-700 font-mono-tech">{refuelingLogs.length} Sesi</span>
+        </div>
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full min-w-[700px] text-left border-collapse text-[11px] font-mono-tech">
+            <thead className="sticky top-0 z-10 bg-gray-100 text-slate-800 border-b border-gray-200">
+              <tr>
+                <th className="p-3">ID Box</th>
+                <th className="p-3">Nama Petugas BBM</th>
+                <th className="p-3">UID RFID</th>
+                <th className="p-3">Waktu Mulai</th>
+                <th className="p-3">Waktu Selesai</th>
+                <th className="p-3 text-center">Durasi</th>
+                <th className="p-3 text-center">Status LOTO</th>
+                <th className="p-3">Lokasi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-amber-100 bg-white">
+              {refuelingLoading ? (
+                <tr><td colSpan="8" className="p-6 text-center text-slate-400 italic"><i className="fa-solid fa-spinner fa-spin mr-1"></i> Memuat data...</td></tr>
+              ) : refuelingLogs.length > 0 ? refuelingLogs.map((log) => {
+                const fmtTime = v => v ? new Date(String(v).replace(' ', 'T')).toLocaleString('id-ID') : '—';
+                const durasi = log.duration_seconds != null
+                  ? `${Math.floor(log.duration_seconds / 60)}j ${log.duration_seconds % 60}d`
+                  : (log.end_time ? '—' : 'Sedang berlangsung');
+                return (
+                  <tr key={log.id} className="border-b border-amber-100 hover:bg-amber-50/60">
+                    <td className="p-3 font-bold text-amber-700">{log.id_box || '—'}</td>
+                    <td className="p-3 font-bold text-slate-900">{log.fuelman_name || '—'}</td>
+                    <td className="p-3 text-blue-700">{log.fuelman_uid || '—'}</td>
+                    <td className="p-3 text-slate-700">{fmtTime(log.start_time)}</td>
+                    <td className="p-3 text-slate-700">{fmtTime(log.end_time)}</td>
+                    <td className="p-3 text-center">
+                      <span className={`inline-flex min-w-8 justify-center px-2 py-1 rounded-full text-[9px] font-bold border ${log.end_time ? 'bg-slate-100 text-slate-700 border-slate-300' : 'bg-green-50 text-green-700 border-green-300 animate-pulse'}`}>
+                        {durasi}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center">
+                      <span className={`px-2 py-1 rounded border text-[9px] font-bold ${log.is_loto_active ? 'bg-red-50 text-red-700 border-red-300' : 'bg-slate-100 text-slate-600 border-slate-300'}`}>
+                        {log.is_loto_active ? 'LOTO Aktif' : 'Non-LOTO'}
+                      </span>
+                    </td>
+                    <td className="p-3 text-slate-500 text-[10px]">{log.latitude != null && log.longitude != null ? `${Number(log.latitude).toFixed(5)}, ${Number(log.longitude).toFixed(5)}` : '—'}</td>
+                  </tr>
+                );
+              }) : <tr><td colSpan="8" className="p-8 text-center text-slate-500 italic">Belum ada riwayat pengisian BBM.</td></tr>}
             </tbody>
           </table>
         </div>
