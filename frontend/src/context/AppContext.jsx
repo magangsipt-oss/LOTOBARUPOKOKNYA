@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import userService from '../services/userService';
 import boxService from '../services/boxService';
 import logService from '../services/logService';
+import api from '../services/api';
 import { useAuth } from './useAuth';
 import {
   getUserProfile, isSystemUid, isAdminUid, normalizeUserRole,
@@ -12,6 +13,29 @@ import {
 } from '../utils/helpers';
 
 import { AppContext } from './AppState';
+
+const COMPLIANCE_MAX_AGE_MS = 30000;
+const TELEMETRY_MAX_AGE_MS = 90000;
+const emptyCompliance = () => ({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+const boxKey = value => String(value ?? '').trim().toLowerCase();
+const deviceHost = value => String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+const timestampIsFresh = (value, maxAge) => {
+  const age = Date.now() - Date.parse(value || '');
+  return Number.isFinite(age) && age >= 0 && age < maxAge;
+};
+const boxIsOnline = box => Number(box?.is_online) === 1 && timestampIsFresh(box?.last_ping, TELEMETRY_MAX_AGE_MS);
+
+function complianceSnapshot(data, idBox) {
+  if (!data || boxKey(data.id_box) !== boxKey(idBox)) return emptyCompliance();
+  const fields = [['ble_detected_count', 'detected_sids'], ['loto_tapped_count', 'tapped_sids'], ['missing_count', 'missing_sids']];
+  const valid = fields.every(([count, sids]) => Number.isInteger(data[count]) && data[count] >= 0 &&
+    Array.isArray(data[sids]) && data[sids].every(sid => typeof sid === 'string' && sid.trim()) &&
+    data[count] === data[sids].length && new Set(data[sids]).size === data[sids].length);
+  const missing = valid ? data.detected_sids.filter(sid => !data.tapped_sids.includes(sid)) : [];
+  const consistent = valid && missing.length === data.missing_count && missing.every(sid => data.missing_sids.includes(sid));
+  const fresh = data.stale === false || data.stale === 0 || data.stale === '0';
+  return { ...data, stale: !consistent || !fresh || !timestampIsFresh(data.created_at, COMPLIANCE_MAX_AGE_MS) };
+}
 
 export function AppProvider({ children }) {
   const { isLoggedIn, sessionUser, activeTab, setActiveTab } = useAuth();
@@ -34,7 +58,7 @@ export function AppProvider({ children }) {
   const [tappingHistory, setTappingHistory] = useState([]);
   const [localAuditLog, setLocalAuditLog] = useState([]);
   const [deletedAuditIds, setDeletedAuditIds] = useState([]);
-  const [lotoCompliance, setLotoCompliance] = useState({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
+  const [lotoCompliance, setLotoCompliance] = useState(emptyCompliance);
   const [lotoComplianceHistory, setLotoComplianceHistory] = useState([]);
   const [bleTags, setBleTags] = useState([]);
 
@@ -62,7 +86,7 @@ export function AppProvider({ children }) {
   const lastKnownCoordsRef = useRef({});
   const excelFileInputRef = useRef(null);
   const selectedBoxIdRef = useRef(null);
-  const isFetchingRef = useRef(false);
+  const gpsRequestRef = useRef(0);
 
   // Form states
   const [formData, setFormData] = useState({ sid: '', password: '' });
@@ -89,9 +113,17 @@ export function AppProvider({ children }) {
 
   // Team management (pengawas)
   const [selectedMechanicSids, setSelectedMechanicSids] = useState([]);
-  const [chosenTeamBoxId, setTeamBoxId] = useState('');
+  const [chosenTeamBoxId, setChosenTeamBoxId] = useState('');
   const teamBoxId = chosenTeamBoxId || String(boxes[0]?.id || '');
   const [teamMaintenanceType, setTeamMaintenanceType] = useState('Mekanikal');
+  const [loadedTeamBoxId, setLoadedTeamBoxId] = useState('');
+  const teamSavePendingRef = useRef(false);
+  const setTeamBoxId = idBox => {
+    setLoadedTeamBoxId('');
+    setSelectedMechanicSids([]);
+    setTeamMaintenanceType('Mekanikal');
+    setChosenTeamBoxId(idBox);
+  };
 
   // Toast helper
   const pemicuToast = (msg, type = '') => {
@@ -219,52 +251,72 @@ export function AppProvider({ children }) {
 
   const reportBoxId = selectedBox?.id || boxes[0]?.id || null;
 
-  // Load maintenance, buffer, tapping history
+  // Independent reports must not prevent live compliance from refreshing.
   useEffect(() => {
+    if (!isLoggedIn) return;
     let active = true;
+    let pending = false;
     const muatDataLaporanDanBuffer = async () => {
+      if (pending) return;
+      pending = true;
       try {
-        const maintenanceResult = await boxService.getAllMaintenance();
-        const data = maintenanceResult.data || maintenanceResult;
-        if (Array.isArray(data)) setLogPemeliharaan(data);
-
-        const bufferResult = await logService.getRfidBuffer();
-        const dataBuffer = bufferResult.data || bufferResult;
-        if (Array.isArray(dataBuffer)) setRfidBufferList(dataBuffer);
-
-        const historyResult = await logService.getTappingHistory(200);
-        const normalizedHistory = Array.isArray(historyResult)
-          ? historyResult
-          : (Array.isArray(historyResult?.data) ? historyResult.data : []);
-        setTappingHistory(normalizedHistory);
-
-        // Fetch BLE LOTO compliance for selected box (or first box if none selected)
-        const targetBoxId = reportBoxId;
-        if (targetBoxId) {
-          const pcResult = await logService.getLatestCompliance(targetBoxId);
-          const pcData = pcResult.data || pcResult;
-          if (active && selectedBoxIdRef.current === targetBoxId && pcData && pcData.ble_detected_count !== undefined) {
-            setLotoCompliance({ ...pcData, stale: false });
-          }
-
-          const pcHistory = await logService.getComplianceHistory(targetBoxId, 20);
-          const pcHistoryData = pcHistory.data || pcHistory;
-          if (active && selectedBoxIdRef.current === targetBoxId && Array.isArray(pcHistoryData)) setLotoComplianceHistory(pcHistoryData);
-        }
-
-        // Fetch BLE tags list
-        const tagsResult = await logService.getAllBleTags();
-        const tagsData = tagsResult.data || tagsResult;
-        if (active && Array.isArray(tagsData)) setBleTags(tagsData);
-      } catch { /* silent */ }
+        await Promise.allSettled([
+          [() => boxService.getAllMaintenance(), setLogPemeliharaan],
+          [() => logService.getRfidBuffer(), setRfidBufferList],
+          [() => logService.getTappingHistory(200), setTappingHistory],
+          [() => logService.getAllBleTags(), setBleTags]
+        ].map(async ([load, update]) => {
+          const result = await load();
+          const data = result.data ?? result;
+          if (active && Array.isArray(data)) update(data);
+        }));
+      } finally { pending = false; }
     };
 
-    if (isLoggedIn) {
-      muatDataLaporanDanBuffer();
-      const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
-      return () => { active = false; clearInterval(intervalSync); };
-    }
+    muatDataLaporanDanBuffer();
+    const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
+    return () => { active = false; clearInterval(intervalSync); };
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !reportBoxId) return;
+    let active = true;
+    let pending = false;
+    const isCurrent = () => active && boxKey(selectedBoxIdRef.current) === boxKey(reportBoxId);
+    const refreshCompliance = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await logService.getLatestCompliance(reportBoxId);
+        if (isCurrent()) setLotoCompliance(complianceSnapshot(result.data, reportBoxId));
+      } catch {
+        if (isCurrent()) setLotoCompliance(emptyCompliance());
+      } finally { pending = false; }
+    };
+    let historyPending = false;
+    const refreshHistory = async () => {
+      if (historyPending) return;
+      historyPending = true;
+      try {
+        const result = await logService.getComplianceHistory(reportBoxId, 20);
+        if (isCurrent()) setLotoComplianceHistory(Array.isArray(result.data) ? result.data : []);
+      } catch {
+        if (isCurrent()) setLotoComplianceHistory([]);
+      } finally { historyPending = false; }
+    };
+    refreshCompliance();
+    refreshHistory();
+    const interval = setInterval(() => { refreshCompliance(); refreshHistory(); }, 4000);
+    return () => { active = false; clearInterval(interval); };
   }, [isLoggedIn, reportBoxId]);
+
+  // Expire a valid snapshot even while the next request is still pending.
+  useEffect(() => {
+    if (lotoCompliance.stale) return;
+    const remaining = Date.parse(lotoCompliance.created_at) + COMPLIANCE_MAX_AGE_MS - Date.now();
+    const timer = setTimeout(() => setLotoCompliance(prev => ({ ...prev, stale: true })), Math.max(0, remaining));
+    return () => clearTimeout(timer);
+  }, [lotoCompliance]);
 
   // Elapsed time is derived from the server's actual session start, not fabricated tap times.
   const sessionStartMs = Date.parse(selectedBox?.session_started_at || '');
@@ -278,27 +330,40 @@ export function AppProvider({ children }) {
 
 
   useEffect(() => {
+    let active = true;
     if (sessionUser?.role !== 'pengawas' || !teamBoxId) return;
     const loadSupervisorTeam = async () => {
       try {
         const result = await userService.getSupervisorTeam(sessionUser.sid, teamBoxId);
         const team = result.data || result;
-        setSelectedMechanicSids(Array.isArray(team) ? team.map(m => m.sid) : []);
-        if (Array.isArray(team) && team[0]?.maintenance_type) setTeamMaintenanceType(team[0].maintenance_type);
-      } catch { setSelectedMechanicSids([]); }
+        if (!active) return;
+        if (!Array.isArray(team)) throw new Error('Data tim tidak valid.');
+        setSelectedMechanicSids(team.map(m => m.sid));
+        setTeamMaintenanceType(team[0]?.maintenance_type || 'Mekanikal');
+        setLoadedTeamBoxId(teamBoxId);
+      } catch {
+        if (active) {
+          setLoadedTeamBoxId('');
+          pemicuToast('Tim box belum berhasil dimuat. Pilih ulang box sebelum menyimpan.', 'fail');
+        }
+      }
     };
     loadSupervisorTeam();
+    return () => { active = false; };
   }, [sessionUser?.sid, sessionUser?.role, teamBoxId]);
 
   // MAIN TELEMETRY POLLING
   useEffect(() => {
     if (!isLoggedIn) return;
+    let active = true;
+    let pending = false;
 
     const muatDataOperasionalMesin = async () => {
-      if (isFetchingRef.current) return;
-      isFetchingRef.current = true;
+      if (pending) return;
+      pending = true;
       try {
         const resultAset = await boxService.getAllBoxes();
+        if (!active) return;
         const dataAset = resultAset.data || resultAset;
         const dataMapped = Array.isArray(dataAset)
           ? dataAset.map(b => {
@@ -315,7 +380,7 @@ export function AppProvider({ children }) {
               }
               lastKnownCoordsRef.current[id_box] = { lat: realLat, lng: realLng };
             }
-            return { ...extraHw, ...b, id: id_box, id_box: id_box, lat: realLat, lng: realLng, lon: realLng };
+            return { ...extraHw, ...b, is_online: boxIsOnline(b) ? 1 : 0, id: id_box, id_box: id_box, lat: realLat, lng: realLng, lon: realLng };
           })
           : [];
 
@@ -328,16 +393,13 @@ export function AppProvider({ children }) {
         if (!boksTerbaru && dataMapped.length > 0) {
           boksTerbaru = dataMapped[0];
           selectedBoxIdRef.current = boksTerbaru.id;
+          setLotoCompliance(emptyCompliance());
+          setLotoComplianceHistory([]);
         }
 
         if (boksTerbaru) {
           // The boxes response already contains the authenticated telemetry snapshot.
           const isDeviceActive = Number(boksTerbaru.is_online) === 1;
-          // Defense-in-depth: client-side staleness check (90s safety net)
-          const lastPingAge = boksTerbaru.last_ping
-            ? (Date.now() - new Date(boksTerbaru.last_ping).getTime()) / 1000
-            : Infinity;
-          const isSmoothOnline = isDeviceActive && lastPingAge < 90;
           if (isDeviceActive) {
             const directIp = boksTerbaru.ip || '';
             if (directIp && directIp !== '192.168.1.100') {
@@ -346,16 +408,28 @@ export function AppProvider({ children }) {
           }
 
           setSelectedBox(boksTerbaru);
-          setIsHwOnline(isSmoothOnline);
+          setIsHwOnline(isDeviceActive);
 
           setHwData(boxHardwareSnapshot(boksTerbaru));
+        } else {
+          selectedBoxIdRef.current = null;
+          setSelectedBox(null);
+          setIsHwOnline(false);
+          setHwData(boxHardwareSnapshot(null));
+          setLotoCompliance(emptyCompliance());
+          setLotoComplianceHistory([]);
         }
-      } catch { setIsHwOnline(false); setLotoCompliance(prev => ({ ...prev, stale: true })); } finally { isFetchingRef.current = false; }
+      } catch {
+        if (active) {
+          setIsHwOnline(false);
+          setLotoCompliance(prev => ({ ...prev, stale: true }));
+        }
+      } finally { pending = false; }
     };
 
     muatDataOperasionalMesin();
     const intervalKoneksi = setInterval(muatDataOperasionalMesin, 2500);
-    return () => clearInterval(intervalKoneksi);
+    return () => { active = false; clearInterval(intervalKoneksi); };
   }, [isLoggedIn]);
 
   // Audit log from HW events
@@ -378,7 +452,7 @@ export function AppProvider({ children }) {
     setLotoComplianceHistory([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
-    setIsHwOnline(Number(box.is_online) === 1);
+    setIsHwOnline(boxIsOnline(box));
     setHwData(boxHardwareSnapshot(box));
     lastCenteredBoxIdRef.current = null;
   }, []);
@@ -452,71 +526,59 @@ export function AppProvider({ children }) {
   };
 
   const handleAutoGps = async () => {
+    const requestId = ++gpsRequestRef.current;
+    const requestedId = formAlatBerat.id;
+    const requestedIp = formAlatBerat.ip;
+    const targetId = boxKey(requestedId);
+    const targetIp = deviceHost(requestedIp);
     setIsSyncing(true);
-    pemicuToast("Menghubungi device...", "ok");
-    let latHasil = null;
-    let lngHasil = null;
-    let deviceName = null;
+    pemicuToast('Memeriksa telemetri GPS boks...', 'ok');
+    let coordinates = null;
+    const readCoordinates = box => {
+      if (!box || !boxKey(box.id_box || box.id) || (!targetId && !targetIp)) return null;
+      if (targetId && boxKey(box.id_box || box.id) !== targetId) return null;
+      if (targetIp && deviceHost(box.ip) !== targetIp) return null;
+      let hardware = {};
+      try { hardware = typeof box.hw_data === 'string' ? JSON.parse(box.hw_data) : (box.hw_data || {}); } catch { return null; }
+      if (!boxIsOnline(box) || Number(box.stale) === 1 || Number(box.gps_fix ?? hardware?.gps_fix) !== 1) return null;
+      const rawLat = box.lat ?? hardware?.lat;
+      const rawLng = box.lng ?? box.lon ?? hardware?.lng ?? hardware?.lon;
+      if (rawLat == null || rawLng == null || String(rawLat).trim() === '' || String(rawLng).trim() === '') return null;
+      const lat = Number(rawLat);
+      const lng = Number(rawLng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) return null;
+      return { id: box.id_box || box.id, lat, lng };
+    };
 
-    // 1. Langsung probe dari IP yang dimasukkan user
-    const deviceIp = (formAlatBerat.ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
-    if (deviceIp) {
+    if (targetIp) {
       try {
-        const probeUrl = `${import.meta.env.VITE_API_URL || '/api'}/boxes/probe/${encodeURIComponent(deviceIp)}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        console.log('[SYNC] Probe URL:', probeUrl);
-        const resp = await fetch(probeUrl, { signal: controller.signal, credentials: 'include' });
-        clearTimeout(timeoutId);
-        console.log('[SYNC] Probe response:', resp.status, resp.statusText);
-        if (resp.ok) {
-          const result = await resp.json();
-          console.log('[SYNC] Probe result:', result);
-          if (result.success && result.data) {
-            const vLat = parseFloat(result.data.lat);
-            const vLng = parseFloat(result.data.lng);
-            if (!isNaN(vLat) && !isNaN(vLng) && vLat !== 0 && vLng !== 0) {
-              latHasil = vLat;
-              lngHasil = vLng;
-            }
-            if (result.data.id_box) deviceName = result.data.id_box;
-          }
-        } else {
-          const errText = await resp.text();
-          console.error('[SYNC] Probe error:', resp.status, errText);
-        }
-      } catch (e) { console.error('[SYNC] Probe catch:', e.message); }
+        const { data } = await api.get(`/boxes/probe/${encodeURIComponent(targetIp)}`, { timeout: 8000 });
+        if (data.success) coordinates = readCoordinates(data.data);
+      } catch { /* Try the same registered box in the telemetry list. */ }
     }
 
-    // 2. Fallback: coba dari database boxes
-    if (!latHasil || !lngHasil) {
+    if (requestId !== gpsRequestRef.current) return;
+    if (!coordinates && (targetId || targetIp)) {
       try {
-        const resultAset = await boxService.getAllBoxes();
-        const dataAset = resultAset.data || resultAset;
-        const targetId = (formAlatBerat.id || '').toLowerCase().trim();
-        const boksTarget = Array.isArray(dataAset) ? dataAset.find(b =>
-          String(b.id_box || b.id).toLowerCase().trim() === targetId
-        ) || dataAset[0] : null;
-        if (boksTarget) {
-          const validLat = parseFloat(boksTarget.lat);
-          const validLng = parseFloat(boksTarget.lng || boksTarget.lon);
-          if (!isNaN(validLat) && !isNaN(validLng) && validLat !== 0 && validLng !== 0) { latHasil = validLat; lngHasil = validLng; }
-        }
+        const result = await boxService.getAllBoxes();
+        const data = result.data ?? result;
+        const matches = Array.isArray(data) ? data.filter(box =>
+          (!targetId || boxKey(box.id_box || box.id) === targetId) &&
+          (!targetIp || deviceHost(box.ip) === targetIp)
+        ) : [];
+        if (matches.length === 1) coordinates = readCoordinates(matches[0]);
       } catch {}
     }
 
-    if (latHasil && lngHasil) {
-      setFormAlatBerat(prev => ({
-        ...prev,
-        id: deviceName || prev.id, // Auto-fill ID from device if available
-        lat: latHasil.toFixed(6),
-        lng: lngHasil.toFixed(6),
+    if (requestId !== gpsRequestRef.current) return;
+    if (coordinates) {
+      setFormAlatBerat(prev => prev.id !== requestedId || prev.ip !== requestedIp ? prev : ({
+        ...prev, id: prev.id || coordinates.id,
+        lat: coordinates.lat.toFixed(6), lng: coordinates.lng.toFixed(6)
       }));
-      const nameInfo = deviceName ? ` [ID: ${deviceName}]` : '';
-      pemicuToast(`✓ GPS Terkiri! (${latHasil.toFixed(4)}, ${lngHasil.toFixed(4)})${nameInfo}`, "ok");
+      pemicuToast(`GPS boks ${coordinates.id}: (${coordinates.lat.toFixed(4)}, ${coordinates.lng.toFixed(4)}).`, 'ok');
     } else {
-      setFormAlatBerat(prev => ({ ...prev, lat: "", lng: "" }));
-      pemicuToast("⚠️ Device tidak merespon. Pastikan IP benar & device online.", "info");
+      pemicuToast('GPS terbaru belum tersedia. Periksa ID/IP boks terdaftar, koneksi, dan GPS fix.', 'info');
     }
     setIsSyncing(false);
   };
@@ -549,6 +611,12 @@ export function AppProvider({ children }) {
 
   const handleSaveMechanicTeam = async (event) => {
     event.preventDefault();
+    if (!teamBoxId || loadedTeamBoxId !== teamBoxId) {
+      pemicuToast('Tunggu tim box ini selesai dimuat sebelum menyimpan.', 'fail');
+      return;
+    }
+    if (teamSavePendingRef.current) return;
+    teamSavePendingRef.current = true;
     const selectedNames = groupTeknisi.filter(user => selectedMechanicSids.includes(user.sid)).map(user => user.nama);
     try {
       const result = await userService.saveSupervisorTeam({
@@ -559,6 +627,7 @@ export function AppProvider({ children }) {
       setManualMekanik(selectedNames.join(', '));
       pemicuToast(`${selectedNames.length} mekanik dipilih untuk ${teamBoxId}.`, 'ok');
     } catch (error) { pemicuToast(error.message || 'Gagal menyimpan tim mekanik.', 'fail'); }
+    finally { teamSavePendingRef.current = false; }
   };
 
   const handleIndukTambahUser = async (e) => {

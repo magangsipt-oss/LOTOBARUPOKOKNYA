@@ -1,6 +1,7 @@
-import http from 'node:http';
+import { isIP } from 'node:net';
 import crypto from 'node:crypto';
 import BoxModel from '../models/boxModel.js';
+import pool from '../config/database.js';
 import { validateTelemetry } from '../domain/telemetry.js';
 import { recordTelemetry } from '../models/telemetryModel.js';
 
@@ -65,6 +66,8 @@ const boxController = {
     try {
       const { unit, ip, state, lat, lng, supervisorUid, rtsp_url, device_token } = req.body;
       const idBox = req.body.idBox ?? req.body.id_box;
+      const latitude = lat == null || (typeof lat === 'string' && !lat.trim()) ? null : Number(lat);
+      const longitude = lng == null || (typeof lng === 'string' && !lng.trim()) ? null : Number(lng);
 
       // Validasi: idBox dan unit wajib diisi
       if (!idBox || !unit) {
@@ -72,6 +75,17 @@ const boxController = {
           success: false,
           message: 'ID Box (idBox) dan unit wajib diisi!'
         });
+      }
+
+      if ([lat, lng].some(value => value != null && !['string', 'number'].includes(typeof value)) ||
+          (latitude !== null && (!Number.isFinite(latitude) || Math.abs(latitude) > 90)) ||
+          (longitude !== null && (!Number.isFinite(longitude) || Math.abs(longitude) > 180))) {
+        return res.status(400).json({ success: false, message: 'Koordinat tidak valid.' });
+      }
+
+      if (device_token !== undefined && device_token !== null &&
+          (typeof device_token !== 'string' || device_token.trim().length < 32 || device_token.trim().length > 256)) {
+        return res.status(400).json({ success: false, message: 'Token perangkat wajib 32–256 karakter.' });
       }
 
       // Hash device_token jika disediakan, atau generate otomatis
@@ -90,48 +104,23 @@ const boxController = {
         unit,
         ip: ip || '0.0.0.0',
         state: 'STATE_IDLE',
-        lat: lat || 0,
-        lng: lng || 0,
+        lat: latitude,
+        lng: longitude,
         supervisorUid: supervisorUid || '',
         rtsp_url: rtsp_url || null,
         device_token: hashedToken
       });
 
-      // Probe device — jika menyala, set online + GPS live
-      let deviceOnline = false;
-      let deviceData = {};
-      if (ip && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 4000);
-          const response = await fetch(`http://${ip}/status`, { signal: controller.signal });
-          clearTimeout(timeoutId);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.id_box) {
-              deviceOnline = true;
-              deviceData = data;
-              const liveLat = data.lat ?? lat;
-              const liveLng = data.lng ?? data.lon ?? lng;
-              const pool = (await import('../config/database.js')).default;
-              await pool.query(
-                'UPDATE boxes SET is_online = 1, state = ?, last_ping = NOW(), lat = COALESCE(?, lat), lng = COALESCE(?, lng) WHERE id_box = ?',
-                [data.state || 'IDLE', liveLat, liveLng, newIdBox]
-              );
-            }
-          }
-        } catch { /* device offline, box stays as-is */ }
-      }
 
       return res.status(201).json({
         success: true,
-        message: deviceOnline ? 'Box berhasil didaftarkan dan device ONLINE!' : 'Box baru berhasil didaftarkan ke sistem',
+        message: 'Box baru berhasil didaftarkan; menunggu telemetri perangkat.',
         data: {
           idBox: newIdBox, unit,
-          state: deviceOnline ? (deviceData.state || 'ONLINE') : 'STATE_IDLE',
-          is_online: deviceOnline ? 1 : 0,
-          lat: deviceOnline ? (deviceData.lat ?? lat) : lat,
-          lng: deviceOnline ? (deviceData.lng ?? deviceData.lon ?? lng) : lng,
+          state: 'STATE_IDLE',
+          is_online: 0,
+          lat: latitude,
+          lng: longitude,
           device_token: plainToken,
         }
       });
@@ -256,43 +245,35 @@ const boxController = {
   updateTelemetry: async (req, res, next) => {
     try {
       const body = validateTelemetry(req.body);
-      // Use authenticated boxId from token lookup, NOT req.params.idBox
-      // ESP32 may send a different device ID in the URL than what's in the database
-      const boxId = req.auth?.boxId || req.params.idBox;
+      const boxId = req.auth.boxId;
       const result = await recordTelemetry(boxId, body);
       res.json({ success: true, data: result });
     } catch (error) { next(error); }
   },
 
-  // 8. Probe GPS dari device ESP32 berdasarkan IP address
-  probeDevice: async (req, res) => {
+  // Read an authenticated telemetry snapshot; never fetch a user-supplied address.
+  probeDevice: async (req, res, next) => {
     try {
       const ip = String(req.params.ip || '').trim();
-      if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-        return res.status(400).json({ success: false, message: 'IP address tidak valid.' });
-      }
-      const url = `http://${ip}/status`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (!response.ok) return res.status(502).json({ success: false, message: `Device merespon ${response.status}` });
-      const data = await response.json();
-      return res.json({
-        success: true,
-        data: {
-          lat: data.lat ?? null,
-          lng: data.lng ?? data.lon ?? null,
-          gps_fix: data.gps_fix ?? false,
-          state: data.state ?? null,
-          id_box: data.id_box ?? null,
-          wifi_connected: data.wifi_connected ?? false,
-        }
-      });
-    } catch (error) {
-      const msg = error.name === 'AbortError' ? 'Device tidak merespon (timeout 5 detik)' : `Gagal menghubungi device: ${error.message}`;
-      return res.status(502).json({ success: false, message: msg });
-    }
+      if (!isIP(ip)) return res.status(400).json({ success: false, message: 'IP address tidak valid.' });
+      const [rows] = await pool.query(`SELECT id_box, ip, state, lat, lng, hw_data, last_ping,
+        CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
+        FROM boxes WHERE ip = ? LIMIT 2`, [ip]);
+      if (!rows.length) return res.status(404).json({ success: false, message: 'Belum ada telemetri untuk IP ini.' });
+      if (rows.length > 1) return res.status(409).json({ success: false, message: 'IP dipakai lebih dari satu boks.' });
+      const box = rows[0];
+      let hardware = {};
+      try { hardware = JSON.parse(box.hw_data || '{}') || {}; } catch { /* Invalid snapshots have no trusted GPS fix. */ }
+      const online = Number(box.is_online) === 1;
+      const gpsFix = online && hardware.gps_fix === true && box.lat != null && box.lng != null &&
+        Number.isFinite(Number(box.lat)) && Math.abs(Number(box.lat)) <= 90 &&
+        Number.isFinite(Number(box.lng)) && Math.abs(Number(box.lng)) <= 180;
+      return res.json({ success: true, data: {
+        id_box: box.id_box, ip: box.ip, is_online: online ? 1 : 0, last_ping: box.last_ping,
+        lat: gpsFix ? Number(box.lat) : null, lng: gpsFix ? Number(box.lng) : null,
+        gps_fix: gpsFix, state: online ? box.state : null, wifi_connected: online, stale: !online
+      } });
+    } catch (error) { next(error); }
   },
 
   regenerateToken: async (req, res, next) => {

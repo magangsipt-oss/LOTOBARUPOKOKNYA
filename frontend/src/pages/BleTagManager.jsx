@@ -6,61 +6,61 @@ import logService from '../services/logService';
  * Halaman Manajemen BLE Tag untuk LOTO Compliance Monitoring
  */
 export default function BleTagManager() {
-  const { isLoggedIn, activeTab, sessionUser, userDatabase, pemicuToast, terjemahkanIdKeNamaLengkap } = useApp();
+  const { isLoggedIn, activeTab, sessionUser, userDatabase, pemicuToast, boxes } = useApp();
+  const canManageTags = sessionUser?.role === 'admin';
 
   const [bleTags, setBleTags] = useState([]);
-  const [activePresence, setActivePresence] = useState([]);
+  const [presenceResult, setPresenceResult] = useState({ boxId: '', status: 'loading', rows: [] });
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formTag, setFormTag] = useState({ mac_address: '', tag_name: '', assigned_sid: '' });
-  const [selectedBoxId, setSelectedBoxId] = useState('');
-  const [boxes, setBoxes] = useState([]);
-
-  // Load boxes for presence check
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    import('../services/boxService').then(({ default: boxService }) => {
-      boxService.getAllBoxes().then(result => {
-        const data = result.data || result;
-        if (Array.isArray(data)) {
-          setBoxes(data);
-          if (data.length > 0 && !selectedBoxId) setSelectedBoxId(data[0].id);
-        }
-      }).catch(() => {});
-    });
-  }, [isLoggedIn]);
+  const [chosenBoxId, setSelectedBoxId] = useState('');
+  const [tagRevision, setTagRevision] = useState(0);
+  const selectedBoxId = boxes.some(box => String(box.id) === chosenBoxId) ? chosenBoxId : String(boxes[0]?.id || '');
+  const presenceStatus = !selectedBoxId ? 'unavailable' : presenceResult.boxId === selectedBoxId ? presenceResult.status : 'loading';
+  const activePresence = presenceStatus === 'ready' ? presenceResult.rows : [];
 
   // Load BLE tags
-  const loadTags = async () => {
-    try {
-      const result = await logService.getAllBleTags();
-      const data = result.data || result;
-      if (Array.isArray(data)) setBleTags(data);
-    } catch {}
-  };
-
-  // Load active presence for selected box
-  const loadPresence = async () => {
-    if (!selectedBoxId) return;
-    try {
-      const result = await logService.getActivePresence(selectedBoxId);
-      const data = result.data || result;
-      if (Array.isArray(data)) setActivePresence(data);
-    } catch { setActivePresence([]); }
-  };
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'ble-tags') return;
+    let active = true;
+    const loadTags = async () => {
+      try {
+        const result = await logService.getAllBleTags();
+        const data = result.data ?? result;
+        if (active && Array.isArray(data)) setBleTags(data);
+      } catch {}
+    };
+    loadTags();
+    return () => { active = false; };
+  }, [isLoggedIn, activeTab, tagRevision]);
 
   useEffect(() => {
-    if (isLoggedIn && activeTab === 'ble-tags') {
-      loadTags();
-      loadPresence();
-      const interval = setInterval(loadPresence, 5000);
-      return () => clearInterval(interval);
-    }
+    if (!isLoggedIn || activeTab !== 'ble-tags' || !selectedBoxId) return;
+    let active = true;
+    let pending = false;
+    const loadPresence = async () => {
+      if (pending) return;
+      pending = true;
+      setPresenceResult({ boxId: selectedBoxId, status: 'loading', rows: [] });
+      try {
+        const result = await logService.getActivePresence(selectedBoxId);
+        const data = result.data ?? result;
+        if (!Array.isArray(data)) throw new Error('Data presence tidak valid.');
+        if (active) setPresenceResult({ boxId: selectedBoxId, status: 'ready', rows: data });
+      } catch {
+        if (active) setPresenceResult({ boxId: selectedBoxId, status: 'error', rows: [] });
+      } finally { pending = false; }
+    };
+    loadPresence();
+    const interval = setInterval(loadPresence, 5000);
+    return () => { active = false; clearInterval(interval); };
   }, [isLoggedIn, activeTab, selectedBoxId]);
 
   // Register new BLE tag
   const handleRegisterTag = async (e) => {
     e.preventDefault();
+    if (!canManageTags || loading) return;
     if (!formTag.mac_address.trim()) {
       pemicuToast('MAC Address wajib diisi!', 'fail');
       return;
@@ -76,7 +76,7 @@ export default function BleTagManager() {
         pemicuToast('BLE Tag berhasil didaftarkan!', 'ok');
         setFormTag({ mac_address: '', tag_name: '', assigned_sid: '' });
         setShowForm(false);
-        loadTags();
+        setTagRevision(revision => revision + 1);
       } else {
         pemicuToast(result.message || 'Gagal mendaftarkan tag', 'fail');
       }
@@ -88,12 +88,13 @@ export default function BleTagManager() {
 
   // Delete BLE tag
   const handleDeleteTag = async (id) => {
+    if (!canManageTags) return;
     if (!window.confirm('Hapus BLE tag ini secara permanen?')) return;
     try {
       const result = await logService.deleteBleTag(id);
       if (result.success || result.status === 'success') {
         pemicuToast('BLE Tag dihapus', 'ok');
-        loadTags();
+        setTagRevision(revision => revision + 1);
       } else {
         pemicuToast(result.message || 'Gagal menghapus tag', 'fail');
       }
@@ -102,9 +103,10 @@ export default function BleTagManager() {
 
   // Toggle tag active status
   const handleToggleTag = async (id, currentActive) => {
+    if (!canManageTags) return;
     try {
       await logService.updateBleTag(id, { is_active: !currentActive });
-      loadTags();
+      setTagRevision(revision => revision + 1);
     } catch { pemicuToast('Gagal update status tag', 'fail'); }
   };
 
@@ -120,13 +122,13 @@ export default function BleTagManager() {
           </h2>
           <p className="text-xs text-slate-500 mt-1">Daftar & kelola BLE Smart Tag untuk LOTO Compliance Monitoring</p>
         </div>
-        <button onClick={() => setShowForm(!showForm)} className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
+        {canManageTags && <button onClick={() => setShowForm(!showForm)} className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
           <i className={`fa-solid ${showForm ? 'fa-times' : 'fa-plus'}`}></i> {showForm ? 'Batal' : 'Tambah Tag Baru'}
-        </button>
+        </button>}
       </div>
 
       {/* Register Form */}
-      {showForm && (
+      {canManageTags && showForm && (
         <div className="bg-white border border-red-200 rounded-xl p-4 shadow-sm">
           <h3 className="text-sm font-bold text-red-700 mb-3">Registrasi BLE Tag Baru</h3>
           <form onSubmit={handleRegisterTag} className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -49,7 +49,7 @@ test('login reaches authenticate, issues HttpOnly cookie, restores server identi
   assert.equal(login.status,200);
   const body = await login.json();
   const cookie = login.headers.get('set-cookie');
-  assert.match(cookie,/HttpOnly/); assert.match(cookie,/SameSite=Strict/);
+  assert.match(cookie,/HttpOnly/); assert.match(cookie,/SameSite=Lax/);
   const headers = { Cookie: cookie.split(';')[0], 'X-CSRF-Token': body.csrfToken };
   assert.equal((await call('/api/users/me',{headers})).status,200);
   assert.equal((await call('/api/users/logout',{method:'POST',headers})).status,200);
@@ -73,16 +73,51 @@ test('device tokens are scoped to their own box and cannot administer accounts',
   assert.equal((await call('/api/users',{method:'POST',headers,body:'{}'})).status,403);
   assert.equal((await call('/api/boxes/BOX%20ELOTO%201/telemetry',{method:'POST',headers,body:'{}'})).status,400);
 });
+test('unknown device tokens cannot claim unconfigured boxes or register new boxes', async () => {
+  const query = pool.query;
+  const queries = [];
+  pool.query = async (sql, args) => {
+    queries.push(sql);
+    if (sql.includes('device_token IS NULL')) return [[{ id_box: 'unconfigured' }]];
+    if (sql === 'SELECT id_box FROM boxes WHERE id_box = ?') return [[]];
+    return query(sql, args);
+  };
+  try {
+    const headers = { 'X-Device-Token': 'unknown-device-token-'.repeat(4), 'Content-Type': 'application/json' };
+    for (const id of ['unconfigured', 'new-box']) {
+      const response = await call(`/api/boxes/${id}/telemetry`, { method: 'POST', headers,
+        body: JSON.stringify({ id_box: id, ip: '192.168.1.20', event_id: 'untrusted-event' }) });
+      assert.equal(response.status, 401);
+    }
+    assert.ok(!queries.some(sql => /^(INSERT|UPDATE|DELETE)/.test(sql)));
+  } finally { pool.query = query; }
+});
+test('device identity in telemetry body must match the token and URL', async () => {
+  const response = await call('/api/boxes/BOX%20ELOTO%201/telemetry', {
+    method: 'POST', headers: { 'X-Device-Token': deviceToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id_box: 'BOX ELOTO 2', event_id: 'wrong-box' })
+  });
+  assert.equal(response.status, 403);
+});
 test('fabricated/expired sessions are rejected', async () => {
   assert.equal((await call('/api/users/me',{headers:{Cookie:`eloto_session=${token}`}})).status,401);
 });
 test('telemetry rejects malformed numbers, unbounded queues and missing event IDs', () => {
   assert.throws(()=>validateTelemetry({}),/event_id/);
+  assert.throws(()=>validateTelemetry({event_id:'bad id'}),/event_id/);
+  assert.throws(()=>validateTelemetry({event_id:'x'.repeat(101)}),/event_id/);
   assert.throws(()=>validateTelemetry({event_id:'event-1',lat:NaN}),/lat/);
   assert.throws(()=>validateTelemetry({event_id:'event-1',relay_open:'false'}),/relay/);
+  assert.throws(()=>validateTelemetry({event_id:'event-1',gps_fix:true}),/GPS fix/);
+  assert.throws(()=>validateTelemetry({event_id:'event-1',gps_fix:1,lat:0,lng:null}),/GPS fix/);
+  assert.doesNotThrow(()=>validateTelemetry({event_id:'event-1',gps_fix:true,lat:0,lng:0}));
   assert.doesNotThrow(()=>validateTelemetry({event_id:'event-1',gps_fix:false,lat:null,lng:null}));
   assert.equal(normalizeState('LOCKED_ACTIVE'),'STATE_LOTO_LOCKED_ACTIVE');
   assert.equal(normalizeState('WAIT_SPV'),'STATE_WAIT_SPV_IN');
+  assert.equal(normalizeState('SPV_OUT_CONFIRM'),'STATE_SPV_OUT_CONFIRM');
+  assert.equal(normalizeState('COUNTDOWN'),'STATE_COUNTDOWN');
+  assert.equal(normalizeState('WELCOME'),'STATE_WELCOME');
+  assert.equal(normalizeState('BOOT_IP'),'STATE_BOOT_IP');
   assert.equal(normalizeRole('not-admin'),null);
 });
 test('profile edits without fingerprint do not overwrite its existing value', async () => {

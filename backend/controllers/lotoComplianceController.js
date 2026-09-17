@@ -1,5 +1,51 @@
 import pool from '../config/database.js';
 
+const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
+const has = (body, key) => Object.prototype.hasOwnProperty.call(body, key);
+
+function requestBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Payload tidak valid');
+  return body;
+}
+
+function requiredText(value, max, field) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > max) fail(`${field} tidak valid`);
+  return value.trim();
+}
+
+function optionalText(value, max, field) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim().length > max) fail(`${field} tidak valid`);
+  return value.trim() || null;
+}
+
+function normalizeMac(value) {
+  const mac = requiredText(value, 17, 'MAC address').toUpperCase();
+  if (!/^(?:[A-F0-9]{2}:){5}[A-F0-9]{2}$/.test(mac)) fail('Format MAC address tidak valid');
+  return mac;
+}
+
+function tagId(value) {
+  if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) fail('ID tag tidak valid');
+  return Number(value);
+}
+
+async function validateAssignment(sid) {
+  if (sid === null) return;
+  const [users] = await pool.query('SELECT sid FROM users WHERE sid = ?', [sid]);
+  if (!users.length) fail('SID pengguna tidak ditemukan');
+}
+
+function errorResponse(res, error, message, operation) {
+  const status = error.code === 'ER_DUP_ENTRY' ? 409 : [400, 404, 409].includes(error.status) ? error.status : 500;
+  if (status === 500) console.error(`Error ${operation}:`, error.message);
+  return res.status(status).json({
+    success: false,
+    message: error.code === 'ER_DUP_ENTRY' ? 'BLE tag dengan MAC ini sudah terdaftar' : status === 500 ? message : error.message,
+    ...(status === 500 ? { error: 'REQUEST_FAILED' } : {})
+  });
+}
+
 /**
  * Controller untuk BLE LOTO Compliance Monitoring
  * - BLE Smart Tag presence detection
@@ -11,68 +57,66 @@ const lotoComplianceController = {
   // 1. BLE Scanner mengirim hasil scan (daftar tag MAC yang terdeteksi)
   reportPresence: async (req, res) => {
     try {
-      const { id_box, ble_tags, session_id } = req.body;
-      if (!id_box || !Array.isArray(ble_tags)) {
-        return res.status(400).json({ success: false, message: 'id_box dan ble_tags (array) wajib diisi' });
-      }
+      const body = requestBody(req.body);
+      const id_box = requiredText(body.id_box, 50, 'id_box');
+      if (!Array.isArray(body.ble_tags) || body.ble_tags.length > 100) fail('ble_tags harus berupa array maksimal 100 MAC');
+      const macs = [...new Set(body.ble_tags.map(normalizeMac))];
+      if (has(body, 'session_id') && body.session_id !== null && (!Number.isSafeInteger(body.session_id) || body.session_id < 1)) fail('session_id tidak valid');
 
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
 
+        // Serialize with telemetry so the session and queue belong to one snapshot.
+        const [boxes] = await connection.query('SELECT active_session_id FROM boxes WHERE id_box = ? FOR UPDATE', [id_box]);
+        if (!boxes.length) fail('Box tidak ditemukan', 404);
+        const session = boxes[0].active_session_id;
+        if (has(body, 'session_id') && body.session_id !== session) fail('Sesi BLE tidak sesuai sesi aktif box', 409);
+
         // Log each detected BLE tag
-        for (const mac of ble_tags) {
-          if (!mac || typeof mac !== 'string') continue;
+        for (const mac of macs) {
           await connection.query(
             `INSERT INTO ble_presence_log (id_box, ble_mac, detected_at) VALUES (?, ?, NOW())`,
-            [id_box, mac.toUpperCase()]
+            [id_box, mac]
           );
         }
 
         // Resolve BLE MACs to SIDs
-        const [tagRows] = await connection.query(
-          'SELECT mac_address, assigned_sid FROM ble_tags WHERE mac_address IN (?) AND is_active = 1',
-          [ble_tags.map(m => m.toUpperCase())]
-        );
-        const detectedSids = tagRows.map(r => r.assigned_sid).filter(Boolean);
+        const [tagRows] = macs.length ? await connection.query(
+          `SELECT bt.mac_address, u.sid AS assigned_sid FROM ble_tags bt
+           JOIN users u ON u.sid = bt.assigned_sid
+           WHERE bt.mac_address IN (?) AND bt.is_active = 1`,
+          [macs]
+        ) : [[]];
+        const detectedSids = [...new Set(tagRows.map(r => r.assigned_sid).filter(Boolean))];
 
-        // Get current tapping session: who has tapped LOTO for this box
-        const [tappedRows] = await connection.query(
-          `SELECT DISTINCT rfid_uid FROM tapping_history
-           WHERE id_box = ? AND event_type = 'IN'
-           AND rfid_uid NOT IN (
-             SELECT th2.rfid_uid FROM tapping_history th2
-             WHERE th2.id_box = ? AND th2.event_type = 'OUT'
-             AND th2.created_at > tapping_history.created_at
-           )
-           ORDER BY created_at DESC`,
-          [id_box, id_box]
+        // The live LOTO queue excludes fuel-only taps, old sessions and offline replay.
+        // Prefer the RFID owner; a SID fallback supports cards carrying the SID itself.
+        const [tappedRows] = session == null ? [[]] : await connection.query(
+          `SELECT DISTINCT COALESCE(card_user.sid, sid_user.sid) AS sid
+           FROM queue q
+           LEFT JOIN users card_user ON card_user.rfid_uid = q.rfid_uid
+           LEFT JOIN users sid_user ON sid_user.sid = q.rfid_uid AND card_user.sid IS NULL
+           WHERE q.id_box = ? AND q.session_id = ?`,
+          [id_box, session]
         );
 
-        const tappedUids = tappedRows.map(r => r.rfid_uid).filter(Boolean);
+        const tappedSids = [...new Set(tappedRows.map(r => r.sid).filter(Boolean))];
 
         // Find SIDs that are missing (present via BLE but haven't tapped)
-        const missingSids = detectedSids.filter(sid => !tappedUids.includes(sid));
+        const missingSids = detectedSids.filter(sid => !tappedSids.includes(sid));
 
-        // Upsert compliance snapshot
+        // Append a snapshot for the compliance history.
         await connection.query(
           `INSERT INTO loto_compliance (id_box, ble_detected_count, loto_tapped_count, missing_count, detected_sids, tapped_sids, missing_sids, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-           ON DUPLICATE KEY UPDATE
-             ble_detected_count = VALUES(ble_detected_count),
-             loto_tapped_count = VALUES(loto_tapped_count),
-             missing_count = VALUES(missing_count),
-             detected_sids = VALUES(detected_sids),
-             tapped_sids = VALUES(tapped_sids),
-             missing_sids = VALUES(missing_sids),
-             created_at = NOW()`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
           [
             id_box,
             detectedSids.length,
-            tappedUids.length,
+            tappedSids.length,
             missingSids.length,
             JSON.stringify(detectedSids),
-            JSON.stringify(tappedUids),
+            JSON.stringify(tappedSids),
             JSON.stringify(missingSids)
           ]
         );
@@ -85,10 +129,10 @@ const lotoComplianceController = {
           data: {
             id_box,
             ble_detected_count: detectedSids.length,
-            loto_tapped_count: tappedUids.length,
+            loto_tapped_count: tappedSids.length,
             missing_count: missingSids.length,
             detected_sids: detectedSids,
-            tapped_sids: tappedUids,
+            tapped_sids: tappedSids,
             missing_sids: missingSids
           }
         });
@@ -99,17 +143,16 @@ const lotoComplianceController = {
         connection.release();
       }
     } catch (error) {
-      console.error('Error reportPresence:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal update BLE presence', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal update BLE presence', 'reportPresence');
     }
   },
 
   // 2. Get latest compliance status for a box
   getLatestCompliance: async (req, res) => {
     try {
-      const { idBox } = req.params;
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
       const [rows] = await pool.query(
-        'SELECT *, (created_at < NOW() - INTERVAL 30 SECOND) AS stale FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC LIMIT 1',
+        'SELECT *, (created_at < NOW() - INTERVAL 30 SECOND) AS stale FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC, id DESC LIMIT 1',
         [idBox]
       );
 
@@ -123,18 +166,19 @@ const lotoComplianceController = {
 
       return res.status(200).json({ success: true, data });
     } catch (error) {
-      console.error('Error getLatestCompliance:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal mengambil data compliance', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal mengambil data compliance', 'getLatestCompliance');
     }
   },
 
   // 3. Get compliance history for a box
   getComplianceHistory: async (req, res) => {
     try {
-      const { idBox } = req.params;
-      const limit = parseInt(req.query.limit) || 20;
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
+      const requestedLimit = req.query.limit === undefined ? 20 : Number(req.query.limit);
+      if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || Array.isArray(req.query.limit)) fail('limit harus berupa bilangan bulat positif');
+      const limit = Math.min(requestedLimit, 200);
       const [rows] = await pool.query(
-        'SELECT * FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC LIMIT ?',
+        'SELECT * FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC, id DESC LIMIT ?',
         [idBox, limit]
       );
 
@@ -148,8 +192,7 @@ const lotoComplianceController = {
 
       return res.status(200).json({ success: true, data: parsed });
     } catch (error) {
-      console.error('Error getComplianceHistory:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal mengambil riwayat compliance', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal mengambil riwayat compliance', 'getComplianceHistory');
     }
   },
 
@@ -171,12 +214,10 @@ const lotoComplianceController = {
 
   registerTag: async (req, res) => {
     try {
-      const { mac_address, tag_name, assigned_sid } = req.body;
-      if (!mac_address) {
-        return res.status(400).json({ success: false, message: 'mac_address wajib diisi' });
-      }
-
-      const cleanMac = mac_address.toUpperCase().replace(/[^A-F0-9:]/g, '');
+      const body = requestBody(req.body);
+      const cleanMac = normalizeMac(body.mac_address);
+      const tag_name = optionalText(body.tag_name, 100, 'tag_name');
+      const assigned_sid = optionalText(body.assigned_sid, 50, 'assigned_sid');
 
       // Check if already registered
       const [existing] = await pool.query('SELECT id FROM ble_tags WHERE mac_address = ?', [cleanMac]);
@@ -184,9 +225,11 @@ const lotoComplianceController = {
         return res.status(409).json({ success: false, message: 'BLE tag dengan MAC ini sudah terdaftar' });
       }
 
+      await validateAssignment(assigned_sid);
+
       await pool.query(
         'INSERT INTO ble_tags (mac_address, tag_name, assigned_sid, is_active) VALUES (?, ?, ?, 1)',
-        [cleanMac, tag_name || null, assigned_sid || null]
+        [cleanMac, tag_name, assigned_sid]
       );
 
       return res.status(201).json({
@@ -195,46 +238,55 @@ const lotoComplianceController = {
         data: { mac_address: cleanMac, tag_name, assigned_sid }
       });
     } catch (error) {
-      console.error('Error registerTag:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal mendaftarkan BLE tag', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal mendaftarkan BLE tag', 'registerTag');
     }
   },
 
   updateTag: async (req, res) => {
     try {
-      const { id } = req.params;
-      const { tag_name, assigned_sid, is_active } = req.body;
-
-      await pool.query(
-        'UPDATE ble_tags SET tag_name = COALESCE(?, tag_name), assigned_sid = COALESCE(?, assigned_sid), is_active = COALESCE(?, is_active) WHERE id = ?',
-        [tag_name, assigned_sid, is_active, id]
-      );
+      const id = tagId(req.params.id);
+      const body = requestBody(req.body);
+      const updates = [];
+      const values = [];
+      for (const [field, max] of [['tag_name', 100], ['assigned_sid', 50]]) {
+        if (!has(body, field)) continue;
+        const value = optionalText(body[field], max, field);
+        updates.push(`${field} = ?`);
+        values.push(value);
+      }
+      if (has(body, 'is_active')) {
+        if (![true, false, 0, 1].includes(body.is_active)) fail('is_active tidak valid');
+        updates.push('is_active = ?');
+        values.push(Number(body.is_active));
+      }
+      if (!updates.length) fail('Tidak ada data tag yang diperbarui');
+      if (has(body, 'assigned_sid')) await validateAssignment(optionalText(body.assigned_sid, 50, 'assigned_sid'));
+      const [result] = await pool.query(`UPDATE ble_tags SET ${updates.join(', ')} WHERE id = ?`, [...values, id]);
+      if (result.affectedRows === 0) fail('BLE tag tidak ditemukan', 404);
 
       return res.status(200).json({ success: true, message: 'BLE tag berhasil diperbarui' });
     } catch (error) {
-      console.error('Error updateTag:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal memperbarui BLE tag', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal memperbarui BLE tag', 'updateTag');
     }
   },
 
   deleteTag: async (req, res) => {
     try {
-      const { id } = req.params;
+      const id = tagId(req.params.id);
       const [result] = await pool.query('DELETE FROM ble_tags WHERE id = ?', [id]);
       if (result.affectedRows === 0) {
         return res.status(404).json({ success: false, message: 'BLE tag tidak ditemukan' });
       }
       return res.status(200).json({ success: true, message: 'BLE tag berhasil dihapus' });
     } catch (error) {
-      console.error('Error deleteTag:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal menghapus BLE tag', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal menghapus BLE tag', 'deleteTag');
     }
   },
 
   // 5. Get active BLE presence for a box (recent detections)
   getActivePresence: async (req, res) => {
     try {
-      const { idBox } = req.params;
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
       // Get distinct tags detected in the last 60 seconds
       const [rows] = await pool.query(
         `SELECT DISTINCT ble_mac, MAX(detected_at) AS last_seen
@@ -253,7 +305,7 @@ const lotoComplianceController = {
           `SELECT bt.mac_address, bt.assigned_sid, bt.tag_name, u.nama, u.role
            FROM ble_tags bt
            LEFT JOIN users u ON bt.assigned_sid = u.sid
-           WHERE bt.mac_address IN (?)`,
+           WHERE bt.mac_address IN (?) AND bt.is_active = 1`,
           [macs]
         );
         const tagMap = new Map(tagRows.map(t => [t.mac_address, t]));
@@ -273,8 +325,7 @@ const lotoComplianceController = {
 
       return res.status(200).json({ success: true, data: resolved });
     } catch (error) {
-      console.error('Error getActivePresence:', error.message);
-      return res.status(500).json({ success: false, message: 'Gagal mengambil data presence aktif', error: 'REQUEST_FAILED' });
+      return errorResponse(res, error, 'Gagal mengambil data presence aktif', 'getActivePresence');
     }
   }
 };

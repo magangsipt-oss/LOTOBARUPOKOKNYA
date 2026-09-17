@@ -40,7 +40,7 @@ export function createApp() {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (origin === frontend || devOrigins.includes(origin)) return cb(null, true);
-      cb(new Error('Origin tidak diizinkan.'));
+      cb(Object.assign(new Error('Origin tidak diizinkan.'), { status: 403 }));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Device-Token', 'User-Agent'],
@@ -49,10 +49,6 @@ export function createApp() {
   app.use((req, res, next) => {
     // Allow device requests without Origin header (ESP32 telemetry)
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== frontend && !devOrigins.includes(req.headers.origin)) {
-      // Allow device token requests (X-Device-Token header present)
-      if (req.headers['x-device-token']) {
-        return next();
-      }
       return res.status(403).json({ success: false, message: 'Origin tidak diizinkan.' });
     }
     next();

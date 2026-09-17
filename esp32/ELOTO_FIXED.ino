@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <esp_system.h>
+#include "FirmwareSafety.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -77,7 +79,7 @@ String device_id        = "BOX ELOTO 1";
 String wifi_ssid        = "vivoV29";
 String wifi_password    = "112233445566";
 String server_host      = "";
-String device_token     = "ESP32-ELOTO-BOX1-SECRET-TOKEN-2024";
+String device_token     = "";
 const char* SERVER_PROJECT_PATH  = "";
 
 // Multi-WiFi support: array of known WiFi networks from SD card
@@ -93,15 +95,31 @@ const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 String getServerBaseUrl() {
     String host = server_host;
     host.trim();
-    if (host.length() == 0) host = WiFi.gatewayIP().toString();
-    if (host.startsWith("http://") || host.startsWith("https://")) {
-        return host + SERVER_PROJECT_PATH + "/";
-    }
-    return "http://" + host + SERVER_PROJECT_PATH + "/";
+    while (host.endsWith("/")) host.remove(host.length() - 1);
+    if (!eloto::supportedHttpHost(host.c_str())) return "";
+    if (!host.startsWith("http://")) host = "http://" + host;
+    return host + SERVER_PROJECT_PATH + "/";
 }
 
 String getApiUrl(const char* endpoint) {
-    return getServerBaseUrl() + "api/" + endpoint;
+    String base = getServerBaseUrl();
+    return base.length() > 0 ? base + "api/" + endpoint : "";
+}
+
+bool beginApiRequest(HTTPClient &http, WiFiClient &client, const String &url) {
+    String base = getServerBaseUrl();
+    if (base.length() == 0 || !url.startsWith(base + "api/")) return false;
+    if (!http.begin(client, url)) return false;
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(2000);
+    return true;
+}
+
+bool telemetryAcknowledged(HTTPClient &http, int status) {
+    if (status < 200 || status >= 300) return false;
+    DynamicJsonDocument response(512);
+    DeserializationError error = deserializeJson(response, http.getString());
+    return !error && response["success"].is<bool>() && response["success"].as<bool>();
 }
 
 String getDeviceId() {
@@ -116,9 +134,7 @@ String getDeviceId() {
 }
 
 String getDeviceIdPath() {
-    String deviceId = getDeviceId();
-    deviceId.replace(" ", "%20");
-    return deviceId;
+    return String(eloto::encodePathComponent(getDeviceId().c_str()).c_str());
 }
 
 enum SystemState {
@@ -170,7 +186,12 @@ struct AuditEntry {
 
 struct NetworkJob {
     char event[48];
-    char uid[16];
+    char uid[51];
+    char eventId[40];
+    unsigned long capturedAt;
+    bool gpsFix;
+    double latitude;
+    double longitude;
 };
 
 const uint8_t MAX_RAM_USERS = 50;
@@ -287,7 +308,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
 void syncDatabaseToSDCard();
 WorkerInfo searchUserFromSDCard(String uid);
-void saveOfflineLogToSDCard(String event, String uid);
+bool saveOfflineLogToSDCard(const NetworkJob &job);
 void uploadOfflineLogsSDCard();
 void saveSessionToSD();
 void clearSessionFromSD();
@@ -422,7 +443,7 @@ void loadConfigFromSD() {
                 }
             }
             Serial.println("[CONFIG] Device ID: " + device_id);
-            Serial.println("[CONFIG] Server: " + (server_host.length() > 0 ? server_host : "(auto-discover)"));
+            Serial.println("[CONFIG] Server: " + (server_host.length() > 0 ? server_host : "(SERVER wajib diatur)"));
         }
     } else {
         File configFile = SD.open("/config.txt", FILE_WRITE);
@@ -803,7 +824,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         HTTPClient http;
         String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
         Serial.printf("[PHOTO] URL: %s\n", url.c_str());
-        http.begin(client, url);
+        if (!beginApiRequest(http, client, url)) return false;
         http.addHeader("Accept", "image/jpeg");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(5000);
@@ -1475,7 +1496,7 @@ void saveSessionToSD() {
 
         File sessionFile = SD.open("/session.json", FILE_WRITE);
         if (sessionFile) {
-            DynamicJsonDocument doc(2048);
+            DynamicJsonDocument doc(6144);
             doc["state"]               = (int)currentState;
             doc["spv_uid"]             = supervisorUID;
             doc["spv_sid"]             = safetyQueue.topIndex >= 0 ? safetyQueue.workers[0].sid : "-----";
@@ -1536,21 +1557,39 @@ bool loadSessionFromSD() {
         if (SD.exists("/session.json")) {
             File sessionFile = SD.open("/session.json", FILE_READ);
             if (sessionFile) {
-                DynamicJsonDocument doc(2048);
+                DynamicJsonDocument doc(6144);
                 DeserializationError err = deserializeJson(doc, sessionFile);
                 sessionFile.close();
 
-                if (!err) {
-                    int stateInt = doc["state"] | STATE_IDLE;
-                    if (stateInt < STATE_BOOT_IP || stateInt > STATE_WELCOME) stateInt = STATE_IDLE;
+                JsonArray savedQueue = doc["queue"].as<JsonArray>();
+                int stateInt = doc["state"] | -1;
+                int savedTop = doc["top_index"] | -2;
+                int savedTarget = doc["target_count"] | -1;
+                bool valid = !err && doc["state"].is<int>() && doc["top_index"].is<int>() &&
+                    doc["target_count"].is<int>() && !savedQueue.isNull() &&
+                    eloto::validSessionBounds(stateInt, STATE_BOOT_IP, STATE_WELCOME, savedTop,
+                                              savedQueue.size(), savedTarget, MAX_WORKERS);
+                if (valid && stateInt == STATE_SUPERVISOR_VALID && savedTop < 0) valid = false;
+                if (valid) {
+                    for (JsonVariant entry : savedQueue) {
+                        if (!entry.is<JsonObject>() || !entry["uid"].is<const char*>() ||
+                            !entry["name"].is<const char*>() || !entry["role"].is<const char*>() ||
+                            strlen(entry["uid"].as<const char*>()) == 0 ||
+                            strlen(entry["uid"].as<const char*>()) > 50 ||
+                            strlen(entry["name"].as<const char*>()) > 100 ||
+                            strlen(entry["role"].as<const char*>()) > 50) { valid = false; break; }
+                    }
+                }
+                if (!valid) Serial.println("[RESTORE] Session SD tidak valid; tidak dipulihkan.");
+                if (valid) {
                     currentState = (SystemState)stateInt;
 
                     supervisorUID      = doc["spv_uid"].as<String>();
                     String savedSupervisorSid = doc["spv_sid"] | "-----";
                     supervisorName     = doc["spv_name"].as<String>();
                     supervisorRole     = doc["spv_role"].as<String>();
-                    targetMekanikCount = doc["target_count"] | 0;
-                    safetyQueue.topIndex = doc["top_index"] | -1;
+                    targetMekanikCount = savedTarget;
+                    safetyQueue.topIndex = savedTop;
                     isAddingFromMenu   = doc["is_adding_from_menu"] | false;
                     selectedWorkerIndex = doc["selected_worker_idx"] | 0;
                     selectedMenuIndex  = doc["selected_menu_idx"] | 0;
@@ -1716,7 +1755,7 @@ void syncDatabaseToSDCard() {
 
     WiFiClient client; client.setTimeout(1500);
     HTTPClient http;
-    http.begin(client, getApiUrl("users"));
+    if (!beginApiRequest(http, client, getApiUrl("users"))) return;
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
     http.addHeader("X-Device-Token", device_token);
     http.setTimeout(2000);
@@ -1789,7 +1828,7 @@ void syncDatabaseToSDCard() {
                 WiFiClient photoClient; photoClient.setTimeout(3000);
                 HTTPClient photoHttp;
                 String url = getApiUrl("users/photo/") + uid + "?size=150&quality=82";
-                photoHttp.begin(photoClient, url);
+                if (!beginApiRequest(photoHttp, photoClient, url)) continue;
                 photoHttp.addHeader("Accept", "image/jpeg");
                 photoHttp.addHeader("X-Device-Token", device_token);
                 photoHttp.setTimeout(5000);
@@ -1879,75 +1918,109 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-void saveOfflineLogToSDCard(String event, String uid) {
-    if (!sdCardMounted || sdMutex == NULL) return;
+bool saveOfflineLogToSDCard(const NetworkJob &job) {
+    if (!sdCardMounted || sdMutex == NULL) return false;
+    bool saved = false;
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
         File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
         if (logFile) {
-            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
-            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-            logFile.println(String(millis()) + "," + event + "," + uid + "," + latitude + "," + longitude);
+            String latitude = job.gpsFix ? String(job.latitude, 6) : "";
+            String longitude = job.gpsFix ? String(job.longitude, 6) : "";
+            String line = String(job.capturedAt) + "," + job.event + "," + job.uid + "," +
+                          latitude + "," + longitude + "," + job.eventId + "\n";
+            saved = logFile.print(line) == line.length();
+            logFile.flush();
             logFile.close();
-        } 
+        }
         digitalWrite(SD_CS_PIN, HIGH);
         xSemaphoreGive(sdMutex);
     }
+    if (!saved) Serial.println("[AUDIT] Gagal menyimpan event ke SD.");
+    return saved;
 }
 
 void uploadOfflineLogsSDCard() {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
-    if (ESP.getFreeHeap() < 30000) return;
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) == pdTRUE) {
-        bool uploadFailed = false;
+    if (ESP.getFreeHeap() < 30000 || getServerBaseUrl().length() == 0) return;
+    const char *batchPath = "/offline_upload.csv";
+    bool batchReady = false;
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) != pdTRUE) return;
+    digitalWrite(TFT_CS_PIN, HIGH);
+    // New events keep appending to offline_logs while this immutable batch is sent.
+    batchReady = SD.exists(batchPath) ||
+                 (SD.exists("/offline_logs.csv") && SD.rename("/offline_logs.csv", batchPath));
+    digitalWrite(SD_CS_PIN, HIGH);
+    xSemaphoreGive(sdMutex);
+    if (!batchReady) return;
+
+    static uint32_t offset = 0; // Retried from zero after reboot; event IDs deduplicate ACKed rows.
+    const unsigned long started = millis();
+    // Bound one pass so a large backlog cannot monopolize the network task.
+    while (millis() - started < 10000) {
+        String line;
+        uint32_t recordOffset = offset;
+        uint32_t nextOffset = offset;
+        bool atEnd = false;
+        bool readOk = false;
+        if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) != pdTRUE) return;
         digitalWrite(TFT_CS_PIN, HIGH);
-        if (SD.exists("/offline_logs.csv")) {
-            File logFile = SD.open("/offline_logs.csv", FILE_READ);
-            if (logFile) {
-                while (logFile.available()) {
-                    String line = logFile.readStringUntil('\n'); line.trim();
-                    if (line.length() > 0) {
-                        int p1 = line.indexOf(','); int p2 = line.indexOf(',', p1 + 1); int p3 = line.indexOf(',', p2 + 1);
-                        if (p1 != -1 && p2 != -1) {
-                            String event = line.substring(p1 + 1, p2);
-                            String uidEnd = line.substring(p2 + 1, p3 != -1 ? p3 : line.length());
-                            int p4 = p3 != -1 ? line.indexOf(',', p3 + 1) : -1;
-                            String uid = uidEnd;
-                            String latitude = "";
-                            String longitude = "";
-                            if (p3 != -1) {
-                                latitude = line.substring(p3 + 1, p4 != -1 ? p4 : line.length());
-                                if (p4 != -1) longitude = line.substring(p4 + 1);
-                            }
-                            uid.trim(); latitude.trim(); longitude.trim();
-                            
-                            WiFiClient client; client.setTimeout(2000);
-                            HTTPClient http;
-                            http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
-                            http.addHeader("Content-Type", "application/json");
-                            DynamicJsonDocument doc(512);
-                            doc["id_box"] = getDeviceId(); doc["event"] = event; doc["uid"] = uid;
-                            doc["is_tap"] = isTapEventName(event);
-                            doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
-                            doc["is_online"] = true;
-                            if (latitude.length() > 0 && longitude.length() > 0) {
-                                doc["lat"] = latitude.toDouble();
-                                doc["lng"] = longitude.toDouble();
-                                doc["gps_fix"] = true;
-                            }
-                            String payload; serializeJson(doc, payload);
-                            int httpCode = http.POST(payload);
-                            if (httpCode < 200 || httpCode >= 300) uploadFailed = true;
-                            http.end(); delay(5);
-                        }
-                    }
+        File batch = SD.open(batchPath, FILE_READ);
+        if (batch && batch.seek(offset)) {
+            atEnd = !batch.available();
+            if (!atEnd) {
+                // A partial write or malformed row is retained for recovery, never ACKed.
+                bool complete = false;
+                while (batch.available() && line.length() <= 512) {
+                    char c = static_cast<char>(batch.read());
+                    if (c == '\n') { complete = true; break; }
+                    line += c;
                 }
-                logFile.close();
-                if (!uploadFailed) SD.remove("/offline_logs.csv");
+                nextOffset = batch.position();
+                if (line.endsWith("\r")) line.remove(line.length() - 1);
+                readOk = complete && line.length() <= 512;
             }
+            batch.close();
+            if (atEnd) {
+                // All preceding rows returned an explicit success ACK. Removing only
+                // this batch cannot delete events appended during an HTTP request.
+                if (SD.remove(batchPath)) offset = 0;
+            }
+        } else if (batch) {
+            batch.close();
         }
         digitalWrite(SD_CS_PIN, HIGH);
         xSemaphoreGive(sdMutex);
+        if (atEnd) return;
+        if (!readOk) { Serial.println("[AUDIT] Batch tidak terbaca utuh; tetap disimpan."); return; }
+        if (line.length() == 0) { offset = nextOffset; continue; }
+
+        eloto::OfflineRecord record;
+        if (!eloto::parseOfflineRecord(line.c_str(), recordOffset, record)) {
+            Serial.println("[AUDIT] Baris offline tidak valid; batch tetap disimpan.");
+            return;
+        }
+        WiFiClient client; client.setTimeout(2000);
+        HTTPClient http;
+        if (!beginApiRequest(http, client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return;
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("X-Device-Token", device_token);
+        http.setTimeout(3000);
+        DynamicJsonDocument doc(1024);
+        doc["event_id"] = record.eventId.c_str();
+        doc["id_box"] = getDeviceId();
+        doc["event"] = record.event.c_str();
+        doc["uid"] = record.uid.c_str();
+        doc["replay"] = true;
+        doc["gps_fix"] = record.gpsFix;
+        if (record.gpsFix) { doc["lat"] = record.latitude; doc["lng"] = record.longitude; }
+        String payload; serializeJson(doc, payload);
+        int status = !doc.overflowed() ? http.POST(payload) : -1;
+        bool acknowledged = telemetryAcknowledged(http, status);
+        http.end();
+        if (!acknowledged) return; // Replay retains the same IDs after failure or reboot.
+        offset = nextOffset;
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -2003,7 +2076,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
         WiFiClient client; client.setTimeout(300);
         HTTPClient http;
         String url = getApiUrl("users/check-card");
-        http.begin(client, url);
+        if (!beginApiRequest(http, client, url)) return card;
         http.addHeader("Content-Type", "application/json");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(400);
@@ -2071,15 +2144,14 @@ void networkTaskCore0(void * pvParameters) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
                 WiFiClient client; client.setTimeout(2000);
                 HTTPClient http;
-                http.begin(client, url);
+                bool requestStarted = beginApiRequest(http, client, url);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
                 http.addHeader("X-Device-Token", device_token);
                 http.setTimeout(3000);
 
                 DynamicJsonDocument doc(2048);
-                String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
-                doc["event_id"]       = eventId;
+                doc["event_id"]       = job.eventId;
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
                 doc["last_uid"]       = String(job.uid); doc["uid"] = String(job.uid);
                 doc["is_tap"]         = isTapEventName(String(job.event));
@@ -2107,38 +2179,29 @@ void networkTaskCore0(void * pvParameters) {
                     o["uid"]  = safetyQueue.workers[i].uid; o["name"] = safetyQueue.workers[i].name; o["role"] = safetyQueue.workers[i].role;
                 }
                 String jsonPayload; serializeJson(doc, jsonPayload);
-                int httpCode = http.POST(jsonPayload);
+                int httpCode = requestStarted && !doc.overflowed() ? http.POST(jsonPayload) : -1;
+                bool acknowledged = telemetryAcknowledged(http, httpCode);
                 http.end();
 
-                if (httpCode >= 200 && httpCode < 300) {
+                if (acknowledged) {
                     // Heartbeat/event berhasil dikirim
                     heartbeatFailCount = 0;
                 } else {
                     // Gagal kirim — log detail untuk debug
                     Serial.printf("[NET] POST %s → HTTP %d (event=%s)\n", url.c_str(), httpCode, job.event);
                     heartbeatFailCount++;
-                    saveOfflineLogToSDCard(String(job.event), String(job.uid));
+                    saveOfflineLogToSDCard(job);
 
-                    // Jika heartbeat gagal 3x berturut-turut, coba re-discover server
                     if (heartbeatFailCount >= 3 && String(job.event) == "HEARTBEAT_SYNC") {
-                        Serial.println("[NET] Heartbeat gagal 3x! Re-discover server...");
+                        Serial.println("[NET] Heartbeat gagal; periksa SERVER/token. Host tetap dipertahankan.");
                         heartbeatFailCount = 0;
-                        if (server_host.length() > 0) {
-                            String oldHost = server_host;
-                            server_host = "";  // reset supaya discoverServer mau jalan
-                            if (!discoverServer()) {
-                                server_host = oldHost;  // fallback ke host lama
-                            }
-                        } else {
-                            discoverServer();
-                        }
                     }
                 }
             } else if (WiFi.status() != WL_CONNECTED) {
-                saveOfflineLogToSDCard(String(job.event), String(job.uid));
+                saveOfflineLogToSDCard(job);
                 heartbeatFailCount++;
             } else {
-                saveOfflineLogToSDCard(String(job.event), String(job.uid));
+                saveOfflineLogToSDCard(job);
             }
         }
 
@@ -2161,7 +2224,7 @@ void networkTaskCore0(void * pvParameters) {
                 bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
                 lastDbSyncTask = millis();
-                // Re-discover server saat reconnect ke jaringan berbeda
+                // Validate the pinned server again after reconnect.
                 if (justReconnected) {
                     discoverServer();
                     Serial.println("[WIFI] Reconnected! IP: " + WiFi.localIP().toString());
@@ -2183,7 +2246,7 @@ void networkTaskCore0(void * pvParameters) {
         //    Initial heartbeat ditunda supaya WiFi & server sudah siap
         // ============================================================
         if (!initialHeartbeatSent) {
-            // Tunggu 10 detik pertama supaya WiFi + discoverServer selesai
+            // Tunggu 10 detik pertama supaya koneksi WiFi siap
             if (millis() > 10000) {
                 initialHeartbeatSent = true;
                 lastHeartbeatTask = millis();
@@ -2207,10 +2270,18 @@ void logAuditAsync(String event, String uid) {
     NetworkJob job; memset(&job, 0, sizeof(NetworkJob));
     event.toCharArray(job.event, sizeof(job.event)); 
     uid.toCharArray(job.uid, sizeof(job.uid));
-    xQueueSend(networkQueue, &job, 0);
-    
+    String eventId(eloto::newEventId(esp_random(), esp_random(), esp_random(), esp_random()).c_str());
+    eventId.toCharArray(job.eventId, sizeof(job.eventId));
+    job.capturedAt = millis();
+    job.gpsFix = hasValidGpsFix();
+    job.latitude = job.gpsFix ? currentLatitude : 0;
+    job.longitude = job.gpsFix ? currentLongitude : 0;
+    bool accepted = networkQueue != NULL && xQueueSend(networkQueue, &job, 0) == pdTRUE;
+    if (!accepted) accepted = saveOfflineLogToSDCard(job);
+    if (!accepted) Serial.println("[AUDIT] Event tidak tersimpan: antrean/SD tidak tersedia.");
+
     AuditEntry &slot = auditRing[auditHead];
-    slot.event = event; slot.uid = uid; slot.ok = true; slot.ts = millis();
+    slot.event = event; slot.uid = uid; slot.ok = accepted; slot.ts = job.capturedAt;
     slot.lat = gpsHasFix ? currentLatitude : 0; slot.lon = gpsHasFix ? currentLongitude : 0;
     auditHead = (auditHead + 1) % AUDIT_RING_SIZE; auditCount++;
 }
@@ -2423,62 +2494,12 @@ bool tryConnectBestWifi() {
 }
 
 // ============================================================================
-// AUTO-DISCOVER SERVER VIA UDP BROADCAST
+// VALIDASI SERVER YANG DIKONFIGURASIKAN
 // ============================================================================
 bool discoverServer() {
-    if (server_host.length() > 0) {
-        Serial.println("[DISCOVER] Server already configured: " + server_host);
-        return true;
-    }
-
-    Serial.println("[DISCOVER] Searching for E-LOTO server via UDP broadcast...");
-    WiFiUDP udp;
-    if (!udp.begin(5003)) {
-        Serial.println("[DISCOVER] Failed to start UDP");
-        return false;
-    }
-
-    // Send broadcast
-    IPAddress broadcastIP = WiFi.localIP();
-    broadcastIP[3] = 255;
-    byte pkt[] = { 'E','L','O','T','O','_','D','I','S','C','O','V','E','R' };
-    udp.beginPacket(broadcastIP, 5003);
-    udp.write(pkt, sizeof(pkt));
-    udp.endPacket();
-    Serial.printf("[DISCOVER] Broadcast sent to %s:5003\n", broadcastIP.toString().c_str());
-
-    // Wait for reply (3 seconds)
-    unsigned long start = millis();
-    while (millis() - start < 3000) {
-        int cb = udp.parsePacket();
-        if (cb > 0) {
-            char buf[256];
-            int len = udp.read(buf, sizeof(buf) - 1);
-            buf[len] = 0;
-            String response = String(buf);
-            response.trim();
-            Serial.println("[DISCOVER] Response: " + response);
-            if (response.startsWith("ELOTO_SERVER|")) {
-                server_host = response.substring(13);
-                server_host.trim();
-                Serial.println("[DISCOVER] Server found: " + server_host);
-                udp.stop();
-                return true;
-            }
-        }
-        delay(10);
-    }
-
-    udp.stop();
-    // Fallback: use gateway IP
-    String gw = WiFi.gatewayIP().toString();
-    if (gw.length() > 0 && gw != "0.0.0.0") {
-        server_host = gw + ":5002";
-        Serial.println("[DISCOVER] No server found, fallback to gateway: " + server_host);
-        return true;
-    }
-
-    Serial.println("[DISCOVER] Server discovery failed");
+    // An unauthenticated UDP reply must never choose where the device token is sent.
+    if (getServerBaseUrl().length() > 0) return true;
+    Serial.println("[CONFIG] SERVER HTTP eksplisit diperlukan; HTTPS menunggu konfigurasi CA.");
     return false;
 }
 

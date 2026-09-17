@@ -36,6 +36,14 @@ pnpm --filter backend run bootstrap-admin
 
 Akun administrator baru memakai SID sebagai password awal. Untuk database lama, ikuti [prosedur baseline dan backup](docs/DEPLOYMENT.md), bukan prosedur database kosong.
 
+Untuk membuat akun admin saja setelah migrasi, jalankan:
+
+```bash
+pnpm db:seed:admin
+```
+
+Seeder ini membuat akun dengan SID `Admin`, nama `Administrator`, role `ADMIN`, dan password awal yang sama dengan SID. Password disimpan sebagai hash bcrypt. Ganti password melalui halaman profil setelah login. SID dan nama dapat diatur melalui `ELOTO_USER_SID` dan `ELOTO_USER_NAME`. Menjalankan ulang seeder tidak mengubah akun atau password admin yang sudah ada. Jika SID sudah dipakai oleh pengguna non-admin, seeder berhenti tanpa mengubah pengguna tersebut.
+
 Untuk database development baru dengan data demo, jalankan satu perintah setelah database pada `backend/.env` tersedia:
 
 ```bash

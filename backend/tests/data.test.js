@@ -43,6 +43,15 @@ test('offline replay records evidence without resetting state or opening a new l
   const tap=state.queries.find(([s])=>s.startsWith('INSERT INTO tapping_history'));
   assert.equal(tap[1][1],null);assert.equal(state.commits,1);
 });
+test('offline refueling replay cannot open or close a current refueling session', async () => {
+  for (const event of ['REFUEL_START', 'REFUEL_END']) {
+    const state = telemetryFixture();
+    await recordTelemetry('box-1', { event_id: `offline-${event}`, event, uid: 'FUEL-1', replay: true });
+    assert.ok(!state.queries.some(([sql]) => /^(INSERT INTO refueling_logs|UPDATE refueling_logs|UPDATE boxes)/.test(sql)));
+    assert.ok(state.queries.some(([sql]) => sql.startsWith('INSERT INTO tapping_history')));
+    assert.equal(state.commits, 1);
+  }
+});
 test('GPS without fix preserves coordinates and session start is serialized on the box row',async()=>{
   const state=telemetryFixture();
   const result=await recordTelemetry('box-1',{event_id:'event-1',event:'SUPERVISOR_LOCK_IN',uid:'ABC',gps_fix:false,state:'SET_QUOTA'});

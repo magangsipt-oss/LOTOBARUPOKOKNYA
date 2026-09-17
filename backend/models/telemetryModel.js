@@ -47,7 +47,7 @@ export async function recordTelemetry(idBox, body) {
       if (!buffer.length) await c.query('INSERT INTO rfid_buffer (id_box, rfid_uid) VALUES (?, ?)', [idBox, uid]);
     }
     // ===== REFUELING: Auto-create & end refueling_logs =====
-    if (event === 'REFUEL_START') {
+    if (!body.replay && event === 'REFUEL_START') {
       const [fuelUser] = await c.query('SELECT nama FROM users WHERE rfid_uid = ? OR sid = ? LIMIT 1', [uid, uid]);
       const fuelName = fuelUser[0]?.nama || null;
       const [refResult] = await c.query(
@@ -59,7 +59,7 @@ export async function recordTelemetry(idBox, body) {
       await c.query('UPDATE boxes SET active_fuelman = ? WHERE id_box = ?',
         [`${uid}|${refResult.insertId}`, idBox]);
     }
-    if (event === 'REFUEL_END') {
+    if (!body.replay && event === 'REFUEL_END') {
       // Find active refueling session for this box and end it
       const [activeRefuel] = await c.query(
         'SELECT id FROM refueling_logs WHERE id_box = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1', [idBox]);
