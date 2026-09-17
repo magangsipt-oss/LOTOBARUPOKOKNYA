@@ -26,6 +26,7 @@ export default function Dashboard() {
     isSyncing,
     getUserProfile, isSystemUid, isAdminUid,
     terjemahkanIdKeNamaLengkap,
+    pemicuToast,
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     bukaModalUmum, bukaModalRadar,
@@ -67,6 +68,17 @@ export default function Dashboard() {
     setRefuelingLoading(false);
   };
   useEffect(() => { if (isLoggedIn && activeTab === 'dashboard') fetchRefuelingLogs(); }, [isLoggedIn, activeTab, selectedBox?.id]);
+
+  const handleHapusRiwayatRefueling = async (idRefueling) => {
+    if (!window.confirm("Hapus riwayat pengisian BBM ini secara permanen?")) return;
+    try {
+      const hasil = await refuelingService.delete(idRefueling);
+      if (hasil.success || hasil.status === 'success') {
+        setRefuelingLogs(prev => prev.filter(log => Number(log.id) !== Number(idRefueling)));
+        pemicuToast(hasil.message || "Riwayat pengisian BBM dihapus", "ok");
+      } else { pemicuToast(hasil.message || "Gagal menghapus riwayat pengisian BBM.", "fail"); }
+    } catch { pemicuToast("Gagal terhubung ke server hapus riwayat BBM.", "fail"); }
+  };
 
   useEffect(() => {}, [isLoggedIn, activeTab]);
 
@@ -546,8 +558,8 @@ export default function Dashboard() {
                 <th className="p-3">Waktu Mulai</th>
                 <th className="p-3">Waktu Selesai</th>
                 <th className="p-3 text-center">Durasi</th>
-                <th className="p-3 text-center">Status LOTO</th>
-                <th className="p-3">Lokasi</th>
+                <th className="p-3 text-center">Status</th>
+                <th className="p-3 text-center">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-amber-100 bg-white">
@@ -571,11 +583,11 @@ export default function Dashboard() {
                       </span>
                     </td>
                     <td className="p-3 text-center">
-                      <span className={`px-2 py-1 rounded border text-[9px] font-bold ${log.is_loto_active ? 'bg-red-50 text-red-700 border-red-300' : 'bg-slate-100 text-slate-600 border-slate-300'}`}>
-                        {log.is_loto_active ? 'LOTO Aktif' : 'Non-LOTO'}
+                      <span className={`px-2 py-1 rounded border text-[9px] font-bold ${log.end_time ? 'bg-slate-100 text-slate-700 border-slate-300' : 'bg-green-50 text-green-700 border-green-300 animate-pulse'}`}>
+                        {log.end_time ? 'SELESAI / OUT' : 'MASIH AKTIF / IN'}
                       </span>
                     </td>
-                    <td className="p-3 text-slate-500 text-[10px]">{log.latitude != null && log.longitude != null ? `${Number(log.latitude).toFixed(5)}, ${Number(log.longitude).toFixed(5)}` : '—'}</td>
+                    <td className="p-3 text-center">{String(sessionUser?.role || '').trim().toLowerCase() === 'admin' && <button type="button" onClick={() => handleHapusRiwayatRefueling(log.id)} className="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white px-2.5 py-1.5 rounded border border-red-200 transition-colors" title="Hapus riwayat ini"><i className="fa-solid fa-trash-can"></i><span className="ml-1 text-[9px] font-bold">HAPUS</span></button>}</td>
                   </tr>
                 );
               }) : <tr><td colSpan="8" className="p-8 text-center text-slate-500 italic">Belum ada riwayat pengisian BBM.</td></tr>}
