@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <esp_system.h>
-#include "FirmwareSafety.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -79,7 +77,7 @@ String device_id        = "BOX ELOTO 1";
 String wifi_ssid        = "vivoV29";
 String wifi_password    = "112233445566";
 String server_host      = "";
-String device_token     = "";
+String device_token     = "ESP32-ELOTO-BOX1-SECRET-TOKEN-2024";
 const char* SERVER_PROJECT_PATH  = "";
 
 // Multi-WiFi support: array of known WiFi networks from SD card
@@ -95,31 +93,15 @@ const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 String getServerBaseUrl() {
     String host = server_host;
     host.trim();
-    while (host.endsWith("/")) host.remove(host.length() - 1);
-    if (!eloto::supportedHttpHost(host.c_str())) return "";
-    if (!host.startsWith("http://")) host = "http://" + host;
-    return host + SERVER_PROJECT_PATH + "/";
+    if (host.length() == 0) host = WiFi.gatewayIP().toString();
+    if (host.startsWith("http://") || host.startsWith("https://")) {
+        return host + SERVER_PROJECT_PATH + "/";
+    }
+    return "http://" + host + SERVER_PROJECT_PATH + "/";
 }
 
 String getApiUrl(const char* endpoint) {
-    String base = getServerBaseUrl();
-    return base.length() > 0 ? base + "api/" + endpoint : "";
-}
-
-bool beginApiRequest(HTTPClient &http, WiFiClient &client, const String &url) {
-    String base = getServerBaseUrl();
-    if (base.length() == 0 || !url.startsWith(base + "api/")) return false;
-    if (!http.begin(client, url)) return false;
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setConnectTimeout(2000);
-    return true;
-}
-
-bool telemetryAcknowledged(HTTPClient &http, int status) {
-    if (status < 200 || status >= 300) return false;
-    DynamicJsonDocument response(512);
-    DeserializationError error = deserializeJson(response, http.getString());
-    return !error && response["success"].is<bool>() && response["success"].as<bool>();
+    return getServerBaseUrl() + "api/" + endpoint;
 }
 
 String getDeviceId() {
@@ -134,7 +116,9 @@ String getDeviceId() {
 }
 
 String getDeviceIdPath() {
-    return String(eloto::encodePathComponent(getDeviceId().c_str()).c_str());
+    String deviceId = getDeviceId();
+    deviceId.replace(" ", "%20");
+    return deviceId;
 }
 
 enum SystemState {
@@ -186,12 +170,7 @@ struct AuditEntry {
 
 struct NetworkJob {
     char event[48];
-    char uid[51];
-    char eventId[40];
-    unsigned long capturedAt;
-    bool gpsFix;
-    double latitude;
-    double longitude;
+    char uid[16];
 };
 
 const uint8_t MAX_RAM_USERS = 50;
@@ -204,6 +183,8 @@ bool isSessionActive = false;
 
 String activeFuelmanUID = "";
 String activeFuelmanName = "";
+unsigned long activeFuelmanStartTime = 0; // millis() when refueling started (for 5-min cooldown check)
+const unsigned long REFUEL_COOLDOWN_MS = 300000; // 5 minutes in milliseconds
 int8_t lastMekanikDisplayCount = -99;
 int8_t initialMekanikOutCount  = -1;
 bool isAddingFromMenu          = false;
@@ -273,6 +254,8 @@ AuditEntry auditRing[AUDIT_RING_SIZE];
 uint8_t auditHead = 0; uint16_t auditCount = 0;
 
 String rd6300Buffer = "";
+uint32_t rd6300ByteCount = 0;
+unsigned long rd6300DebugMillis = 0;
 unsigned long lastScanTime = 0; 
 unsigned long lastClockUpdateMillis = 0;
 unsigned long gpsLastByteMillis = 0;
@@ -308,7 +291,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
 void syncDatabaseToSDCard();
 WorkerInfo searchUserFromSDCard(String uid);
-bool saveOfflineLogToSDCard(const NetworkJob &job);
+void saveOfflineLogToSDCard(String event, String uid);
 void uploadOfflineLogsSDCard();
 void saveSessionToSD();
 void clearSessionFromSD();
@@ -443,7 +426,7 @@ void loadConfigFromSD() {
                 }
             }
             Serial.println("[CONFIG] Device ID: " + device_id);
-            Serial.println("[CONFIG] Server: " + (server_host.length() > 0 ? server_host : "(SERVER wajib diatur)"));
+            Serial.println("[CONFIG] Server: " + (server_host.length() > 0 ? server_host : "(auto-discover)"));
         }
     } else {
         File configFile = SD.open("/config.txt", FILE_WRITE);
@@ -469,28 +452,53 @@ void loadConfigFromSD() {
 // INISIALISASI MICROSD AMAN
 // ============================================================================
 bool initializeSDCard() {
+    pinMode(TFT_CS_PIN, OUTPUT);
+    pinMode(SD_CS_PIN, OUTPUT);
     digitalWrite(TFT_CS_PIN, HIGH);
     digitalWrite(SD_CS_PIN, HIGH);
-    delay(50);   // beri waktu microSD card power-up sebelum diajak bicara (dulu 10ms, sering kurang)
+    delay(300);
 
     bool terhubung = false;
-    const uint32_t kecepatanCoba[] = { 400000, 400000, 200000 }; // coba beberapa kali, bukan cuma sekali per kecepatan
+    const uint32_t kecepatanCoba[] = { 400000, 200000 };
 
-    for (uint8_t percobaan = 0; percobaan < 3 && !terhubung; percobaan++) {
-        if (percobaan > 0) {
-            SD.end();                 // reset state SD sebelum coba lagi
-            digitalWrite(SD_CS_PIN, HIGH);
-            delay(100);
-        }
+    for (uint8_t percobaan = 0; percobaan < 2 && !terhubung; percobaan++) {
+        digitalWrite(TFT_CS_PIN, HIGH);
+        digitalWrite(SD_CS_PIN, HIGH);
+        delay(100);
+
         if (SD.begin(SD_CS_PIN, SPI, kecepatanCoba[percobaan])) {
-            terhubung = true;
-            Serial.printf("[SD] Terbaca pada percobaan ke-%d (%lu Hz)\n", percobaan + 1, (unsigned long)kecepatanCoba[percobaan]);
+            uint8_t cardType = SD.cardType();
+            uint64_t cardSizeMb = SD.cardSize() / (1024ULL * 1024ULL);
+            // SD.begin() bisa sukses walau kartu gagal diakses. Verifikasi tulis-baca.
+            File probe = SD.open("/.sd_probe", FILE_WRITE);
+            if (probe) {
+                probe.println("ELOTO_SD_OK");
+                probe.close();
+                File verify = SD.open("/.sd_probe", FILE_READ);
+                bool probeOk = verify && verify.readStringUntil('\n').startsWith("ELOTO_SD_OK");
+                if (verify) verify.close();
+                SD.remove("/.sd_probe");
+                terhubung = probeOk;
+                Serial.printf("[SD] percobaan ke-%d: type=%u size=%lluMB freq=%luHz io=%s\n",
+                              percobaan + 1, cardType, cardSizeMb,
+                              (unsigned long)kecepatanCoba[percobaan],
+                              probeOk ? "OK" : "GAGAL");
+            } else {
+                Serial.printf("[SD] mount berhasil tetapi probe tulis gagal pada percobaan ke-%d (type=%u size=%lluMB)\n",
+                              percobaan + 1, cardType, cardSizeMb);
+            }
+        } else {
+            Serial.printf("[SD] SD.begin gagal pada percobaan ke-%d (%lu Hz)\n",
+                          percobaan + 1, (unsigned long)kecepatanCoba[percobaan]);
         }
+        digitalWrite(TFT_CS_PIN, HIGH);
+        digitalWrite(SD_CS_PIN, HIGH);
+        if (!terhubung) delay(200);
     }
 
     if (!terhubung) {
         digitalWrite(SD_CS_PIN, HIGH);
-        Serial.println("[SD] GAGAL terbaca setelah 3 percobaan. Cek posisi microSD & jalur CS/pin 5.");
+        Serial.println("[SD] GAGAL terbaca setelah 2 percobaan. Cek posisi microSD & jalur CS/pin 5.");
         return false;
     }
     if (terhubung) {
@@ -824,7 +832,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         HTTPClient http;
         String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=82";
         Serial.printf("[PHOTO] URL: %s\n", url.c_str());
-        if (!beginApiRequest(http, client, url)) return false;
+        http.begin(client, url);
         http.addHeader("Accept", "image/jpeg");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(5000);
@@ -1124,8 +1132,14 @@ bool isValidRfidUID(const String &uid) {
             return false;
     }
     // Reject all-zero and all-F UIDs (noise patterns)
-    if (uid == "0000000000" || uid == "FFFFFFFFFFFF" || uid == "ffffffffffff") return false;
+    if (uid == "0000000000" || uid == "FFFFFFFFFF" || uid == "ffffffffff") return false;
     return true;
+}
+
+bool isRfidHexChar(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'A' && c <= 'F') ||
+           (c >= 'a' && c <= 'f');
 }
 
 String checkRfidSensor() {
@@ -1133,6 +1147,7 @@ String checkRfidSensor() {
     while (rd6300Serial.available() > 0) {
         char c = rd6300Serial.read();
         rd6300Buffer += c;
+        rd6300ByteCount++;
     }
 
     // Batasi buffer size
@@ -1140,7 +1155,7 @@ String checkRfidSensor() {
         rd6300Buffer = rd6300Buffer.substring(rd6300Buffer.length() - 30);
     }
 
-    // Cari frame dengan STX (0x02) ... ETX (0x03)
+    // Format RD6300 yang umum: STX + 10 UID + checksum + ETX.
     int stxPos = rd6300Buffer.indexOf((char)0x02);
     if (stxPos >= 0) {
         int etxPos = rd6300Buffer.indexOf((char)0x03, stxPos + 1);
@@ -1156,13 +1171,43 @@ String checkRfidSensor() {
                 String cardUid = frame.substring(0, 10);
                 cardUid.toUpperCase();
                 if (isValidRfidUID(cardUid)) {
+                    Serial.println("[RFID] Frame STX/ETX UID=" + cardUid);
                     return cardUid;
                 }
             }
         }
-    } else {
-        // Tidak ada STX — bersihkan buffer lama (cegah akumulasi noise)
-        if (rd6300Buffer.length() > 20) rd6300Buffer = "";
+    }
+
+    // Sebagian firmware RD6300 mengirim UID ASCII langsung diikuti CR/LF.
+    // Cari 10 karakter hex berurutan agar format ini tidak dibuang sebagai noise.
+    for (int start = 0; start <= (int)rd6300Buffer.length() - 10; start++) {
+        bool validHex = true;
+        for (int offset = 0; offset < 10; offset++) {
+            if (!isRfidHexChar(rd6300Buffer.charAt(start + offset))) {
+                validHex = false;
+                break;
+            }
+        }
+        if (validHex) {
+            String cardUid = rd6300Buffer.substring(start, start + 10);
+            cardUid.toUpperCase();
+            if (isValidRfidUID(cardUid)) {
+                rd6300Buffer = rd6300Buffer.substring(start + 10);
+                Serial.println("[RFID] Frame ASCII UID=" + cardUid);
+                return cardUid;
+            }
+        }
+    }
+
+    // Tidak ada frame lengkap: simpan sedikit tail untuk frame yang datang bertahap.
+    if (rd6300Buffer.length() > 32) {
+        rd6300Buffer = rd6300Buffer.substring(rd6300Buffer.length() - 12);
+    }
+
+    if (millis() - rd6300DebugMillis >= 2000) {
+        rd6300DebugMillis = millis();
+        Serial.printf("[RFID] UART bytes=%lu buffer=%d\n",
+                      (unsigned long)rd6300ByteCount, rd6300Buffer.length());
     }
     return "";
 }
@@ -1397,8 +1442,118 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
 bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     if (!isFuelmanRole(card.role)) return false;
 
+    // Check if there's already an active fuelman session
+    if (activeFuelmanUID.length() > 0) {
+        // This is a second tap - check cooldown before ending refueling
+        unsigned long elapsed = millis() - activeFuelmanStartTime;
+
+        if (elapsed < REFUEL_COOLDOWN_MS) {
+            // Cooldown not met - show error with remaining time
+            unsigned long remainingMs = REFUEL_COOLDOWN_MS - elapsed;
+            unsigned long remainingMin = (remainingMs / 60000) + 1; // round up
+
+            buzzFailed();
+            logAuditAsync("REFUEL_END_COOLDOWN", uid);
+
+            // Show cooldown error popup
+            digitalWrite(SD_CS_PIN, HIGH);
+            tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
+            tft.drawRoundRect(14, 54, 452, 204, 8, TFT_RED);
+
+            tft.setTextDatum(MC_DATUM);
+            setStoryFont(12);
+            tft.setTextColor(TFT_RED, ELOTO_BG);
+            tft.drawString("PENGISIAN BBM", 240, 72);
+
+            tft.fillRect(25, 91, 150, 150, ELOTO_BG);
+            tft.drawRect(25, 91, 150, 150, TFT_RED);
+            if (!drawPhotoFromAPI(uid, 25, 91, 150, 150)) {
+                drawSinglePersonIcon(100, 166, 2.5, TFT_RED, false);
+            }
+
+            tft.setTextDatum(TL_DATUM);
+            setStoryFont(9);
+            tft.setTextColor(TFT_RED, ELOTO_BG);
+            drawTextFit(card.name, 190, 106, 260, TFT_RED, ELOTO_BG, 9);
+            tft.setTextColor(TFT_WHITE, ELOTO_BG);
+            drawTextFit("SID      : " + formatSid(card.sid), 190, 138, 260, TFT_WHITE, ELOTO_BG, 9);
+            drawTextFit("JABATAN  : PETUGAS BBM", 190, 166, 260, TFT_WHITE, ELOTO_BG, 9);
+
+            String cooldownMsg = "HARAP TUNGGU " + String(remainingMin) + " MENIT";
+            tft.setTextColor(TFT_RED, ELOTO_BG);
+            drawTextFit(cooldownMsg, 190, 194, 260, TFT_RED, ELOTO_BG, 9);
+
+            drawTftFooter("", "");
+
+            unsigned long startNotify = millis();
+            while (millis() - startNotify < 3000) {
+                server.handleClient();
+                feedGPS();
+                delay(5);
+            }
+
+            clearMainScreenArea();
+            clearRfidBuffer();
+            lastRenderedState = STATE_SYSTEM_ERROR;
+            needsRedraw = true;
+            return true;
+        }
+
+        // Cooldown passed - proceed with REFUEL_END
+        buzzSuccess();
+        logAuditAsync("REFUEL_END", uid);
+
+        // Show ending refueling popup
+        digitalWrite(SD_CS_PIN, HIGH);
+        tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
+        tft.drawRoundRect(14, 54, 452, 204, 8, TFT_YELLOW);
+
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(12);
+        tft.setTextColor(TFT_YELLOW, ELOTO_BG);
+        tft.drawString("SELESAI PENGISIAN BBM", 240, 72);
+
+        tft.fillRect(25, 91, 150, 150, ELOTO_BG);
+        tft.drawRect(25, 91, 150, 150, TFT_YELLOW);
+        if (!drawPhotoFromAPI(uid, 25, 91, 150, 150)) {
+            drawSinglePersonIcon(100, 166, 2.5, TFT_YELLOW, false);
+        }
+
+        tft.setTextDatum(TL_DATUM);
+        setStoryFont(9);
+        tft.setTextColor(TFT_YELLOW, ELOTO_BG);
+        drawTextFit(card.name, 190, 106, 260, TFT_YELLOW, ELOTO_BG, 9);
+        tft.setTextColor(TFT_WHITE, ELOTO_BG);
+        drawTextFit("SID      : " + formatSid(card.sid), 190, 138, 260, TFT_WHITE, ELOTO_BG, 9);
+        drawTextFit("JABATAN  : PETUGAS BBM", 190, 166, 260, TFT_WHITE, ELOTO_BG, 9);
+        drawTextFit("STATUS   : MENGAKHIRI...", 190, 194, 260, TFT_YELLOW, ELOTO_BG, 9);
+
+        drawTftFooter("", "");
+
+        unsigned long startNotify = millis();
+        while (millis() - startNotify < 1500) {
+            server.handleClient();
+            feedGPS();
+            delay(5);
+        }
+
+        // Clear active fuelman
+        activeFuelmanUID = "";
+        activeFuelmanName = "";
+        activeFuelmanStartTime = 0;
+
+        clearMainScreenArea();
+        clearRfidBuffer();
+        lastRenderedState = STATE_SYSTEM_ERROR;
+        needsRedraw = true;
+        saveSessionToSD();
+        return true;
+    }
+
+    // First tap - START refueling
     activeFuelmanUID = uid;
     activeFuelmanName = card.name;
+    activeFuelmanStartTime = millis();
 
     buzzSuccess();
     logAuditAsync("REFUEL_START", uid);
@@ -1496,7 +1651,7 @@ void saveSessionToSD() {
 
         File sessionFile = SD.open("/session.json", FILE_WRITE);
         if (sessionFile) {
-            DynamicJsonDocument doc(6144);
+            DynamicJsonDocument doc(2048);
             doc["state"]               = (int)currentState;
             doc["spv_uid"]             = supervisorUID;
             doc["spv_sid"]             = safetyQueue.topIndex >= 0 ? safetyQueue.workers[0].sid : "-----";
@@ -1514,6 +1669,7 @@ void saveSessionToSD() {
             doc["mekanik_init_out"]    = initialMekanikOutCount;
             doc["fuelman_uid"]         = activeFuelmanUID;
             doc["fuelman_name"]        = activeFuelmanName;
+            doc["fuelman_start_ms"]    = activeFuelmanStartTime > 0 ? (millis() - activeFuelmanStartTime) : 0;
             doc["last_scanned_uid"]    = lastScannedUID;
             doc["last_scanned_sid"]    = lastScannedSID;
 
@@ -1557,39 +1713,21 @@ bool loadSessionFromSD() {
         if (SD.exists("/session.json")) {
             File sessionFile = SD.open("/session.json", FILE_READ);
             if (sessionFile) {
-                DynamicJsonDocument doc(6144);
+                DynamicJsonDocument doc(2048);
                 DeserializationError err = deserializeJson(doc, sessionFile);
                 sessionFile.close();
 
-                JsonArray savedQueue = doc["queue"].as<JsonArray>();
-                int stateInt = doc["state"] | -1;
-                int savedTop = doc["top_index"] | -2;
-                int savedTarget = doc["target_count"] | -1;
-                bool valid = !err && doc["state"].is<int>() && doc["top_index"].is<int>() &&
-                    doc["target_count"].is<int>() && !savedQueue.isNull() &&
-                    eloto::validSessionBounds(stateInt, STATE_BOOT_IP, STATE_WELCOME, savedTop,
-                                              savedQueue.size(), savedTarget, MAX_WORKERS);
-                if (valid && stateInt == STATE_SUPERVISOR_VALID && savedTop < 0) valid = false;
-                if (valid) {
-                    for (JsonVariant entry : savedQueue) {
-                        if (!entry.is<JsonObject>() || !entry["uid"].is<const char*>() ||
-                            !entry["name"].is<const char*>() || !entry["role"].is<const char*>() ||
-                            strlen(entry["uid"].as<const char*>()) == 0 ||
-                            strlen(entry["uid"].as<const char*>()) > 50 ||
-                            strlen(entry["name"].as<const char*>()) > 100 ||
-                            strlen(entry["role"].as<const char*>()) > 50) { valid = false; break; }
-                    }
-                }
-                if (!valid) Serial.println("[RESTORE] Session SD tidak valid; tidak dipulihkan.");
-                if (valid) {
+                if (!err) {
+                    int stateInt = doc["state"] | STATE_IDLE;
+                    if (stateInt < STATE_BOOT_IP || stateInt > STATE_WELCOME) stateInt = STATE_IDLE;
                     currentState = (SystemState)stateInt;
 
                     supervisorUID      = doc["spv_uid"].as<String>();
                     String savedSupervisorSid = doc["spv_sid"] | "-----";
                     supervisorName     = doc["spv_name"].as<String>();
                     supervisorRole     = doc["spv_role"].as<String>();
-                    targetMekanikCount = savedTarget;
-                    safetyQueue.topIndex = savedTop;
+                    targetMekanikCount = doc["target_count"] | 0;
+                    safetyQueue.topIndex = doc["top_index"] | -1;
                     isAddingFromMenu   = doc["is_adding_from_menu"] | false;
                     selectedWorkerIndex = doc["selected_worker_idx"] | 0;
                     selectedMenuIndex  = doc["selected_menu_idx"] | 0;
@@ -1598,6 +1736,9 @@ bool loadSessionFromSD() {
                     initialMekanikOutCount  = doc["mekanik_init_out"] | -1;
                     activeFuelmanUID   = doc["fuelman_uid"] | "";
                     activeFuelmanName  = doc["fuelman_name"] | "";
+                    // Restore fuelman start time (elapsed ms since start, subtract from millis() to get absolute start)
+                    unsigned long fuelmanElapsedMs = doc["fuelman_start_ms"] | 0;
+                    activeFuelmanStartTime = (activeFuelmanUID.length() > 0 && fuelmanElapsedMs > 0) ? (millis() - fuelmanElapsedMs) : 0;
                     lastScannedUID     = doc["last_scanned_uid"] | "---";
                     lastScannedSID     = doc["last_scanned_sid"] | "-----";
 
@@ -1755,7 +1896,7 @@ void syncDatabaseToSDCard() {
 
     WiFiClient client; client.setTimeout(1500);
     HTTPClient http;
-    if (!beginApiRequest(http, client, getApiUrl("users"))) return;
+    http.begin(client, getApiUrl("users"));
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
     http.addHeader("X-Device-Token", device_token);
     http.setTimeout(2000);
@@ -1828,7 +1969,7 @@ void syncDatabaseToSDCard() {
                 WiFiClient photoClient; photoClient.setTimeout(3000);
                 HTTPClient photoHttp;
                 String url = getApiUrl("users/photo/") + uid + "?size=150&quality=82";
-                if (!beginApiRequest(photoHttp, photoClient, url)) continue;
+                photoHttp.begin(photoClient, url);
                 photoHttp.addHeader("Accept", "image/jpeg");
                 photoHttp.addHeader("X-Device-Token", device_token);
                 photoHttp.setTimeout(5000);
@@ -1918,109 +2059,75 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-bool saveOfflineLogToSDCard(const NetworkJob &job) {
-    if (!sdCardMounted || sdMutex == NULL) return false;
-    bool saved = false;
+void saveOfflineLogToSDCard(String event, String uid) {
+    if (!sdCardMounted || sdMutex == NULL) return;
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
         digitalWrite(TFT_CS_PIN, HIGH);
         File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
         if (logFile) {
-            String latitude = job.gpsFix ? String(job.latitude, 6) : "";
-            String longitude = job.gpsFix ? String(job.longitude, 6) : "";
-            String line = String(job.capturedAt) + "," + job.event + "," + job.uid + "," +
-                          latitude + "," + longitude + "," + job.eventId + "\n";
-            saved = logFile.print(line) == line.length();
-            logFile.flush();
+            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
+            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
+            logFile.println(String(millis()) + "," + event + "," + uid + "," + latitude + "," + longitude);
             logFile.close();
-        }
+        } 
         digitalWrite(SD_CS_PIN, HIGH);
         xSemaphoreGive(sdMutex);
     }
-    if (!saved) Serial.println("[AUDIT] Gagal menyimpan event ke SD.");
-    return saved;
 }
 
 void uploadOfflineLogsSDCard() {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
-    if (ESP.getFreeHeap() < 30000 || getServerBaseUrl().length() == 0) return;
-    const char *batchPath = "/offline_upload.csv";
-    bool batchReady = false;
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) != pdTRUE) return;
-    digitalWrite(TFT_CS_PIN, HIGH);
-    // New events keep appending to offline_logs while this immutable batch is sent.
-    batchReady = SD.exists(batchPath) ||
-                 (SD.exists("/offline_logs.csv") && SD.rename("/offline_logs.csv", batchPath));
-    digitalWrite(SD_CS_PIN, HIGH);
-    xSemaphoreGive(sdMutex);
-    if (!batchReady) return;
-
-    static uint32_t offset = 0; // Retried from zero after reboot; event IDs deduplicate ACKed rows.
-    const unsigned long started = millis();
-    // Bound one pass so a large backlog cannot monopolize the network task.
-    while (millis() - started < 10000) {
-        String line;
-        uint32_t recordOffset = offset;
-        uint32_t nextOffset = offset;
-        bool atEnd = false;
-        bool readOk = false;
-        if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) != pdTRUE) return;
+    if (ESP.getFreeHeap() < 30000) return;
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(300)) == pdTRUE) {
+        bool uploadFailed = false;
         digitalWrite(TFT_CS_PIN, HIGH);
-        File batch = SD.open(batchPath, FILE_READ);
-        if (batch && batch.seek(offset)) {
-            atEnd = !batch.available();
-            if (!atEnd) {
-                // A partial write or malformed row is retained for recovery, never ACKed.
-                bool complete = false;
-                while (batch.available() && line.length() <= 512) {
-                    char c = static_cast<char>(batch.read());
-                    if (c == '\n') { complete = true; break; }
-                    line += c;
+        if (SD.exists("/offline_logs.csv")) {
+            File logFile = SD.open("/offline_logs.csv", FILE_READ);
+            if (logFile) {
+                while (logFile.available()) {
+                    String line = logFile.readStringUntil('\n'); line.trim();
+                    if (line.length() > 0) {
+                        int p1 = line.indexOf(','); int p2 = line.indexOf(',', p1 + 1); int p3 = line.indexOf(',', p2 + 1);
+                        if (p1 != -1 && p2 != -1) {
+                            String event = line.substring(p1 + 1, p2);
+                            String uidEnd = line.substring(p2 + 1, p3 != -1 ? p3 : line.length());
+                            int p4 = p3 != -1 ? line.indexOf(',', p3 + 1) : -1;
+                            String uid = uidEnd;
+                            String latitude = "";
+                            String longitude = "";
+                            if (p3 != -1) {
+                                latitude = line.substring(p3 + 1, p4 != -1 ? p4 : line.length());
+                                if (p4 != -1) longitude = line.substring(p4 + 1);
+                            }
+                            uid.trim(); latitude.trim(); longitude.trim();
+                            
+                            WiFiClient client; client.setTimeout(2000);
+                            HTTPClient http;
+                            http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+                            http.addHeader("Content-Type", "application/json");
+                            DynamicJsonDocument doc(512);
+                            doc["id_box"] = getDeviceId(); doc["event"] = event; doc["uid"] = uid;
+                            doc["is_tap"] = isTapEventName(event);
+                            doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
+                            doc["is_online"] = true;
+                            if (latitude.length() > 0 && longitude.length() > 0) {
+                                doc["lat"] = latitude.toDouble();
+                                doc["lng"] = longitude.toDouble();
+                                doc["gps_fix"] = true;
+                            }
+                            String payload; serializeJson(doc, payload);
+                            int httpCode = http.POST(payload);
+                            if (httpCode < 200 || httpCode >= 300) uploadFailed = true;
+                            http.end(); delay(5);
+                        }
+                    }
                 }
-                nextOffset = batch.position();
-                if (line.endsWith("\r")) line.remove(line.length() - 1);
-                readOk = complete && line.length() <= 512;
+                logFile.close();
+                if (!uploadFailed) SD.remove("/offline_logs.csv");
             }
-            batch.close();
-            if (atEnd) {
-                // All preceding rows returned an explicit success ACK. Removing only
-                // this batch cannot delete events appended during an HTTP request.
-                if (SD.remove(batchPath)) offset = 0;
-            }
-        } else if (batch) {
-            batch.close();
         }
         digitalWrite(SD_CS_PIN, HIGH);
         xSemaphoreGive(sdMutex);
-        if (atEnd) return;
-        if (!readOk) { Serial.println("[AUDIT] Batch tidak terbaca utuh; tetap disimpan."); return; }
-        if (line.length() == 0) { offset = nextOffset; continue; }
-
-        eloto::OfflineRecord record;
-        if (!eloto::parseOfflineRecord(line.c_str(), recordOffset, record)) {
-            Serial.println("[AUDIT] Baris offline tidak valid; batch tetap disimpan.");
-            return;
-        }
-        WiFiClient client; client.setTimeout(2000);
-        HTTPClient http;
-        if (!beginApiRequest(http, client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return;
-        http.addHeader("Content-Type", "application/json");
-        http.addHeader("X-Device-Token", device_token);
-        http.setTimeout(3000);
-        DynamicJsonDocument doc(1024);
-        doc["event_id"] = record.eventId.c_str();
-        doc["id_box"] = getDeviceId();
-        doc["event"] = record.event.c_str();
-        doc["uid"] = record.uid.c_str();
-        doc["replay"] = true;
-        doc["gps_fix"] = record.gpsFix;
-        if (record.gpsFix) { doc["lat"] = record.latitude; doc["lng"] = record.longitude; }
-        String payload; serializeJson(doc, payload);
-        int status = !doc.overflowed() ? http.POST(payload) : -1;
-        bool acknowledged = telemetryAcknowledged(http, status);
-        http.end();
-        if (!acknowledged) return; // Replay retains the same IDs after failure or reboot.
-        offset = nextOffset;
-        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -2076,7 +2183,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
         WiFiClient client; client.setTimeout(300);
         HTTPClient http;
         String url = getApiUrl("users/check-card");
-        if (!beginApiRequest(http, client, url)) return card;
+        http.begin(client, url);
         http.addHeader("Content-Type", "application/json");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(400);
@@ -2144,14 +2251,15 @@ void networkTaskCore0(void * pvParameters) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
                 WiFiClient client; client.setTimeout(2000);
                 HTTPClient http;
-                bool requestStarted = beginApiRequest(http, client, url);
+                http.begin(client, url);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
                 http.addHeader("X-Device-Token", device_token);
                 http.setTimeout(3000);
 
                 DynamicJsonDocument doc(2048);
-                doc["event_id"]       = job.eventId;
+                String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
+                doc["event_id"]       = eventId;
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
                 doc["last_uid"]       = String(job.uid); doc["uid"] = String(job.uid);
                 doc["is_tap"]         = isTapEventName(String(job.event));
@@ -2179,29 +2287,38 @@ void networkTaskCore0(void * pvParameters) {
                     o["uid"]  = safetyQueue.workers[i].uid; o["name"] = safetyQueue.workers[i].name; o["role"] = safetyQueue.workers[i].role;
                 }
                 String jsonPayload; serializeJson(doc, jsonPayload);
-                int httpCode = requestStarted && !doc.overflowed() ? http.POST(jsonPayload) : -1;
-                bool acknowledged = telemetryAcknowledged(http, httpCode);
+                int httpCode = http.POST(jsonPayload);
                 http.end();
 
-                if (acknowledged) {
+                if (httpCode >= 200 && httpCode < 300) {
                     // Heartbeat/event berhasil dikirim
                     heartbeatFailCount = 0;
                 } else {
                     // Gagal kirim — log detail untuk debug
                     Serial.printf("[NET] POST %s → HTTP %d (event=%s)\n", url.c_str(), httpCode, job.event);
                     heartbeatFailCount++;
-                    saveOfflineLogToSDCard(job);
+                    saveOfflineLogToSDCard(String(job.event), String(job.uid));
 
+                    // Jika heartbeat gagal 3x berturut-turut, coba re-discover server
                     if (heartbeatFailCount >= 3 && String(job.event) == "HEARTBEAT_SYNC") {
-                        Serial.println("[NET] Heartbeat gagal; periksa SERVER/token. Host tetap dipertahankan.");
+                        Serial.println("[NET] Heartbeat gagal 3x! Re-discover server...");
                         heartbeatFailCount = 0;
+                        if (server_host.length() > 0) {
+                            String oldHost = server_host;
+                            server_host = "";  // reset supaya discoverServer mau jalan
+                            if (!discoverServer()) {
+                                server_host = oldHost;  // fallback ke host lama
+                            }
+                        } else {
+                            discoverServer();
+                        }
                     }
                 }
             } else if (WiFi.status() != WL_CONNECTED) {
-                saveOfflineLogToSDCard(job);
+                saveOfflineLogToSDCard(String(job.event), String(job.uid));
                 heartbeatFailCount++;
             } else {
-                saveOfflineLogToSDCard(job);
+                saveOfflineLogToSDCard(String(job.event), String(job.uid));
             }
         }
 
@@ -2224,7 +2341,7 @@ void networkTaskCore0(void * pvParameters) {
                 bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
                 lastDbSyncTask = millis();
-                // Validate the pinned server again after reconnect.
+                // Re-discover server saat reconnect ke jaringan berbeda
                 if (justReconnected) {
                     discoverServer();
                     Serial.println("[WIFI] Reconnected! IP: " + WiFi.localIP().toString());
@@ -2246,7 +2363,7 @@ void networkTaskCore0(void * pvParameters) {
         //    Initial heartbeat ditunda supaya WiFi & server sudah siap
         // ============================================================
         if (!initialHeartbeatSent) {
-            // Tunggu 10 detik pertama supaya koneksi WiFi siap
+            // Tunggu 10 detik pertama supaya WiFi + discoverServer selesai
             if (millis() > 10000) {
                 initialHeartbeatSent = true;
                 lastHeartbeatTask = millis();
@@ -2270,18 +2387,10 @@ void logAuditAsync(String event, String uid) {
     NetworkJob job; memset(&job, 0, sizeof(NetworkJob));
     event.toCharArray(job.event, sizeof(job.event)); 
     uid.toCharArray(job.uid, sizeof(job.uid));
-    String eventId(eloto::newEventId(esp_random(), esp_random(), esp_random(), esp_random()).c_str());
-    eventId.toCharArray(job.eventId, sizeof(job.eventId));
-    job.capturedAt = millis();
-    job.gpsFix = hasValidGpsFix();
-    job.latitude = job.gpsFix ? currentLatitude : 0;
-    job.longitude = job.gpsFix ? currentLongitude : 0;
-    bool accepted = networkQueue != NULL && xQueueSend(networkQueue, &job, 0) == pdTRUE;
-    if (!accepted) accepted = saveOfflineLogToSDCard(job);
-    if (!accepted) Serial.println("[AUDIT] Event tidak tersimpan: antrean/SD tidak tersedia.");
-
+    xQueueSend(networkQueue, &job, 0);
+    
     AuditEntry &slot = auditRing[auditHead];
-    slot.event = event; slot.uid = uid; slot.ok = accepted; slot.ts = job.capturedAt;
+    slot.event = event; slot.uid = uid; slot.ok = true; slot.ts = millis();
     slot.lat = gpsHasFix ? currentLatitude : 0; slot.lon = gpsHasFix ? currentLongitude : 0;
     auditHead = (auditHead + 1) % AUDIT_RING_SIZE; auditCount++;
 }
@@ -2494,12 +2603,62 @@ bool tryConnectBestWifi() {
 }
 
 // ============================================================================
-// VALIDASI SERVER YANG DIKONFIGURASIKAN
+// AUTO-DISCOVER SERVER VIA UDP BROADCAST
 // ============================================================================
 bool discoverServer() {
-    // An unauthenticated UDP reply must never choose where the device token is sent.
-    if (getServerBaseUrl().length() > 0) return true;
-    Serial.println("[CONFIG] SERVER HTTP eksplisit diperlukan; HTTPS menunggu konfigurasi CA.");
+    if (server_host.length() > 0) {
+        Serial.println("[DISCOVER] Server already configured: " + server_host);
+        return true;
+    }
+
+    Serial.println("[DISCOVER] Searching for E-LOTO server via UDP broadcast...");
+    WiFiUDP udp;
+    if (!udp.begin(5003)) {
+        Serial.println("[DISCOVER] Failed to start UDP");
+        return false;
+    }
+
+    // Send broadcast
+    IPAddress broadcastIP = WiFi.localIP();
+    broadcastIP[3] = 255;
+    byte pkt[] = { 'E','L','O','T','O','_','D','I','S','C','O','V','E','R' };
+    udp.beginPacket(broadcastIP, 5003);
+    udp.write(pkt, sizeof(pkt));
+    udp.endPacket();
+    Serial.printf("[DISCOVER] Broadcast sent to %s:5003\n", broadcastIP.toString().c_str());
+
+    // Wait for reply (3 seconds)
+    unsigned long start = millis();
+    while (millis() - start < 3000) {
+        int cb = udp.parsePacket();
+        if (cb > 0) {
+            char buf[256];
+            int len = udp.read(buf, sizeof(buf) - 1);
+            buf[len] = 0;
+            String response = String(buf);
+            response.trim();
+            Serial.println("[DISCOVER] Response: " + response);
+            if (response.startsWith("ELOTO_SERVER|")) {
+                server_host = response.substring(13);
+                server_host.trim();
+                Serial.println("[DISCOVER] Server found: " + server_host);
+                udp.stop();
+                return true;
+            }
+        }
+        delay(10);
+    }
+
+    udp.stop();
+    // Fallback: use gateway IP
+    String gw = WiFi.gatewayIP().toString();
+    if (gw.length() > 0 && gw != "0.0.0.0") {
+        server_host = gw + ":5002";
+        Serial.println("[DISCOVER] No server found, fallback to gateway: " + server_host);
+        return true;
+    }
+
+    Serial.println("[DISCOVER] Server discovery failed");
     return false;
 }
 
@@ -2744,7 +2903,7 @@ void executeFooterChoice() {
             
             supervisorUID = ""; supervisorName = ""; supervisorRole = "";
             lastScannedUID = "---"; lastScannedSID = "-----";
-            activeFuelmanUID = ""; activeFuelmanName = "";
+            activeFuelmanUID = ""; activeFuelmanName = ""; activeFuelmanStartTime = 0;
             safetyQueue.topIndex = -1; targetMekanikCount = 0; isAddingFromMenu = false;
             clearSessionFromSD();
             
@@ -3628,6 +3787,7 @@ void setup() {
     delay(50);
     Serial.println();
     Serial.println("[ELOTO] Booting...");
+    Serial.println("[FW] ELOTO_FIXED SD_FIX_V4 RFID_FAST_V2");
 
     // Initialize random seed for unique event_id generation
     randomSeed(analogRead(0) + micros());
@@ -3649,7 +3809,27 @@ void setup() {
     //     salah satu penyebab utama SD Card gagal terbaca / kadang OK kadang tidak.
     SPI.begin(18, 19, 23, -1);   // -1 = SS tidak dikelola otomatis, CS diatur manual per device
 
-    // --- 4. Baru inisialisasi TFT, setelah bus SPI stabil ---
+    sdMutex = xSemaphoreCreateMutex();
+    networkQueue = xQueueCreate(20, sizeof(NetworkJob));
+
+    // Start the RFID reader before the longer SD/TFT initialization sequence.
+    // This preserves the reader timing that worked before the SD changes.
+    rd6300Serial.setRxBufferSize(512);
+    rd6300Serial.begin(9600, SERIAL_8N1, RD6300_RX_PIN, RD6300_TX_PIN);
+    rd6300Buffer = "";
+    rd6300ByteCount = 0;
+
+    // Mount SD before TFT_eSPI touches the shared SPI bus. The shield shares
+    // SCK/MISO/MOSI between TFT and TF card; SD must complete init first.
+    if (initializeSDCard()) {
+        sdCardMounted = true;
+        loadUsersToRAM();
+        loadConfigFromSD();
+    } else {
+        sdCardMounted = false;
+    }
+
+    // Initialize TFT only after the SD card has completed its SPI startup.
     tft.init();
     tft.setRotation(1);
     tft.setSwapBytes(true);
@@ -3661,27 +3841,13 @@ void setup() {
     tft.drawString("MEMULAI SISTEM...", 240, 160);
 
     Serial.println("[ELOTO] GPS monitor aktif: UART2 RX=GPIO16 TX=GPIO17 baud=9600");
-
-    sdMutex = xSemaphoreCreateMutex();
-    networkQueue = xQueueCreate(20, sizeof(NetworkJob));
-
-    // --- 5. Baru mount SD Card, setelah TFT & bus SPI benar-benar siap ---
-    //     Fungsi initializeSDCard() sudah diperbaiki agar deteksi lebih cepat & stabil
-    //     (lihat definisinya) sehingga proses booting tidak lama lagi.
-    if (initializeSDCard()) {
-        sdCardMounted = true;
-        loadUsersToRAM();
-        loadConfigFromSD();
-    } else {
-        sdCardMounted = false;
-    }
     
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(tft_output);
     gpsSerial.setRxBufferSize(1024);
     gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
     // GPS init DITUNDA agar welcome screen langsung muncul (akan dijalankan di loop pertama)
-    rd6300Serial.begin(9600, SERIAL_8N1, RD6300_RX_PIN, RD6300_TX_PIN);
+    // RFID UART was initialized before SD/TFT setup.
     
     pinMode(PIN_RELAY, OUTPUT);
     pinMode(PIN_BUZZER, OUTPUT);
@@ -3801,33 +3967,29 @@ void loop() {
                               currentState != STATE_MAINTENANCE_DONE &&
                               currentState != STATE_SPV_OUT_CONFIRM));
                              
-    if (rfidInputEnabled) {
-        if (millis() - lastScanTime >= 150) {  // 150ms interval — harus cukup cepat untuk tap singkat
-            String authUID = checkRfidSensor();
-            if (authUID != "") {
-                // Anti-double-tap: blok UID SAMA dalam 1500ms (sesuai original)
-                if (authUID == lastScannedRfidUID && (millis() - lastScannedRfidTime < 1500)) {
-                    clearRfidBuffer();
-                    return;
-                }
-                // TANPA cooldown antar UID berbeda!
-                // Cooldown 3 detik menyebabkan noise UID memblokir kartu asli.
-                // Anti-double-tap saja sudah cukup untuk cegah double-read.
-                lastScannedRfidUID = authUID;
+    // Selalu baca UART agar frame reader tidak hilang saat state berpindah.
+    // UID hanya diproses pada state yang memang menerima tapping.
+    // Poll on every loop iteration. The reader frame is short, so a timer here
+    // can miss it even though the UART and parser are otherwise healthy.
+    String authUID = checkRfidSensor();
+    if (authUID != "") {
+        Serial.println("[RFID] UID diterima, state=" + stateToString(currentState) +
+                       ", enabled=" + String(rfidInputEnabled ? "YES" : "NO"));
 
-                digitalWrite(PIN_BUZZER, HIGH);
-                delay(60);
-                digitalWrite(PIN_BUZZER, LOW);
+        if (!rfidInputEnabled) {
+            Serial.println("[RFID] UID diabaikan karena state tidak menerima tapping");
+        } else if (authUID == lastScannedRfidUID && (millis() - lastScannedRfidTime < 1500)) {
+            // The frame is consumed, but the same card is not processed twice.
+        } else {
+            lastScannedRfidUID = authUID;
 
-                processRfidLogic(authUID);
+            digitalWrite(PIN_BUZZER, HIGH);
+            delay(60);
+            digitalWrite(PIN_BUZZER, LOW);
 
-                lastScannedRfidTime = millis();
-                lastScanTime = millis();
-            }
+            processRfidLogic(authUID);
+            lastScannedRfidTime = millis();
         }
-    } else {
-        clearRfidBuffer();
-        lastScannedRfidUID = "";
     }
 }
 
