@@ -67,9 +67,12 @@ const BoxModel = {
       await c.beginTransaction();
       const [rows] = await c.query('SELECT active_session_id, is_online FROM boxes WHERE id_box = ? FOR UPDATE', [idBox]);
       if (!rows.length) { await c.rollback(); return false; }
-      if (rows[0].active_session_id != null) throw Object.assign(new Error('Boks masih memiliki sesi aktif'), { status: 409 });
+      if (rows[0].active_session_id != null) {
+        await c.query('UPDATE boxes SET active_session_id = NULL, state = ?, last_event = ?, updated_at = NOW() WHERE id_box = ?', ['STATE_IDLE', 'SESSION_CLOSED_NORMAL', idBox]);
+      }
       await c.query('DELETE FROM device_commands WHERE id_box = ?', [idBox]);
       await c.query('DELETE FROM supervisor_box_team WHERE id_box = ?', [idBox]);
+      await c.query('DELETE FROM queue WHERE id_box = ?', [idBox]);
       await c.query('DELETE FROM boxes WHERE id_box = ?', [idBox]);
       await c.commit(); return true;
     } catch (error) { await c.rollback(); throw error; }

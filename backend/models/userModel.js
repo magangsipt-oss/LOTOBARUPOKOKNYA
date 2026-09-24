@@ -31,18 +31,17 @@ const UserModel = {
     const user = rows[0];
     if (!user) return null;
 
-    // 2. Coba bcrypt compare dulu
     const storedPassword = user.password || '';
     if (storedPassword.startsWith('$2')) {
-      // Password di-hash dengan bcrypt
       const match = await bcrypt.compare(String(password), storedPassword);
       if (!match) return null;
+    } else if (storedPassword && String(password) === storedPassword) {
+      const migratedHash = await bcrypt.hash(String(password), SALT_ROUNDS);
+      await pool.query('UPDATE users SET password = ? WHERE sid = ?', [migratedHash, sid]);
     } else {
-      // Legacy plaintext accounts must be migrated before login is enabled.
       return null;
     }
 
-    // 3. Return tanpa field password
     const { password: _, ...safeUser } = user;
     return safeUser;
   },

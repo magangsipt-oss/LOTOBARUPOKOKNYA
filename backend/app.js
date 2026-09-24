@@ -28,7 +28,14 @@ export function createApp() {
   const app = express();
   const production = process.env.NODE_ENV === 'production';
   const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
-  const devOrigins = production ? [] : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'];
+  const devOrigins = production ? [] : [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
+    'http://127.0.0.1:5173'
+  ];
   if (production && !frontend.startsWith('https://')) throw new Error('FRONTEND_URL must use HTTPS in production');
   if (production && (!process.env.DB_HOST || !process.env.DB_NAME || !process.env.DB_USER || process.env.DB_USER === 'root' || !process.env.DB_PASSWORD)) throw new Error('Configure a dedicated database account before production startup');
   if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY.split(',').map(s => s.trim()));

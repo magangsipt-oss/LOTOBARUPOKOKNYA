@@ -75,7 +75,7 @@ test('GPS lookup only uses a known, fresh authenticated snapshot, with no outbou
 
 test('GPS lookup reports unknown IP, duplicate IP, offline and invalid snapshots explicitly', async () => {
   const checkNetwork = noNetwork();
-  for (const [rows, status] of [[[], 404], [[{}, {}], 409]]) {
+  for (const [rows, status] of [[[], 200], [[{}, {}], 409]]) {
     pool.query = async () => [rows];
     const res = response();
     await boxController.probeDevice({ params: { ip: '127.0.0.1' } }, res, error => { throw error; });
@@ -90,4 +90,29 @@ test('GPS lookup reports unknown IP, duplicate IP, offline and invalid snapshots
     assert.equal(res.body.data.lng, null);
   }
   checkNetwork();
+});
+
+test('deleting a box clears stale active sessions instead of rejecting the delete', async () => {
+  const originalGetConnection = pool.getConnection;
+  const fakeConnection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    async query(sql, params = []) {
+      if (sql.includes('SELECT active_session_id')) return [[{ active_session_id: 7, is_online: 0, last_ping: '2020-01-01 00:00:00' }]];
+      if (sql.includes('UPDATE boxes SET active_session_id = NULL')) return [{ affectedRows: 1 }];
+      if (sql.includes('DELETE FROM device_commands')) return [{ affectedRows: 0 }];
+      if (sql.includes('DELETE FROM supervisor_box_team')) return [{ affectedRows: 0 }];
+      if (sql.includes('DELETE FROM boxes WHERE id_box = ?')) return [{ affectedRows: 1 }];
+      return [{ affectedRows: 0 }];
+    }
+  };
+  pool.getConnection = async () => fakeConnection;
+  try {
+    const deleted = await BoxModel.delete('box-1');
+    assert.equal(deleted, true);
+  } finally {
+    pool.getConnection = originalGetConnection;
+  }
 });

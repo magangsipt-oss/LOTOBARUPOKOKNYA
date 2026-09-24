@@ -92,6 +92,22 @@ test('unknown device tokens cannot claim unconfigured boxes or register new boxe
     assert.ok(!queries.some(sql => /^(INSERT|UPDATE|DELETE)/.test(sql)));
   } finally { pool.query = query; }
 });
+test('probe for an unregistered IP returns a safe offline payload instead of 404', async () => {
+  const query = pool.query;
+  pool.query = async (sql, args) => {
+    if (sql.includes('FROM boxes WHERE ip = ? LIMIT 2')) return [[]];
+    return query(sql, args);
+  };
+  try {
+    const headers = authHeaders();
+    const response = await call('/api/boxes/probe/192.168.137.64', { headers });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.success, true);
+    assert.equal(body.data.is_online, 0);
+    assert.equal(body.data.stale, true);
+  } finally { pool.query = query; }
+});
 test('device identity in telemetry body must match the token and URL', async () => {
   const response = await call('/api/boxes/BOX%20ELOTO%201/telemetry', {
     method: 'POST', headers: { 'X-Device-Token': deviceToken, 'Content-Type': 'application/json' },

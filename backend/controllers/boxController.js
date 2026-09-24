@@ -259,7 +259,24 @@ const boxController = {
       const [rows] = await pool.query(`SELECT id_box, ip, state, lat, lng, hw_data, last_ping,
         CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
         FROM boxes WHERE ip = ? LIMIT 2`, [ip]);
-      if (!rows.length) return res.status(404).json({ success: false, message: 'Belum ada telemetri untuk IP ini.' });
+      if (!rows.length) {
+        return res.json({
+          success: true,
+          data: {
+            id_box: null,
+            ip,
+            is_online: 0,
+            last_ping: null,
+            lat: null,
+            lng: null,
+            gps_fix: false,
+            state: null,
+            wifi_connected: false,
+            stale: true,
+            message: 'Belum ada telemetri untuk IP ini.'
+          }
+        });
+      }
       if (rows.length > 1) return res.status(409).json({ success: false, message: 'IP dipakai lebih dari satu boks.' });
       const box = rows[0];
       let hardware = {};

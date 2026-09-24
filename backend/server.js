@@ -5,12 +5,24 @@ import os from 'node:os';
 
 function getLocalIp() {
   const ifaces = os.networkInterfaces();
+  const candidates = [];
+
   for (const name of Object.keys(ifaces)) {
     for (const iface of ifaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      const ip = iface.address;
+      if (/^(169\.254|100\.)/i.test(ip)) continue;
+      candidates.push(ip);
     }
   }
-  return '127.0.0.1';
+
+  const preferredPatterns = [/^192\.168\./, /^10\./, /^172\.(1[6-9]|2\d|3[0-1])\./];
+  for (const pattern of preferredPatterns) {
+    const match = candidates.find(ip => pattern.test(ip));
+    if (match) return match;
+  }
+
+  return candidates[0] || '127.0.0.1';
 }
 
 function startDiscoveryService() {

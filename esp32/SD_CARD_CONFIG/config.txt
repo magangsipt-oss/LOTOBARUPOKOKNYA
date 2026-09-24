@@ -10,7 +10,7 @@ WIFI_3_PASS=
 SSID=vivoV29
 PASS=112233445566
 
-# Server (kosongkan = auto-discover via UDP broadcast)
-SERVER=
+# Server (pakai IP LAN lokal agar ESP32 tidak salah terhubung ke VPN/public IP)
+SERVER=192.168.137.1:5002
 TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
 DEVICE_ID=ELOTO BOX 1
