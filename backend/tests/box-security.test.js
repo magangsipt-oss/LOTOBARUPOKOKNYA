@@ -35,9 +35,11 @@ test('registering a box never probes user-controlled IPs or trusts their status'
 
 test('box registration rejects a device token that authentication would reject', async () => {
   BoxModel.create = async () => assert.fail('Invalid token reached storage');
-  const res = response();
-  await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', device_token: 'short' } }, res);
-  assert.equal(res.statusCode, 400);
+  for (const token of ['short', 'replace-with-a-random-device-token-at-least-32-characters', `token-with-newline-${'x'.repeat(32)}\n`]) {
+    const res = response();
+    await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', device_token: token } }, res);
+    assert.equal(res.statusCode, 400);
+  }
 });
 
 test('box registration accepts empty GPS fields as unknown and rejects invalid coordinates', async () => {

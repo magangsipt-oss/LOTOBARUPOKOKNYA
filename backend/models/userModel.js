@@ -1,7 +1,8 @@
 import pool from '../config/database.js';
 import bcrypt from 'bcryptjs';
+import { passwordValidationError } from '../security/password.js';
 
-const SALT_ROUNDS = 10;
+const SALT_ROUNDS = 12;
 
 /**
  * Model untuk mengelola tabel users di database MySQL
@@ -32,15 +33,9 @@ const UserModel = {
     if (!user) return null;
 
     const storedPassword = user.password || '';
-    if (storedPassword.startsWith('$2')) {
-      const match = await bcrypt.compare(String(password), storedPassword);
-      if (!match) return null;
-    } else if (storedPassword && String(password) === storedPassword) {
-      const migratedHash = await bcrypt.hash(String(password), SALT_ROUNDS);
-      await pool.query('UPDATE users SET password = ? WHERE sid = ?', [migratedHash, sid]);
-    } else {
-      return null;
-    }
+    if (!storedPassword.startsWith('$2')) return null;
+    const match = await bcrypt.compare(String(password), storedPassword);
+    if (!match) return null;
 
     const { password: _, ...safeUser } = user;
     return safeUser;
@@ -108,9 +103,9 @@ const UserModel = {
     const finalNama = nama || name || 'New User';
     const finalRole = role || 'WORKER';
     const finalRfid = rfidUid || rfid_uid || null;
-    const finalPassword = String(finalSid);
-    if (!finalPassword || Buffer.byteLength(finalPassword) > 72) throw new Error('Invalid SID');
-    const hashedPassword = await bcrypt.hash(String(finalPassword), SALT_ROUNDS);
+    const passwordError = passwordValidationError(password, finalSid);
+    if (passwordError) throw Object.assign(new Error(passwordError), { status: 400 });
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     const finalFoto = foto || profile_photo || null;
 
     const query = `

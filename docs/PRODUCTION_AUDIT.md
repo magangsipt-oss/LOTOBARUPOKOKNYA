@@ -1,6 +1,6 @@
 # Audit dan perbaikan E-LOTO
 
-Tanggal: 7 September 2026. Ruang lingkup aktif: backend Node.js, frontend React, layanan counting Python, dan firmware ESP32. `api/` serta `index.html` dikonfirmasi sebagai versi lama. Deployment hanya boleh menyajikan `frontend/dist`, bukan root repository atau folder PHP.
+Tanggal audit awal: 7 September 2026. Mitigasi keamanan diperbarui 28 September 2026. Ruang lingkup aktif: backend Node.js, frontend React, layanan counting Python, dan firmware ESP32. `api/` serta `index.html` dikonfirmasi sebagai versi lama. Deployment hanya boleh menyajikan `frontend/dist`, bukan root repository atau folder PHP.
 
 ## Perubahan yang diterapkan
 
@@ -33,7 +33,7 @@ Petunjuk migrasi dan deployment: [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Hasil pemeriksaan lokal
 
-- 24 tes Node lulus: routing login, cookie sesi/logout, CSRF, peran, isolasi perangkat, transaksi, deduplikasi replay, ACK perintah, fingerprint, penghapusan pengguna, kontrak laporan, status kamera, serta escaping HTML/CSV. Database memakai doubles.
+- 75 tes Node lulus: routing login, cookie sesi/logout, CSRF, peran, isolasi perangkat, transaksi, deduplikasi replay, ACK perintah, fingerprint, penghapusan pengguna, kontrak laporan, status kamera, kebijakan kata sandi/token perangkat, serta escaping HTML/CSV. Database memakai doubles.
 - 5 tes Python lulus: header identitas, isolasi boks, reset sesi, dan pencegahan publikasi hitungan kamera yang tidak tersedia/kedaluwarsa.
 - Lint frontend: 0 warning/error. Build production berhasil; pemuatan halaman dipisah sehingga tidak ada warning chunk lebih dari 500 kB.
 - `pnpm audit --prod`: 0 kerentanan pada lockfile setelah pembaruan. Ini hasil database advisory saat audit, bukan jaminan tidak ada kerentanan yang belum dilaporkan.

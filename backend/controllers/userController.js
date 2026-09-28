@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
+import { passwordValidationError } from '../security/password.js';
 
 const userProfilesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads', 'user_profiles');
 
@@ -65,8 +66,9 @@ const userController = {
   changePassword: async (req, res, next) => {
     try {
       const { currentPassword, newPassword } = req.body || {};
-      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length === 0 || Buffer.byteLength(newPassword) > 72) {
-        return res.status(400).json({ success: false, message: 'Kata sandi baru wajib diisi dan maksimal 72 byte.' });
+      const passwordError = passwordValidationError(newPassword, req.auth.user.sid);
+      if (typeof currentPassword !== 'string' || passwordError) {
+        return res.status(400).json({ success: false, message: passwordError || 'Kata sandi lama wajib diisi.' });
       }
       const user = await UserModel.authenticate(req.auth.user.sid, currentPassword);
       if (!user) return res.status(401).json({ success: false, message: 'Kata sandi lama salah.' });
@@ -287,12 +289,14 @@ const userController = {
       const nama = body.nama || body.name || body.username || 'New User';
       const rfidUid = body.rfid_uid ?? body.rfidUid ?? body.card_number ?? body.cardNumber ?? null;
       const role = body.role || 'WORKER';
+      const passwordError = passwordValidationError(body.password, sid);
       if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,50}$/.test(sid) || typeof nama !== 'string' || !nama.trim() || nama.length > 100 || !normalizeRole(role)) {
         return res.status(400).json({
           success: false,
           message: 'SID, nama, dan peran harus valid.',
         });
       }
+      if (passwordError) return res.status(400).json({ success: false, message: passwordError });
       // RFID is optional - if provided, validate format; otherwise set to null
       const validRfidUid = (typeof rfidUid === 'string' && /^[A-Za-z0-9_-]{1,50}$/.test(rfidUid)) ? rfidUid : null;
 
@@ -315,6 +319,7 @@ const userController = {
         nama,
         role,
         rfidUid: validRfidUid,
+        password: body.password,
         foto: profile_photo,
       });
 

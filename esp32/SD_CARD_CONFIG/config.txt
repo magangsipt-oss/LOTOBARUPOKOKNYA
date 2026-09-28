@@ -1,16 +1,10 @@
-# WiFi networks (coba urut dari atas, yang pertama ketemu dipakai)
-WIFI_1_SSID=KEDAI KOPI DR 5G
-WIFI_1_PASS=
-WIFI_2_SSID=vivoV29
-WIFI_2_PASS=112233445566
-WIFI_3_SSID=Wi-Fi Hotspot
-WIFI_3_PASS=
+# Template saja. Salin ke /config.txt pada SD dan isi nilai nyata di luar Git.
+WIFI_1_SSID=your-primary-wifi
+WIFI_1_PASS=replace-with-primary-wifi-password
+WIFI_2_SSID=your-backup-wifi
+WIFI_2_PASS=replace-with-backup-wifi-password
 
-# Legacy fallback (kalau WIFI_X tidak ada di config)
-SSID=vivoV29
-PASS=112233445566
-
-# Server (pakai IP LAN lokal agar ESP32 tidak salah terhubung ke VPN/public IP)
-SERVER=192.168.137.1:5002
-TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
-DEVICE_ID=ELOTO BOX 1
+# HTTP hanya diterima untuk alamat LAN privat. Production wajib HTTPS + /server_ca.pem.
+SERVER=http://192.168.1.10:5002
+TOKEN=replace-with-a-random-device-token-at-least-32-characters
+DEVICE_ID=BOX-CLIENT-001

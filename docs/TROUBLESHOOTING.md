@@ -10,7 +10,7 @@ Periksa database tujuan pada `backend/.env`, lalu ikuti [prosedur migrasi](DEPLO
 
 ## Login gagal atau sesi selalu hilang
 
-Pastikan akun ada dan memiliki password bcrypt. Akun baru memakai SID sebagai password awal; user dapat menggantinya dari halaman profil. Password plaintext lama perlu direset melalui skrip. Gunakan host yang konsisten saat membuka frontend. Pada production, cookie Secure membutuhkan HTTPS dan konfigurasi proxy yang benar. Setelah password diubah, login ulang karena sesi dicabut.
+Pastikan akun ada dan memiliki password bcrypt. Akun baru wajib diberi password unik minimal 12 karakter. Password plaintext lama perlu direset melalui skrip. Gunakan host yang konsisten saat membuka frontend. Pada production, cookie Secure membutuhkan HTTPS dan konfigurasi proxy yang benar. Setelah password diubah, login ulang karena sesi dicabut.
 
 ## Respons 403 saat menyimpan
 
@@ -18,7 +18,7 @@ Periksa role akun, header `X-CSRF-Token`, dan origin frontend. Login ulang atau 
 
 ## Perangkat gagal TLS atau mendapat 401
 
-Periksa `SERVER` HTTPS, CA pada `/server_ca.pem`, waktu NTP, dan token SD. Token harus sudah diprovision untuk boks terdaftar. Setelah rotasi, token lama tidak berlaku; perbarui worker counting juga. Jangan menonaktifkan verifikasi TLS untuk mengatasi masalah sertifikat.
+Periksa `SERVER` eksplisit, CA pada `/server_ca.pem`, waktu NTP, dan token SD. Production wajib HTTPS. Development dapat memakai HTTP hanya ke alamat LAN privat. Token harus sudah diprovision untuk boks terdaftar. Setelah rotasi, token lama tidak berlaku. Jangan menonaktifkan verifikasi TLS untuk mengatasi masalah sertifikat.
 
 ## Video tidak muncul atau counting stale
 

@@ -21,6 +21,8 @@ Sebelum backend dapat berjalan, konfigurasi `backend/.env` berdasarkan `backend/
 4. Database yang sudah memiliki schema lama: periksa kesesuaian struktur terlebih dahulu, lalu `pnpm --filter backend run migrate -- --baseline-existing`. Jika pnpm meneruskan pemisah `--`, runner tetap membaca flag dari seluruh argv. Flag baseline hanya boleh digunakan sebelum ledger migrasi terisi; runner memeriksa seluruh kolom baseline sebelum mengadopsinya. Schema yang berbeda harus direkonsiliasi melalui migrasi yang ditinjau, bukan dipaksa ditimpa.
 5. Periksa tabel `eloto_migrations`, `web_sessions`, `device_events`, `device_commands`, `people_counting_latest`, serta kolom baru pada `boxes` dan `supervisor_box_team`.
 
+Seeder demo memerlukan `ELOTO_DEMO_PASSWORD` minimal 12 karakter dan tidak boleh dipakai untuk production.
+
 MySQL tidak memberi rollback atomik untuk seluruh rangkaian DDL. Runner memakai koneksi terkunci dan pemeriksaan indeks/kolom agar langkah yang sudah selesai dapat dilewati ketika diulang, tetapi kegagalan DDL tetap perlu diperiksa sebelum retry. Tidak ada `sync(force)` atau penghapusan tabel otomatis pada runner baru.
 
 Akun plaintext lama tidak lagi bisa login. Reset kata sandi akun tersebut dengan password baru yang kuat; password reset tidak boleh memakai SID. Skrip tidak mencetak kata sandi:
@@ -33,7 +35,7 @@ pnpm --filter backend run reset-password
 unset ELOTO_NEW_PASSWORD
 ```
 
-Untuk database baru tanpa administrator, gunakan `pnpm --filter backend run bootstrap-admin` dengan `ELOTO_USER_SID`. Akun dibuat tanpa kartu RFID otomatis dan memakai SID sebagai password awal. `seed` adalah data demo dan ditolak pada production.
+Untuk database baru tanpa administrator, isi `ELOTO_USER_SID` dan `ELOTO_NEW_PASSWORD` lalu jalankan `pnpm --filter backend run bootstrap-admin`. Password minimal 12 karakter, maksimal 72 byte, dan tidak boleh sama dengan SID. `seed` adalah data demo dan ditolak pada production.
 
 ## Kredensial perangkat dan counting
 

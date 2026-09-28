@@ -4,6 +4,7 @@ import BoxModel from '../models/boxModel.js';
 import pool from '../config/database.js';
 import { validateTelemetry } from '../domain/telemetry.js';
 import { recordTelemetry } from '../models/telemetryModel.js';
+import { validDeviceCredential } from '../security/deviceCredential.js';
 
 /**
  * Controller untuk mengelola alur data dan permintaan Box E-LOTO
@@ -84,8 +85,8 @@ const boxController = {
       }
 
       if (device_token !== undefined && device_token !== null &&
-          (typeof device_token !== 'string' || device_token.trim().length < 32 || device_token.trim().length > 256)) {
-        return res.status(400).json({ success: false, message: 'Token perangkat wajib 32–256 karakter.' });
+          !validDeviceCredential(device_token)) {
+        return res.status(400).json({ success: false, message: 'Token perangkat tidak valid.' });
       }
 
       // Hash device_token jika disediakan, atau generate otomatis

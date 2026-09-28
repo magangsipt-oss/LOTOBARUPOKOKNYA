@@ -3,19 +3,21 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pool from '../config/database.js';
+import { validDeviceCredential } from '../security/deviceCredential.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
-// Token yang dipakai ESP32 (dari config.txt atau default)
-const esp32Token = process.argv[2] || 'ESP32-ELOTO-BOX1-SECRET-TOKEN-2024';
+const esp32Token = process.env.ELOTO_DEVICE_TOKEN;
+if (!validDeviceCredential(esp32Token)) {
+  console.error('Set ELOTO_DEVICE_TOKEN (32–256 characters).');
+  process.exit(1);
+}
 const esp32Hash = crypto.createHash('sha256').update(esp32Token).digest('hex');
 
 console.log('=== Device Token Verification ===');
-console.log('ESP32 Token:', esp32Token);
-console.log('ESP32 Hash: ', esp32Hash);
-console.log('');
+console.log('Credential loaded; plaintext and hash will not be printed.');
 
 try {
   // Cek semua boxes
@@ -33,7 +35,7 @@ try {
   if (!matchFound) {
     console.log('');
     console.log('⚠️  TIDAK ADA BOX YANG COCOK!');
-    console.log('Jalankan: node scripts/set-device-token.js "' + boxes[0]?.id_box + '" "' + esp32Token + '"');
+    console.log('Provision ulang dengan ELOTO_BOX_ID dan ELOTO_DEVICE_TOKEN.');
   } else {
     console.log('');
     console.log('✓ Device token sudah benar. Foto harusnya bisa diakses.');

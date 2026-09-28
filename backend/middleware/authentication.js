@@ -1,5 +1,6 @@
 import pool from '../config/database.js';
 import { readSessionToken, hashToken, csrfToken, secureEqual, normalizeRole } from '../security/session.js';
+import { validDeviceCredential } from '../security/deviceCredential.js';
 
 export default async function authentication(req, res, next) {
   try {
@@ -17,7 +18,7 @@ export default async function authentication(req, res, next) {
       }
     }
     const deviceToken = req.headers['x-device-token'];
-    if (typeof deviceToken === 'string' && deviceToken.length >= 32 && deviceToken.length <= 256) {
+    if (validDeviceCredential(deviceToken)) {
       const tokenHash = hashToken(deviceToken);
       const [rows] = await pool.query('SELECT id_box FROM boxes WHERE device_token = ?', [tokenHash]);
       if (rows.length === 1) {

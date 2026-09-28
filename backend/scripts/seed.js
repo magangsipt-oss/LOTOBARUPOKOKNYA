@@ -8,9 +8,13 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import { sequelize, User, Box, TappingHistory, Queue } from '../orm/models/index.js';
+import { passwordValidationError } from '../security/password.js';
 
 async function seed() {
   if (process.env.NODE_ENV === 'production' || !process.argv.includes('--demo')) throw new Error('Demo seeding is disabled; use bootstrap-admin for production');
+  const demoPassword = process.env.ELOTO_DEMO_PASSWORD;
+  const passwordError = passwordValidationError(demoPassword);
+  if (passwordError) throw new Error(`Set ELOTO_DEMO_PASSWORD: ${passwordError}`);
   await sequelize.authenticate();
   console.log('DB Connected');
 
@@ -32,7 +36,7 @@ async function seed() {
   ];
 
   for (const u of users) {
-    await User.findOrCreate({ where: { sid: u.sid }, defaults: { ...u, password: await bcrypt.hash(u.sid, 12) } });
+    await User.findOrCreate({ where: { sid: u.sid }, defaults: { ...u, password: await bcrypt.hash(demoPassword, 12) } });
   }
   console.log(`Users: ${users.length} seeded`);
 

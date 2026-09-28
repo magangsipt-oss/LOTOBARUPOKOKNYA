@@ -59,10 +59,10 @@ Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config
 
 | Kunci / file | Fungsi |
 | --- | --- |
-| `SSID` | Nama Wi-Fi |
-| `PASS` | Password Wi-Fi |
-| `SERVER` | Base URL server HTTPS |
+| `WIFI_1_SSID` … `WIFI_5_SSID` | Nama Wi-Fi, dicoba berurutan sampai tersambung |
+| `WIFI_1_PASS` … `WIFI_5_PASS` | Password Wi-Fi pasangannya; `SSID`/`PASS` tetap didukung sebagai fallback lama |
+| `SERVER` | Base URL eksplisit. HTTPS untuk production; HTTP hanya diterima pada host LAN privat untuk development |
 | `TOKEN` | Token asli untuk boks yang telah diprovision |
 | `/server_ca.pem` | Sertifikat CA untuk memvalidasi domain server |
 
-Perangkat membutuhkan sinkronisasi waktu NTP untuk TLS. Jangan mengganti validasi sertifikat dengan mode insecure. Rotasi token harus memperbarui server, SD perangkat, dan counting secara terkoordinasi. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
+Perangkat membutuhkan sinkronisasi waktu NTP untuk TLS. Firmware tidak memakai discovery UDP, gateway otomatis, atau `setInsecure`; `SERVER` wajib diisi. Rotasi token harus memperbarui server dan SD perangkat secara terkoordinasi. Langkah provisioning ada di [deployment](DEPLOYMENT.md).

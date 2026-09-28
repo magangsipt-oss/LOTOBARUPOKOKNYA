@@ -43,18 +43,18 @@ Users (9 personel):
 ### 3. ESP32 Config (default di code)
 ```
 device_id   = "ELOTO BOX 1"        ← Match database ✓
-wifi_ssid   = "vivoV29"            ← WiFi yang benar ✓
-wifi_pass   = "112233445566"       ← Password WiFi ✓
+wifi_ssid   = "your-wifi-network"  ← WiFi target
+wifi_pass   = "<wifi-password>"    ← Simpan hanya di SD
 server_host = "192.168.137.1:5002" ← Backend address ✓
-device_token= "ESP32-ELOTO-BOX1-SECRET-TOKEN-2024" ← Auth token ✓
+device_token= "<device-token>"     ← Simpan hanya di SD
 ```
 
 ### 4. SD Card Config (config.txt)
 ```
-SSID=vivoV29
-PASS=112233445566
-SERVER=192.168.137.1:5002
-TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+SSID=your-wifi-network
+PASS=replace-with-wifi-password
+SERVER=http://192.168.137.1:5002
+TOKEN=replace-with-a-random-device-token-at-least-32-characters
 DEVICE_ID=ELOTO BOX 1
 ```
 
@@ -79,7 +79,7 @@ Harusnya muncul:
 [CONFIG] Berhasil memuat konfigurasi dari SD Card.
 [CONFIG] Device ID: ELOTO BOX 1
 [CONFIG] Server: 192.168.137.1:5002
-[WIFI] Connected to vivoV29
+[WIFI] Connected to your-wifi-network
 [WIFI] IP Address: 192.168.137.176
 ```
 
@@ -93,7 +93,7 @@ Harusnya muncul:
 ### Telemetry Flow
 ```
 ESP32 → POST /api/boxes/ELOTO%20BOX%201/telemetry
-  Header: X-Device-Token: ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+  Header: X-Device-Token: <device-token>
   Body: { event_id, event, uid, state, is_online: 1, ... }
   ↓
 Backend → Update boxes SET is_online = 1, last_ping = NOW()
@@ -126,7 +126,7 @@ ESP32 → Tampilkan foto & nama di LCD ✓
 
 1. ✅ `backend/server.js` - Listen di 0.0.0.0
 2. ✅ `backend/domain/telemetry.js` - Auto-generate event_id
-3. ✅ `backend/app.js` - CORS & diagnostic endpoint
+3. ✅ `backend/app.js` - CORS, autentikasi perangkat, dan health endpoint
 4. ✅ `esp32/ELOTO_FIXED.ino` - Device ID configurable, token auth
 5. ✅ Database - Box token & 9 users seeded
 

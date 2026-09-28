@@ -6,6 +6,7 @@ import CommandModel from '../models/commandModel.js';
 import SupervisorModel from '../models/supervisorModel.js';
 import { createRequire } from 'node:module';
 import { Sequelize } from 'sequelize';
+import UserModel from '../models/userModel.js';
 const require = createRequire(import.meta.url);
 const originalConnection = pool.getConnection;
 const originalQuery = pool.query;
@@ -127,8 +128,17 @@ test('deleting a user revokes sessions before the account can be recreated', asy
   assert.equal(state.commits, 1);
 });
 test('last administrator cannot be deleted', async () => {
-  const { default: UserModel } = await import('../models/userModel.js');
   const state = connectionFixture(sql => sql.includes("UPPER(role) = 'ADMIN'") ? [[{ sid: 'admin' }]] : [[{ sid: 'admin', role: 'ADMIN' }]]);
   await assert.rejects(UserModel.delete('admin'), /Administrator terakhir/);
   assert.equal(state.rollbacks, 1);
+});
+test('plaintext legacy passwords are rejected instead of migrated during login', async () => {
+  const writes = [];
+  pool.query = async sql => {
+    if (sql.startsWith('SELECT sid')) return [[{ sid: 'legacy', nama: 'Legacy', role: 'WORKER', password: 'legacy-password' }]];
+    writes.push(sql);
+    return [{ affectedRows: 1 }];
+  };
+  assert.equal(await UserModel.authenticate('legacy', 'legacy-password'), null);
+  assert.deepEqual(writes, []);
 });

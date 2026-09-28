@@ -1,5 +1,6 @@
 import pool from '../config/database.js';
 import UserModel from '../models/userModel.js';
+import { passwordValidationError } from '../security/password.js';
 try {
   const seed = process.argv.includes('--seed');
   const sid = process.env.ELOTO_USER_SID ?? (seed ? 'Admin' : undefined);
@@ -10,8 +11,11 @@ try {
     if (String(existing.role).trim().toUpperCase() !== 'ADMIN') throw new Error('SID already belongs to a non-admin user; choose another ELOTO_USER_SID');
     console.log(`Administrator ${existing.sid} already exists; skipped.`);
   } else {
-    await UserModel.create({ sid, nama: process.env.ELOTO_USER_NAME || 'Administrator', role: 'ADMIN', password: sid });
-    console.log('Administrator created with SID as the initial password. Change it from the profile page.');
+    const password = process.env.ELOTO_NEW_PASSWORD;
+    const passwordError = passwordValidationError(password, sid);
+    if (passwordError) throw new Error(`Set ELOTO_NEW_PASSWORD: ${passwordError}`);
+    await UserModel.create({ sid, nama: process.env.ELOTO_USER_NAME || 'Administrator', role: 'ADMIN', password });
+    console.log('Administrator created. Password was not printed.');
   }
 } catch (error) { console.error(error.message); process.exitCode = 1; }
 finally { await pool.end(); }

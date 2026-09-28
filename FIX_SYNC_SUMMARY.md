@@ -35,16 +35,16 @@ Dashboard menunjukkan device OFFLINE meskipun LCD pada ESP32 menunjukkan GPS sud
 
 ### Di SD Card (config.txt)
 ```
-SSID=vivoV29
-PASS=112233445566
-SERVER=192.168.137.1:5002
-TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+SSID=your-wifi-network
+PASS=replace-with-wifi-password
+SERVER=http://192.168.137.1:5002
+TOKEN=replace-with-a-random-device-token-at-least-32-characters
 ```
 
 ### Di Database (boxes table)
 Pastikan kolom `device_token` diisi dengan token yang sama:
 ```sql
-UPDATE boxes SET device_token = SHA2('ESP32-ELOTO-BOX1-SECRET-TOKEN-2024', 256)
+UPDATE boxes SET device_token = SHA2('<device-token>', 256)
 WHERE id_box = 'BOX ELOTO 1';
 ```
 
@@ -61,7 +61,7 @@ WHERE id_box = 'BOX ELOTO 1';
 
 ```
 ESP32 → POST /api/boxes/{id}/telemetry
-  ├── Header: X-Device-Token: ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+  ├── Header: X-Device-Token: <device-token>
   ├── Body: { event_id, event, uid, state, ... }
   │
   ▼

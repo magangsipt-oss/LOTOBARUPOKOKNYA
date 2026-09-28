@@ -71,22 +71,6 @@ export function createApp() {
   });
   app.get('/', (_req, res) => res.json({ success: true, service: 'E-LOTO' }));
 
-  // Diagnostic endpoint for ESP32 connectivity check
-  app.get('/api/diagnostic/device', (req, res) => {
-    const deviceToken = req.headers['x-device-token'];
-    res.json({
-      success: true,
-      message: 'Backend reachable',
-      server_time: new Date().toISOString(),
-      has_device_token: Boolean(deviceToken),
-      device_token_length: deviceToken ? deviceToken.length : 0,
-      client_ip: req.ip || req.connection?.remoteAddress || 'unknown',
-      headers: {
-        origin: req.headers.origin || 'none',
-        host: req.headers.host || 'none'
-      }
-    });
-  });
   app.use('/api', authentication);
   // Independent budgets per authenticated principal; polling clients behind one NAT do not share a quota.
   app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300,

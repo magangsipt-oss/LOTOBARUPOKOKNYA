@@ -12,7 +12,7 @@
 
 ### 3. ❌ Box Tidak Ada Device Token
 **Sebelum**: Box tidak memiliki `device_token` → Autentikasi gagal (401)
-**Sesudah**: Token sudah di-set: `ESP32-ELOTO-BOX1-SECRET-TOKEN-2024`
+**Sesudah**: Token unik diprovision melalui environment dan disimpan sebagai hash.
 
 ### 4. ❌ ESP32 Tidak Kirim event_id
 **Sebelum**: Telemetry tanpa `event_id` → Backend tolak (400)
@@ -38,10 +38,10 @@
 Edit file `config.txt` di SD Card:
 
 ```
-SSID=vivoV29
-PASS=112233445566
-SERVER=192.168.137.1:5002
-TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+SSID=your-wifi-network
+PASS=replace-with-wifi-password
+SERVER=http://192.168.137.1:5002
+TOKEN=replace-with-a-random-device-token-at-least-32-characters
 ```
 
 ### Step 2: Upload Firmware ESP32
@@ -76,7 +76,7 @@ Cari log seperti:
 ESP32 (ELOTO BOX 1)
   │
   ├── Kirim POST ke http://192.168.137.1:5002/api/boxes/ELOTO%20BOX%201/telemetry
-  │   Header: X-Device-Token: ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+  │   Header: X-Device-Token: <device-token>
   │   Body: { event_id, event, uid, state, is_online: 1, ... }
   │
   ▼
@@ -112,7 +112,7 @@ Frontend (React)
 
 ### Jika ada error 401:
 - Token tidak cocok
-- Jalankan: `node scripts/set-device-token.js "ELOTO BOX 1" "TOKEN"`
+- Provision ulang melalui `ELOTO_BOX_ID`, `ELOTO_DEVICE_TOKEN`, dan `pnpm --filter backend run provision-device`.
 
 ### Jika ada error 400:
 - Field tidak valid
@@ -123,6 +123,6 @@ Frontend (React)
 ✅ Backend: Running on 0.0.0.0:5002
 ✅ Database: Box "ELOTO BOX 1" with device_token
 ✅ ESP32: DEVICE_ID = "ELOTO BOX 1"
-✅ Token: ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+✅ Token: unik per boks dan tidak dicatat di Git
 
 **Semua sudah siap! Tinggal upload firmware ESP32 dan restart.**

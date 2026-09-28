@@ -46,7 +46,7 @@ export default function Profile() {
         <form onSubmit={changePassword} className="bg-white border border-red-200 rounded-2xl p-5 space-y-3">
           <h2 className="font-bold">Ubah kata sandi</h2>
           <input aria-label="Kata sandi lama" type="password" autoComplete="current-password" required value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} placeholder="Kata sandi lama" className="w-full border rounded-lg p-3" />
-          <input aria-label="Kata sandi baru" type="password" autoComplete="new-password" required value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Kata sandi baru" className="w-full border rounded-lg p-3" />
+          <input aria-label="Kata sandi baru" type="password" autoComplete="new-password" required minLength="12" maxLength="72" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Kata sandi baru (minimal 12 karakter)" className="w-full border rounded-lg p-3" />
           <button className="bg-red-600 text-white rounded-lg p-3">Simpan dan login ulang</button>
           <p role="status">{message}</p>
         </form>

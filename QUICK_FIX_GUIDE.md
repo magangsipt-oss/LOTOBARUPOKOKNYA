@@ -23,7 +23,7 @@ Backend sekarang akan listen di `0.0.0.0:5002` (semua network interfaces).
 
 ```bash
 cd "d:\KULIAH 1-8\FOLDER ELOTO\htdocs\PROJECT_ELOTO_NEW\backend"
-node scripts/set-device-token.js "BOX ELOTO 1" "ESP32-ELOTO-BOX1-SECRET-TOKEN-2024"
+pnpm --filter backend run provision-device
 ```
 
 ### Step 3: Update Config di SD Card ESP32
@@ -31,10 +31,10 @@ node scripts/set-device-token.js "BOX ELOTO 1" "ESP32-ELOTO-BOX1-SECRET-TOKEN-20
 Edit file `config.txt` di SD Card ESP32:
 
 ```
-SSID=vivoV29
-PASS=112233445566
-SERVER=192.168.137.1:5002
-TOKEN=ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+SSID=your-wifi-network
+PASS=replace-with-wifi-password
+SERVER=http://192.168.137.1:5002
+TOKEN=replace-with-a-random-device-token-at-least-32-characters
 ```
 
 **PENTING**: Pastikan `SERVER` mengarah ke IP backend yang benar!
@@ -58,15 +58,15 @@ Harusnya muncul: `{"success":true,"service":"E-LOTO"}`
 
 #### Cek Device Token:
 ```
-http://192.168.137.1:5002/api/diagnostic/device
+http://192.168.137.1:5002/health/live
 ```
-Harusnya muncul JSON dengan `has_device_token: false` (karena tidak ada header).
+Harus muncul `{"success":true}`. Validasi token dilakukan oleh request telemetri ESP32, bukan endpoint publik.
 
 #### Cek Serial Monitor ESP32:
 Cari log seperti:
 ```
 [CONFIG] Berhasil memuat konfigurasi dari SD Card.
-[WIFI] Connected to vivoV29
+[WIFI] Connected to your-wifi-network
 [WIFI] IP Address: 192.168.137.176
 ```
 
@@ -80,7 +80,7 @@ Jika ada error 401 atau 400, cek token di database dan ESP32.
 
 ### Error: 401 Unauthorized
 - Token di ESP32 tidak cocok dengan di database
-- Jalankan lagi: `node scripts/set-device-token.js "BOX ELOTO 1" "TOKEN"`
+- Provision ulang melalui `ELOTO_BOX_ID`, `ELOTO_DEVICE_TOKEN`, dan `pnpm --filter backend run provision-device`.
 
 ### Error: 400 Validation Failed
 - Field yang dikirim tidak valid
@@ -106,7 +106,7 @@ Jika `age_seconds` lebih dari 15, berarti telemetry tidak sampai.
 
 ```
 ESP32 → POST /api/boxes/BOX%20ELOTO%201/telemetry
-  ├── Header: X-Device-Token: ESP32-ELOTO-BOX1-SECRET-TOKEN-2024
+  ├── Header: X-Device-Token: <device-token>
   └── Backend terima & proses
       ├── Autentikasi device via token
       ├── Update is_online = 1

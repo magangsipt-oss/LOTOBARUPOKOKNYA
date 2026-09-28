@@ -9,6 +9,7 @@ import { validateTelemetry, normalizeState } from '../domain/telemetry.js';
 
 const originalQuery = pool.query;
 const originalAuthenticate = UserModel.authenticate;
+const originalCreate = UserModel.create;
 const token = 'a'.repeat(64);
 const deviceToken = 'device-test-token-'.repeat(4);
 const user = { sid: 'worker-1', nama: 'Test Worker', role: 'WORKER', rfid_uid: 'ABC' };
@@ -28,7 +29,7 @@ before(async () => {
   await once(server, 'listening');
   base = `http://127.0.0.1:${server.address().port}`;
 });
-afterEach(() => { UserModel.authenticate = originalAuthenticate; statements = []; sessions.clear(); });
+afterEach(() => { UserModel.authenticate = originalAuthenticate; UserModel.create = originalCreate; statements = []; sessions.clear(); });
 after(async () => { await new Promise(resolve => server.close(resolve)); pool.query = originalQuery; await pool.end(); });
 const call = (path, options = {}) => fetch(base + path, options);
 const authHeaders = (role = 'WORKER') => {
@@ -38,7 +39,7 @@ const authHeaders = (role = 'WORKER') => {
 
 test('anonymous users cannot read or mutate protected data, even without API_SECRET_KEY', async () => {
   delete process.env.API_SECRET_KEY;
-  for (const [path, method] of [['/api/users','GET'],['/api/users','POST'],['/api/logs/clear','DELETE'],['/api/maintenance','POST'],['/api/stream','GET']]) {
+  for (const [path, method] of [['/api/users','GET'],['/api/users','POST'],['/api/logs/clear','DELETE'],['/api/maintenance','POST'],['/api/stream','GET'],['/api/diagnostic/device','GET']]) {
     assert.equal((await call(path,{method})).status,401);
   }
   assert.equal(statements.length,0);
@@ -62,6 +63,19 @@ test('CSRF and role checks reject unauthorized writes before models execute', as
   delete headers['X-CSRF-Token'];
   assert.equal((await call('/api/users/logout',{method:'POST',headers})).status,403);
   assert.ok(!statements.some(([sql])=>sql.startsWith('DELETE FROM users')||sql.startsWith('UPDATE users')));
+});
+test('account creation and password changes reject weak passwords', async () => {
+  const headers = authHeaders('ADMIN');
+  UserModel.create = async data => { assert.equal(data.password, 'correct horse battery staple'); return data.sid; };
+  const weakCreate = await call('/api/users', { method: 'POST', headers,
+    body: JSON.stringify({ sid: 'new-user', nama: 'New User', role: 'WORKER', password: 'new-user' }) });
+  assert.equal(weakCreate.status, 400);
+  const strongCreate = await call('/api/users', { method: 'POST', headers,
+    body: JSON.stringify({ sid: 'new-user', nama: 'New User', role: 'WORKER', password: 'correct horse battery staple' }) });
+  assert.equal(strongCreate.status, 201);
+  const weakChange = await call('/api/users/password', { method: 'POST', headers,
+    body: JSON.stringify({ currentPassword: 'old password', newPassword: 'too-short' }) });
+  assert.equal(weakChange.status, 400);
 });
 test('untrusted origins and old shared Bearer token cannot authorize requests', async () => {
   assert.equal((await call('/api/users/login',{method:'POST',headers:{Origin:'https://evil.invalid'}})).status,403);
