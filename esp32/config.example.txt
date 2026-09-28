@@ -1,3 +1,4 @@
+DEVICE_ID=BOX-CLIENT-001
 SSID=your-wifi-network
 PASS=your-wifi-password
 SERVER=https://eloto.example.com

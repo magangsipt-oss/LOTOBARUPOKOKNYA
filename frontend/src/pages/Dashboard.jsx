@@ -453,7 +453,6 @@ export default function Dashboard() {
                     <i className={`fa-solid ${isSyncing ? 'fa-spinner animate-spin' : 'fa-satellite-dish'}`}></i> Sync
                   </button>
                 </div>
-                <input type="text" aria-label="URL kamera opsional untuk boks ini" placeholder="URL kamera boks ini (opsional, rtsp://...)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.rtsp_url || ''} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, rtsp_url: e.target.value })} />
                 <div className="grid grid-cols-2 gap-2">
                   <input type="text" placeholder="Latitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lat} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lat: e.target.value })} />
                   <input type="text" placeholder="Longitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lng} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lng: e.target.value })} />
