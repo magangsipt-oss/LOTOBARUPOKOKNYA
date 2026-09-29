@@ -33,3 +33,10 @@ test('firmware keeps device credentials available and reloads SD config after a 
   assert.match(source, /String device_token\s*=\s*ELOTO_DEVICE_TOKEN;/);
   assert.match(source, /if \(mounted\) \{\s*sdCardMounted = true;\s*loadConfigFromSD\(\);/);
 });
+
+test('firmware declares custom GPS return type before Arduino prototype generation', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+
+  assert.match(source, /struct GpsSnapshot \{[^}]+\};\s*GpsSnapshot readGpsSnapshot\(\);/);
+});

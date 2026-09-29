@@ -217,6 +217,7 @@ void gpsInitTask(void *pvParameters) {
 }
 
 struct GpsSnapshot { double latitude; double longitude; bool fix; };
+GpsSnapshot readGpsSnapshot();
 
 GpsSnapshot readGpsSnapshot() {
     GpsSnapshot snapshot = { 0, 0, false };
