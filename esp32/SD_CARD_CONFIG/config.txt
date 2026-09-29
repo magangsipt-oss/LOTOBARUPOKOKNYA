@@ -4,7 +4,6 @@ WIFI_1_PASS=replace-with-primary-wifi-password
 WIFI_2_SSID=your-backup-wifi
 WIFI_2_PASS=replace-with-backup-wifi-password
 
-# HTTP hanya diterima untuk alamat LAN privat. Production wajib HTTPS + /server_ca.pem.
-SERVER=http://192.168.1.10:5002
+# Backend E-LOTO ditemukan otomatis pada port 5002 di jaringan lokal.
 TOKEN=replace-with-a-random-device-token-at-least-32-characters
 DEVICE_ID=BOX-CLIENT-001

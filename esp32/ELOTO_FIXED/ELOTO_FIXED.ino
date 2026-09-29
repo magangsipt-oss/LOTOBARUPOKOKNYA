@@ -87,6 +87,7 @@ String wifi_password    = "112233445566";
 String server_host      = "";
 String device_token     = "";
 const char* SERVER_PROJECT_PATH  = "";
+const uint16_t SERVER_PORT       = 5002;
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 450;   // was 800
 const uint32_t NOTIFICATION_ERROR_DURATION   = 700;   // was 1000
@@ -95,7 +96,7 @@ const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 String getServerBaseUrl() {
     String host = server_host;
     host.trim();
-    if (host.length() == 0) host = WiFi.gatewayIP().toString();
+    if (host.length() == 0) return "";
     if (host.startsWith("http://") || host.startsWith("https://")) {
         return host + SERVER_PROJECT_PATH + "/";
     }
@@ -403,6 +404,8 @@ void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t colo
 void drawDecorativeLine(int16_t y, uint16_t color);
 void loadConfigFromSD();
 void reportBlePresence();
+bool probeElotoServer(const IPAddress &candidate);
+bool discoverServer();
 
 String hexToDecStringPadded(String hexStr) {
     if (hexStr.length() > 8) hexStr = hexStr.substring(hexStr.length() - 8);
@@ -586,8 +589,6 @@ void loadConfigFromSD() {
         } else if (line.startsWith("TOKEN=")) {
             String value = line.substring(6); value.trim();
             if (value.length() > 0) device_token = value;
-        } else if (line.startsWith("SERVER=")) {
-            server_host = line.substring(7); server_host.trim();
         } else if (loadWifiFromSd && (line.startsWith("SSID=") || line.startsWith("WIFI_SSID=") || line.startsWith("WIFI_1_SSID="))) {
             wifi_ssid = line.substring(line.indexOf('=') + 1); wifi_ssid.trim();
         } else if (loadWifiFromSd && (line.startsWith("PASS=") || line.startsWith("WIFI_PASSWORD=") || line.startsWith("WIFI_1_PASS="))) {
@@ -2502,7 +2503,10 @@ void networkTaskCore0(void * pvParameters) {
                 bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
                 lastDbSyncTask = millis();
-                if (justReconnected) discoverServer();
+                if (justReconnected) {
+                    server_host = "";
+                    discoverServer();
+                }
                 syncDatabaseToSDCard();
                 vTaskDelay(pdMS_TO_TICKS(1));
                 // Jangan upload offline log saat startup: backtrace menunjukkan
@@ -2728,13 +2732,62 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool discoverServer() {
-    if (server_host.length() > 0) return true;
-    String gw = WiFi.gatewayIP().toString();
-    if (gw.length() > 0 && gw != "0.0.0.0") {
-        server_host = gw + ":5002";
-        return true;
+bool probeElotoServer(const IPAddress &candidate) {
+    if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
+
+    WiFiClient client;
+    client.setTimeout(250);
+    if (!client.connect(candidate, SERVER_PORT, 120)) {
+        client.stop();
+        return false;
     }
+
+    String host = candidate.toString();
+    client.print("GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n");
+
+    String response;
+    response.reserve(512);
+    unsigned long startedAt = millis();
+    bool matched = false;
+    while (millis() - startedAt < 350 && response.length() < 512) {
+        while (client.available() && response.length() < 512) {
+            response += (char)client.read();
+        }
+        if (response.indexOf("\"service\":\"E-LOTO\"") >= 0) {
+            matched = true;
+            break;
+        }
+        if (!client.connected() && !client.available()) break;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    client.stop();
+
+    if (matched) {
+        server_host = host + ":" + String(SERVER_PORT);
+        Serial.printf("[NET] Backend E-LOTO ditemukan: %s\n", server_host.c_str());
+    }
+    return matched;
+}
+
+bool discoverServer() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+    if (server_host.length() > 0) return true;
+
+    IPAddress gateway = WiFi.gatewayIP();
+    if (probeElotoServer(gateway)) return true;
+
+    IPAddress local = WiFi.localIP();
+    uint8_t localHost = local[3];
+    for (uint16_t offset = 1; offset <= 254; offset++) {
+        uint8_t host = (localHost + offset) % 255;
+        if (host == 0) continue;
+        IPAddress candidate(local[0], local[1], local[2], host);
+        if (candidate == gateway) continue;
+        if (probeElotoServer(candidate)) return true;
+        if ((offset % 8) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    Serial.println("[NET] Backend E-LOTO tidak ditemukan di subnet lokal");
     return false;
 }
 
@@ -2779,7 +2832,7 @@ void connectWiFiRoutine() {
 
     if (ipAssigned) {
         buzzSuccess();
-        discoverServer();
+        server_host = ""; // Discovery dijalankan oleh NetworkTask di core 0.
         selectedFooterAction = 1;
         currentState = STATE_SHOW_IP;
         logAuditAsync("WIFI_CONNECTED", WiFi.localIP().toString());
