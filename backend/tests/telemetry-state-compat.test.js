@@ -94,6 +94,11 @@ const ESP32_TELEMETRY_SAMPLES = [
       lon: null,
       lng: null,
       gps_fix: false,
+      sd_card_ok: true,
+      sd_sync_ok: true,
+      sd_user_count: 24,
+      ble_scan_ok: true,
+      ble_tag_count: 2,
       state: 'IDLE_READY',
       lcd0: 'TUNGGU PENGAWAS',
       lcd1: '',
@@ -320,4 +325,18 @@ test('validateTelemetry accepts uptime_ms from ESP32', () => {
   assert.doesNotThrow(() => validateTelemetry({ event_id: 'evt-up2', uptime_ms: 86400000 }));
   assert.throws(() => validateTelemetry({ event_id: 'evt-up3', uptime_ms: -1 }), /uptime/);
   assert.throws(() => validateTelemetry({ event_id: 'evt-up4', uptime_ms: 1.5 }), /uptime/);
+});
+
+test('validateTelemetry accepts device health snapshots and rejects invalid counts', () => {
+  assert.doesNotThrow(() => validateTelemetry({
+    event_id: 'evt-device-health',
+    sd_card_ok: true,
+    sd_sync_ok: false,
+    sd_user_count: 24,
+    ble_scan_ok: true,
+    ble_tag_count: 2
+  }));
+  assert.throws(() => validateTelemetry({ event_id: 'evt-bad-ble-count', ble_tag_count: 21 }), /ble_tag_count/);
+  assert.throws(() => validateTelemetry({ event_id: 'evt-bad-sd-count', sd_user_count: -1 }), /sd_user_count/);
+  assert.throws(() => validateTelemetry({ event_id: 'evt-bad-ble-state', ble_scan_ok: 'yes' }), /ble_scan_ok/);
 });

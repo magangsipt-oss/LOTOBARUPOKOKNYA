@@ -382,7 +382,7 @@ export default function Dashboard() {
           {/* KONDISI SENSOR & KUNCI GEMBOK */}
           <div className="space-y-2">
             <p className="text-[10px] font-mono-tech tracking-widest uppercase text-slate-500">Kondisi Sensor & Kunci Gembok (Klik Untuk Rincian)</p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono-tech">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5 gap-3 text-xs font-mono-tech">
               <div onClick={() => bukaModalUmum('Kondisi Kunci Solenoid Gembok', 'fa-bolt', <div className="p-3 font-mono text-xs">Status: <b>{hwData.relay_open ? 'TERBUKA' : 'TERKUNCI'}</b></div>)} className="bg-white p-4 rounded-xl border border-gray-200 flex items-center gap-3 shadow-sm cursor-pointer hover:border-red-400 transition-all">
                 <div className={`w-3.5 h-3.5 rounded-full ${isHwOnline && hwData.relay_open ? 'bg-green-500 shadow-[0_0_10px_#22e07a]' : 'bg-red-500 shadow-[0_0_10px_#ff5b5b]'}`} />
                 <div><span className="block text-[9px] text-slate-500">KUNCI SOLENOID</span><span className="font-bold text-slate-950">{isHwOnline ? (hwData.relay_open ? 'TERBUKA (HIGH)' : 'TERKUNCI (LOW)') : '—'}</span></div>
@@ -391,9 +391,17 @@ export default function Dashboard() {
                 <div className={`w-3.5 h-3.5 rounded-full ${isHwOnline && hwData.last_event_ok ? 'bg-green-500 shadow-[0_0_10px_#22e07a]' : 'bg-red-500 shadow-[0_0_10px_#ff5b5b]'}`} />
                 <div><span className="block text-[9px] text-slate-500">PINDAIAN TERAKHIR</span><span className="font-bold text-slate-950 truncate max-w-[130px] block">{isHwOnline && hwData.last_event ? `${hwData.last_event} ${hwData.last_event_ok ? '  ✓  ' : '  ✗  '}` : '  —  '}</span></div>
               </div>
-              <div onClick={() => bukaModalUmum('Kondisi Sinyal Satelit GPS', 'fa-location-dot', <div className="p-3 font-mono text-xs">GPS Satelit: <b>{hwData.gps_fix ? 'TERKUNCI' : 'STANDBY'}</b></div>)} className="bg-white p-4 rounded-xl border border-gray-200 flex items-center gap-3 shadow-sm cursor-pointer hover:border-red-400 transition-all">
+              <div onClick={() => bukaModalUmum('Lokasi GPS Alat', 'fa-location-dot', <div className="p-3 font-mono text-xs">GPS: <b>{hwData.gps_fix ? 'TERKUNCI' : 'STANDBY'}</b><br />Latitude: <b>{hwData.gps_fix && hwData.lat != null ? Number(hwData.lat).toFixed(6) : 'Belum ada fix'}</b><br />Longitude: <b>{hwData.gps_fix && hwData.lng != null ? Number(hwData.lng).toFixed(6) : 'Belum ada fix'}</b></div>)} className="bg-white p-4 rounded-xl border border-gray-200 flex items-center gap-3 shadow-sm cursor-pointer hover:border-red-400 transition-all">
                 <div className={`w-3.5 h-3.5 rounded-full ${isHwOnline && hwData.gps_fix ? 'bg-green-500 shadow-[0_0_10px_#22e07a]' : 'bg-amber-500 shadow-[0_0_10px_#ffb238]'}`} />
                 <div><span className="block text-[9px] text-slate-500">SINYAL GPS</span><span className="font-bold text-slate-950">{isHwOnline ? (hwData.gps_fix ? 'TERKUNCI' : 'STANDBY') : '—'}</span></div>
+              </div>
+              <div onClick={() => bukaModalUmum('Kondisi SD Card', 'fa-sd-card', <div className="p-3 font-mono text-xs">SD Card: <b>{hwData.sd_card_ok == null ? 'Belum ada data' : hwData.sd_card_ok ? 'TERPASANG' : 'TIDAK TERBACA'}</b><br />Sinkronisasi user: <b>{hwData.sd_sync_ok == null ? 'Belum ada data' : hwData.sd_sync_ok ? 'BERHASIL' : 'GAGAL'}</b><br />User tersimpan: <b>{hwData.sd_user_count ?? '—'}</b></div>)} className="bg-white p-4 rounded-xl border border-gray-200 flex items-center gap-3 shadow-sm cursor-pointer hover:border-red-400 transition-all">
+                <div className={`w-3.5 h-3.5 rounded-full ${hwData.sd_card_ok === true && hwData.sd_sync_ok === true ? 'bg-green-500 shadow-[0_0_10px_#22e07a]' : hwData.sd_card_ok === false || hwData.sd_sync_ok === false ? 'bg-red-500 shadow-[0_0_10px_#ff5b5b]' : 'bg-amber-500 shadow-[0_0_10px_#ffb238]'}`} />
+                <div><span className="block text-[9px] text-slate-500">SD CARD / SYNC</span><span className="font-bold text-slate-950">{hwData.sd_sync_ok == null ? 'BELUM ADA DATA' : hwData.sd_sync_ok ? `${hwData.sd_user_count ?? 0} USER TERSINKRON` : 'SYNC GAGAL'}</span></div>
+              </div>
+              <div onClick={() => bukaModalUmum('Kondisi Pemindaian Bluetooth', 'fa-bluetooth-b', <div className="p-3 font-mono text-xs">BLE scan: <b>{hwData.ble_scan_ok == null ? 'Belum ada data' : hwData.ble_scan_ok ? 'AKTIF' : 'TIDAK SEHAT'}</b><br />Tag terlihat: <b>{hwData.ble_tag_count ?? '—'}</b></div>)} className="bg-white p-4 rounded-xl border border-gray-200 flex items-center gap-3 shadow-sm cursor-pointer hover:border-red-400 transition-all">
+                <div className={`w-3.5 h-3.5 rounded-full ${hwData.ble_scan_ok === true ? 'bg-green-500 shadow-[0_0_10px_#22e07a]' : hwData.ble_scan_ok === false ? 'bg-red-500 shadow-[0_0_10px_#ff5b5b]' : 'bg-amber-500 shadow-[0_0_10px_#ffb238]'}`} />
+                <div><span className="block text-[9px] text-slate-500">BLUETOOTH TAG</span><span className="font-bold text-slate-950">{hwData.ble_scan_ok == null ? 'BELUM ADA DATA' : hwData.ble_scan_ok ? `${hwData.ble_tag_count ?? 0} TAG` : 'SCAN BERMASALAH'}</span></div>
               </div>
             </div>
           </div>

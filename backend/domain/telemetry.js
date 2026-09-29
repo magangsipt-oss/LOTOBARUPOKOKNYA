@@ -13,7 +13,9 @@ export function validateTelemetry(body) {
     if (body[key] != null && (typeof body[key] !== 'string' || body[key].length > max)) invalid(`Invalid ${key}`);
   }
   for (const [key,max] of [['lat',90],['lng',180]]) if (body[key] != null && (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > max)) invalid(`Invalid ${key}`);
-  for (const key of ['gps_fix','relay_open','is_online','replay']) if (body[key] != null && ![true,false,0,1].includes(body[key])) invalid(`Invalid ${key}`);
+  for (const key of ['gps_fix','relay_open','is_online','replay','sd_card_ok','sd_sync_ok','ble_scan_ok']) if (body[key] != null && ![true,false,0,1].includes(body[key])) invalid(`Invalid ${key}`);
+  for (const key of ['sd_user_count','ble_tag_count']) if (body[key] != null && (!Number.isSafeInteger(body[key]) || body[key] < 0)) invalid(`Invalid ${key}`);
+  if (body.ble_tag_count > 20) invalid('Invalid ble_tag_count');
   if (body.gps_fix && (body.lat == null || body.lng == null)) invalid('GPS fix requires lat and lng');
   if (body.queue != null && (!Array.isArray(body.queue) || body.queue.length > 100 || body.queue.some(x => !x || typeof x.uid !== 'string' || x.uid.length > 50 || typeof x.name !== 'string' || x.name.length > 100 || typeof x.role !== 'string' || x.role.length > 50))) invalid('Invalid queue');
   if (body.uptime_ms != null && (!Number.isSafeInteger(body.uptime_ms) || body.uptime_ms < 0)) invalid('Invalid uptime');

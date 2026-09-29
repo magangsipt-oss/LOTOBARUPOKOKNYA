@@ -62,6 +62,38 @@ test('GPS without fix preserves coordinates and session start is serialized on t
   assert.equal(update[1][0],'STATE_SET_MEKANIK_COUNT');
   assert.equal(update[1][3],null);assert.match(update[0],/COALESCE\(\?, lat\)/);
 });
+test('device health snapshot persists SD sync and BLE scanner status', async () => {
+  const state = telemetryFixture();
+  await recordTelemetry('box-1', {
+    event_id: 'event-health',
+    event: 'HEARTBEAT_SYNC',
+    gps_fix: true,
+    lat: -6.123456,
+    lng: 106.123456,
+    sd_card_ok: true,
+    sd_sync_ok: true,
+    sd_user_count: 24,
+    ble_scan_ok: true,
+    ble_tag_count: 2
+  });
+  const update = state.queries.find(([sql]) => sql.startsWith('UPDATE boxes SET state'));
+  const snapshot = JSON.parse(update[1][9]);
+  assert.deepEqual({
+    gps_fix: snapshot.gps_fix,
+    sd_card_ok: snapshot.sd_card_ok,
+    sd_sync_ok: snapshot.sd_sync_ok,
+    sd_user_count: snapshot.sd_user_count,
+    ble_scan_ok: snapshot.ble_scan_ok,
+    ble_tag_count: snapshot.ble_tag_count
+  }, {
+    gps_fix: true,
+    sd_card_ok: true,
+    sd_sync_ok: true,
+    sd_user_count: 24,
+    ble_scan_ok: true,
+    ble_tag_count: 2
+  });
+});
 test('a failed tapping write rolls back the telemetry and event receipt together',async()=>{
   const state=telemetryFixture({failInsert:true});
   await assert.rejects(recordTelemetry('box-1',{event_id:'event-1',event:'MECHANIC_LOG_IN',uid:'ABC'}),/storage failure/);

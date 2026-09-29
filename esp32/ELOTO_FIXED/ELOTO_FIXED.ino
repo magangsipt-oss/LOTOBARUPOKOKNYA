@@ -199,10 +199,13 @@ bool firstGpsFixSent      = false;
 bool relayOpen            = false;
 volatile bool relayPulseActive = false;
 bool sdCardMounted        = false;
+bool sdSyncOk             = false;
+uint16_t sdSyncUserCount  = 0;
 bool exitCountdownActive  = false;
 volatile bool gpsInitStarted = false;
 volatile bool gpsInitDone = false;
 volatile bool gpsRecoveryRunning = false;
+SemaphoreHandle_t gpsMutex = NULL;
 
 void initGpsModule();
 void gpsInitTask(void *pvParameters) {
@@ -211,15 +214,26 @@ void gpsInitTask(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
+struct GpsSnapshot { double latitude; double longitude; bool fix; };
+
+GpsSnapshot readGpsSnapshot() {
+    GpsSnapshot snapshot = { 0, 0, false };
+    if (!gpsMutex || xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(10)) != pdTRUE) return snapshot;
+    snapshot.latitude = currentLatitude;
+    snapshot.longitude = currentLongitude;
+    snapshot.fix = gpsHasFix && currentLatitude >= -90.0 && currentLatitude <= 90.0 &&
+        currentLongitude >= -180.0 && currentLongitude <= 180.0 &&
+        (currentLatitude != 0.0 || currentLongitude != 0.0);
+    xSemaphoreGive(gpsMutex);
+    return snapshot;
+}
+
 bool hasValidGpsFix() {
-    return gpsHasFix && currentLatitude >= -90.0 && currentLatitude <= 90.0 &&
-            currentLongitude >= -180.0 && currentLongitude <= 180.0 &&
-            (currentLatitude != 0.0 || currentLongitude != 0.0);
+    return readGpsSnapshot().fix;
 }
 
 QueueHandle_t networkQueue;
 SemaphoreHandle_t sdMutex = NULL;
-SemaphoreHandle_t gpsMutex = NULL;
 SemaphoreHandle_t spiBusMutex = NULL;
 
 class SpiBusGuard {
@@ -781,8 +795,9 @@ void drawTftHeader() {
     drawBleBadge(geoHealthy);
 
     // 2. Badge GPS (X: 312)
-    bool gpsNow = hasValidGpsFix();
-    bool gpsHasHistory = (!gpsNow && currentLatitude != 0.0 && currentLongitude != 0.0);
+    GpsSnapshot gps = readGpsSnapshot();
+    bool gpsNow = gps.fix;
+    bool gpsHasHistory = (!gpsNow && gps.latitude != 0.0 && gps.longitude != 0.0);
     uint16_t gpsColor = gpsNow ? TFT_GREEN : (gpsHasHistory ? TFT_YELLOW : TFT_RED);
     String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
 
@@ -1129,6 +1144,16 @@ void serviceGeofence() {
 void reportBlePresence() {
     if (WiFi.status() != WL_CONNECTED || device_token.length() == 0 || ESP.getFreeHeap() < 30000) return;
 
+    uint32_t scanHeartbeat;
+    bool scanCompleted;
+    bool overflow;
+    portENTER_CRITICAL(&geoMux);
+    scanHeartbeat = geoScanHeartbeat;
+    scanCompleted = geoScanCompleted;
+    overflow = geoOverflow;
+    portEXIT_CRITICAL(&geoMux);
+    if (!scanCompleted || overflow || uint32_t(millis() - scanHeartbeat) > GEO_SCANNER_STALE_MS) return;
+
     DynamicJsonDocument doc(1536);
     doc["id_box"] = getDeviceId();
     JsonArray tags = doc.createNestedArray("ble_tags");
@@ -1144,9 +1169,6 @@ void reportBlePresence() {
         for (; m && *m; m++) h = (h ^ (uint8_t)*m) * 16777619UL;
     }
     if (h == lastTagHash && lastSentMs != 0 && millis() - lastSentMs < 15000) return;  // tidak berubah
-    lastTagHash = h;
-    lastSentMs = millis();
-
     WiFiClient client;
     client.setTimeout(1500);
     HTTPClient http;
@@ -1156,7 +1178,13 @@ void reportBlePresence() {
     http.setTimeout(2500);
     String payload;
     serializeJson(doc, payload);
-    http.POST(payload);
+    int httpCode = http.POST(payload);
+    if (httpCode >= 200 && httpCode < 300) {
+        lastTagHash = h;
+        lastSentMs = millis();
+    } else {
+        Serial.printf("[BLE] Presence HTTP %d\n", httpCode);
+    }
     http.end();
 }
 
@@ -1288,8 +1316,13 @@ void parseGpsResponse(const String &response) {
     if (idx > 15 && field[15].length() > 0) gpsSatellitesUsed = (uint8_t)field[15].toInt();
 
     if (fixStatus == "1" && latStr.length() > 0 && lonStr.length() > 0) {
-        double newLat = strtod(latStr.c_str(), NULL);
-        double newLon = strtod(lonStr.c_str(), NULL);
+        char *latEnd = NULL;
+        char *lonEnd = NULL;
+        double newLat = strtod(latStr.c_str(), &latEnd);
+        double newLon = strtod(lonStr.c_str(), &lonEnd);
+        if (latEnd == latStr.c_str() || *latEnd != '\0' || lonEnd == lonStr.c_str() || *lonEnd != '\0' ||
+            !isfinite(newLat) || !isfinite(newLon) || newLat < -90.0 || newLat > 90.0 ||
+            newLon < -180.0 || newLon > 180.0 || (newLat == 0.0 && newLon == 0.0)) return;
 
         if (xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             currentLatitude  = newLat;
@@ -1299,12 +1332,12 @@ void parseGpsResponse(const String &response) {
             xSemaphoreGive(gpsMutex);
         }
 
-        bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
-                                fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
+        bool positionChanged = fabs(newLat - gpsLastSerialLatitude) > 0.00001 ||
+                                fabs(newLon - gpsLastSerialLongitude) > 0.00001;
         if (positionChanged || millis() - gpsLastSerialReportMillis >= 5000) {
-            Serial.printf("[GPS] FIX latitude=%.6f  longitude=%.6f\n", currentLatitude, currentLongitude);
-            gpsLastSerialLatitude  = currentLatitude;
-            gpsLastSerialLongitude = currentLongitude;
+            Serial.printf("[GPS] FIX latitude=%.6f  longitude=%.6f\n", newLat, newLon);
+            gpsLastSerialLatitude  = newLat;
+            gpsLastSerialLongitude = newLon;
             gpsLastSerialReportMillis = millis();
         }
         if (!firstGpsFixSent) {
@@ -1362,7 +1395,10 @@ void feedGPS() {
         }
         return;
     }
-    if (gpsHasFix && now - gpsLastFixMillis > 45000) gpsHasFix = false;
+    if (gpsMutex && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (gpsHasFix && now - gpsLastFixMillis > 45000) gpsHasFix = false;
+        xSemaphoreGive(gpsMutex);
+    }
     if (firstGpsFixSent && gpsLastFixMillis != 0 && now - gpsLastFixMillis > 90000)
         firstGpsFixSent = false;
 }
@@ -1806,9 +1842,10 @@ void saveSessionToSDNow() {
                 doc["last_scanned_uid"]    = lastScannedUID;
                 doc["last_scanned_sid"]    = lastScannedSID;
 
-                if (gpsHasFix) {
-                    doc["last_lat"] = currentLatitude;
-                    doc["last_lon"] = currentLongitude;
+                GpsSnapshot gps = readGpsSnapshot();
+                if (gps.fix) {
+                    doc["last_lat"] = gps.latitude;
+                    doc["last_lon"] = gps.longitude;
                 }
 
                 JsonArray q = doc.createNestedArray("queue");
@@ -2064,6 +2101,8 @@ void syncDatabaseToSDCard() {
     http.setTimeout(2000);
 
     int httpCode = http.GET();
+    Serial.printf("[SYNC] GET /api/users HTTP %d\n", httpCode);
+    sdSyncOk = false;
     if (httpCode == HTTP_CODE_OK) {
         DynamicJsonDocument doc(6144);
         DeserializationError err = deserializeJson(doc, http.getStream());
@@ -2125,6 +2164,8 @@ void syncDatabaseToSDCard() {
                 return;
             }
             loadUsersToRAM();
+            sdSyncOk = true;
+            sdSyncUserCount = syncCount;
         }
     }
     http.end();
@@ -2186,8 +2227,9 @@ void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
     if (takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
         File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
         if (logFile) {
-            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
-            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
+            GpsSnapshot gps = readGpsSnapshot();
+            String latitude = gps.fix ? String(gps.latitude, 6) : "";
+            String longitude = gps.fix ? String(gps.longitude, 6) : "";
             String stableId = eventId.length() > 0 ? eventId :
                                 "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
             logFile.println(stableId + "," + event + "," + uid + "," + latitude + "," + longitude);
@@ -2448,6 +2490,22 @@ void networkTaskCore0(void * pvParameters) {
                 doc["lcd0"] = lcd0; doc["lcd1"] = lcd1;
                 doc["relay_open"]     = relayOpen; doc["supervisor_uid"] = supervisorUID;
                 doc["active_fuelman"] = activeFuelmanUID; doc["uptime_ms"] = millis(); doc["is_online"] = 1;
+                doc["sd_card_ok"] = sdCardMounted;
+                doc["sd_sync_ok"] = sdSyncOk;
+                doc["sd_user_count"] = sdSyncUserCount;
+
+                int bleTagCount;
+                uint32_t bleHeartbeat;
+                bool bleCompleted, bleOverflow;
+                portENTER_CRITICAL(&geoMux);
+                bleTagCount = geoTagCount;
+                bleHeartbeat = geoScanHeartbeat;
+                bleCompleted = geoScanCompleted;
+                bleOverflow = geoOverflow;
+                portEXIT_CRITICAL(&geoMux);
+                doc["ble_scan_ok"] = bleCompleted && !bleOverflow &&
+                    uint32_t(millis() - bleHeartbeat) <= GEO_SCANNER_STALE_MS;
+                doc["ble_tag_count"] = bleTagCount;
 
                 JsonArray q = doc.createNestedArray("queue");
                 for (int i = 0; i <= safetyQueue.topIndex; i++) {

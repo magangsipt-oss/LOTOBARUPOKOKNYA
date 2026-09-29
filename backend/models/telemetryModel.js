@@ -24,7 +24,18 @@ export async function recordTelemetry(idBox, body) {
     const lng = body.gps_fix ? body.lng ?? null : null;
     if (!body.replay) {
       const state = body.state ? normalizeState(body.state) : box.state;
-      const snapshot = { state, queue: body.queue || [], gps_fix: Boolean(body.gps_fix), supervisor_uid: body.supervisor_uid ?? box.supervisor_uid, active_fuelman: body.active_fuelman ?? box.active_fuelman };
+      const snapshot = {
+        state,
+        queue: body.queue || [],
+        gps_fix: Boolean(body.gps_fix),
+        sd_card_ok: body.sd_card_ok == null ? null : Boolean(body.sd_card_ok),
+        sd_sync_ok: body.sd_sync_ok == null ? null : Boolean(body.sd_sync_ok),
+        sd_user_count: body.sd_user_count ?? null,
+        ble_scan_ok: body.ble_scan_ok == null ? null : Boolean(body.ble_scan_ok),
+        ble_tag_count: body.ble_tag_count ?? null,
+        supervisor_uid: body.supervisor_uid ?? box.supervisor_uid,
+        active_fuelman: body.active_fuelman ?? box.active_fuelman
+      };
       await c.query(`UPDATE boxes SET state = ?, last_event = ?, last_uid = ?, lat = COALESCE(?, lat), lng = COALESCE(?, lng),
         lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, is_online = 1, ssid = ?, ip = ?,
         supervisor_uid = ?, active_fuelman = ?, last_ping = NOW(), updated_at = NOW() WHERE id_box = ?`,
