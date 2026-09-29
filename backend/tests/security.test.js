@@ -81,6 +81,18 @@ test('untrusted origins and old shared Bearer token cannot authorize requests', 
   assert.equal((await call('/api/users/login',{method:'POST',headers:{Origin:'https://evil.invalid'}})).status,403);
   assert.equal((await call('/api/users',{headers:{Authorization:'Bearer ELOTO_SECURE_KEY_2026'}})).status,401);
 });
+test('local frontend origins receive credentialed CORS headers in development', async () => {
+  for (const origin of ['http://localhost:3000', 'http://192.168.137.10:3000']) {
+    const response = await call('/api/users/login', { method: 'OPTIONS', headers: {
+      Origin: origin,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'Content-Type'
+    } });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+  }
+});
 test('device tokens are scoped to their own box and cannot administer accounts', async () => {
   const headers = {'X-Device-Token':deviceToken,'Content-Type':'application/json'};
   assert.equal((await call('/api/boxes/BOX%20ELOTO%202/telemetry',{method:'POST',headers,body:'{}'})).status,403);

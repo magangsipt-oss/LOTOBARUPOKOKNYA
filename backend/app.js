@@ -27,15 +27,32 @@ dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)), quiet: 
 export function createApp() {
   const app = express();
   const production = process.env.NODE_ENV === 'production';
-  const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  let frontend;
+  try { frontend = new URL(frontendUrl).origin; }
+  catch { throw new Error('FRONTEND_URL must be a valid URL'); }
   const devOrigins = production ? [] : [
     'http://localhost:3000',
     'http://localhost:3001',
+    'http://localhost:3002',
     'http://localhost:5173',
     'http://127.0.0.1:3000',
     'http://127.0.0.1:3001',
+    'http://127.0.0.1:3002',
     'http://127.0.0.1:5173'
   ];
+  const devPorts = new Set(['3000', '3001', '3002', '5173']);
+  const isPrivateDevOrigin = origin => {
+    if (production) return false;
+    try {
+      const url = new URL(origin);
+      const host = url.hostname;
+      const privateHost = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' ||
+        /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+      return url.protocol === 'http:' && devPorts.has(url.port) && privateHost;
+    } catch { return false; }
+  };
+  const isAllowedOrigin = origin => !origin || origin === frontend || devOrigins.includes(origin) || isPrivateDevOrigin(origin);
   if (production && !frontend.startsWith('https://')) throw new Error('FRONTEND_URL must use HTTPS in production');
   if (production && (!process.env.DB_HOST || !process.env.DB_NAME || !process.env.DB_USER || process.env.DB_USER === 'root' || !process.env.DB_PASSWORD)) throw new Error('Configure a dedicated database account before production startup');
   if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY.split(',').map(s => s.trim()));
@@ -45,8 +62,7 @@ export function createApp() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
   app.use(cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (origin === frontend || devOrigins.includes(origin)) return cb(null, true);
+      if (isAllowedOrigin(origin)) return cb(null, true);
       cb(Object.assign(new Error('Origin tidak diizinkan.'), { status: 403 }));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -55,7 +71,7 @@ export function createApp() {
   }));
   app.use((req, res, next) => {
     // Allow device requests without Origin header (ESP32 telemetry)
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== frontend && !devOrigins.includes(req.headers.origin)) {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
       return res.status(403).json({ success: false, message: 'Origin tidak diizinkan.' });
     }
     next();
