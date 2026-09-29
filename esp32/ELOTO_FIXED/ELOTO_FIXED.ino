@@ -87,6 +87,8 @@ String device_id        = ELOTO_DEVICE_ID;
 String wifi_ssid        = ELOTO_NETWORK_SSID;
 String wifi_password    = ELOTO_NETWORK_PASSWORD;
 String server_host      = "";
+IPAddress configuredServerIp(192, 168, 137, 1);
+bool configuredServerIpValid = true;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const uint16_t SERVER_PORT       = 5002;
@@ -421,7 +423,7 @@ void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t colo
 void drawDecorativeLine(int16_t y, uint16_t color);
 void loadConfigFromSD();
 void reportBlePresence();
-bool probeElotoServer(const IPAddress &candidate);
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 120);
 bool discoverServer();
 
 String hexToDecStringPadded(String hexStr) {
@@ -603,6 +605,31 @@ void loadConfigFromSD() {
         if (line.startsWith("DEVICE_ID=")) {
             String value = line.substring(10); value.trim();
             if (value.length() > 0) device_id = value;
+        } else if (line.startsWith("SERVER=")) {
+            String value = line.substring(7); value.trim();
+            int colon = value.indexOf(':');
+            if (colon >= 0) {
+                if (value.indexOf(':', colon + 1) >= 0 || value.substring(colon + 1) != String(SERVER_PORT)) {
+                    configuredServerIpValid = false;
+                    Serial.println("[CONFIG] SERVER invalid; using subnet discovery");
+                    continue;
+                }
+                value = value.substring(0, colon);
+            }
+
+            IPAddress candidate;
+            if (candidate.fromString(value.c_str()) &&
+                (candidate[0] == 10 ||
+                 (candidate[0] == 172 && candidate[1] >= 16 && candidate[1] <= 31) ||
+                 (candidate[0] == 192 && candidate[1] == 168)) &&
+                candidate[3] > 0 && candidate[3] < 255) {
+                configuredServerIp = candidate;
+                configuredServerIpValid = true;
+                Serial.printf("[CONFIG] Backend target: %s:%u\n", candidate.toString().c_str(), SERVER_PORT);
+            } else {
+                configuredServerIpValid = false;
+                Serial.println("[CONFIG] SERVER invalid; using subnet discovery");
+            }
         } else if (line.startsWith("TOKEN=")) {
             String value = line.substring(6); value.trim();
             if (value.length() >= 32 && value.length() <= 256 && !value.startsWith("replace-with-")) {
@@ -2849,12 +2876,12 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool probeElotoServer(const IPAddress &candidate) {
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs) {
     if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
 
     WiFiClient client;
     client.setTimeout(250);
-    if (!client.connect(candidate, SERVER_PORT, 120)) {
+    if (!client.connect(candidate, SERVER_PORT, connectTimeoutMs)) {
         client.stop();
         return false;
     }
@@ -2889,6 +2916,12 @@ bool probeElotoServer(const IPAddress &candidate) {
 bool discoverServer() {
     if (WiFi.status() != WL_CONNECTED) return false;
     if (server_host.length() > 0) return true;
+
+    if (configuredServerIpValid) {
+        if (probeElotoServer(configuredServerIp, 1200)) return true;
+        Serial.printf("[NET] Configured backend %s:%u unreachable; scanning subnet\n",
+            configuredServerIp.toString().c_str(), SERVER_PORT);
+    }
 
     IPAddress gateway = WiFi.gatewayIP();
     if (probeElotoServer(gateway)) return true;
