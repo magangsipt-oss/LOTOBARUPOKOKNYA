@@ -92,6 +92,10 @@ bool configuredServerIpValid = true;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const uint16_t SERVER_PORT       = 5002;
+const uint32_t WIFI_CONNECT_TIMEOUT_MS = 45000;
+portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
+bool wifiConnectInProgress = false;
+uint32_t wifiConnectStartedAt = 0;
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 450;   // was 800
 const uint32_t NOTIFICATION_ERROR_DURATION   = 700;   // was 1000
@@ -610,8 +614,8 @@ void loadConfigFromSD() {
             int colon = value.indexOf(':');
             if (colon >= 0) {
                 if (value.indexOf(':', colon + 1) >= 0 || value.substring(colon + 1) != String(SERVER_PORT)) {
-                    configuredServerIpValid = false;
-                    Serial.println("[CONFIG] SERVER invalid; using subnet discovery");
+                    Serial.printf("[CONFIG] SERVER invalid; keeping target %s:%u\n",
+                        configuredServerIp.toString().c_str(), SERVER_PORT);
                     continue;
                 }
                 value = value.substring(0, colon);
@@ -627,8 +631,8 @@ void loadConfigFromSD() {
                 configuredServerIpValid = true;
                 Serial.printf("[CONFIG] Backend target: %s:%u\n", candidate.toString().c_str(), SERVER_PORT);
             } else {
-                configuredServerIpValid = false;
-                Serial.println("[CONFIG] SERVER invalid; using subnet discovery");
+                Serial.printf("[CONFIG] SERVER invalid; keeping target %s:%u\n",
+                    configuredServerIp.toString().c_str(), SERVER_PORT);
             }
         } else if (line.startsWith("TOKEN=")) {
             String value = line.substring(6); value.trim();
@@ -2629,13 +2633,26 @@ void networkTaskCore0(void * pvParameters) {
             lastWifiCheckTask = millis();
             if (WiFi.status() != WL_CONNECTED) {
                 wasWifiConnected = false;
-                if (millis() - lastReconnectAttempt > 30000) {
+                bool attemptActive;
+                bool attemptExpired;
+                portENTER_CRITICAL(&wifiConnectMux);
+                attemptActive = wifiConnectInProgress && uint32_t(millis() - wifiConnectStartedAt) < WIFI_CONNECT_TIMEOUT_MS;
+                attemptExpired = wifiConnectInProgress && !attemptActive;
+                portEXIT_CRITICAL(&wifiConnectMux);
+                if (!attemptActive && millis() - lastReconnectAttempt > 30000) {
                     lastReconnectAttempt = millis();
+                    if (attemptExpired) Serial.println("[WIFI] Connect attempt timed out; restarting station");
+                    portENTER_CRITICAL(&wifiConnectMux);
+                    wifiConnectInProgress = false;
+                    portEXIT_CRITICAL(&wifiConnectMux);
                     WiFi.disconnect();
-                    delay(100);
+                    vTaskDelay(pdMS_TO_TICKS(100));
                     tryConnectBestWifi();
                 }
             } else if ((!wasWifiConnected || startupSyncPending || millis() - lastDbSyncTask > 120000) && ESP.getFreeHeap() > 30000) {
+                portENTER_CRITICAL(&wifiConnectMux);
+                wifiConnectInProgress = false;
+                portEXIT_CRITICAL(&wifiConnectMux);
                 bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
                 lastDbSyncTask = millis();
@@ -2872,7 +2889,34 @@ void processRfidLogic(String uid) {
 
 bool tryConnectBestWifi() {
     if (wifi_ssid.length() == 0 || wifi_ssid.startsWith("ISI_")) return false;
+    if (WiFi.status() == WL_CONNECTED) {
+        portENTER_CRITICAL(&wifiConnectMux);
+        wifiConnectInProgress = false;
+        portEXIT_CRITICAL(&wifiConnectMux);
+        return true;
+    }
+
+    bool attemptActive;
+    bool attemptExpired;
+    portENTER_CRITICAL(&wifiConnectMux);
+    attemptActive = wifiConnectInProgress && uint32_t(millis() - wifiConnectStartedAt) < WIFI_CONNECT_TIMEOUT_MS;
+    attemptExpired = wifiConnectInProgress && !attemptActive;
+    if (!attemptActive) {
+        wifiConnectInProgress = true;
+        wifiConnectStartedAt = millis();
+    }
+    portEXIT_CRITICAL(&wifiConnectMux);
+    if (attemptActive) {
+        Serial.println("[WIFI] Connection already in progress; skip duplicate begin");
+        return true;
+    }
+    if (attemptExpired) {
+        Serial.println("[WIFI] Previous connection attempt expired; resetting station");
+        WiFi.disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+    Serial.println("[WIFI] Station connection started");
     return true;
 }
 
@@ -2916,6 +2960,10 @@ bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs) {
 bool discoverServer() {
     if (WiFi.status() != WL_CONNECTED) return false;
     if (server_host.length() > 0) return true;
+
+    Serial.printf("[NET] Discovery local=%s gateway=%s configured=%s:%u\n",
+        WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
+        configuredServerIp.toString().c_str(), SERVER_PORT);
 
     if (configuredServerIpValid) {
         if (probeElotoServer(configuredServerIp, 1200)) return true;
