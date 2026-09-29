@@ -14,6 +14,70 @@ function generateDeviceToken() {
   return 'ELOTO-' + crypto.randomBytes(16).toString('hex').toUpperCase();
 }
 
+const MAX_DEVICE_STATUS_BYTES = 64 * 1024;
+
+function isPrivateIpv4(ip) {
+  if (isIP(ip) !== 4) return false;
+  const [a, b] = ip.split('.').map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+function databaseProbeData(box) {
+  let hardware = {};
+  try { hardware = JSON.parse(box.hw_data || '{}') || {}; } catch { /* Invalid snapshots have no trusted GPS fix. */ }
+  const online = Number(box.is_online) === 1;
+  const gpsFix = online && hardware.gps_fix === true && box.lat != null && box.lng != null &&
+    Number.isFinite(Number(box.lat)) && Math.abs(Number(box.lat)) <= 90 &&
+    Number.isFinite(Number(box.lng)) && Math.abs(Number(box.lng)) <= 180;
+  return {
+    id_box: box.id_box, ip: box.ip, is_online: online ? 1 : 0, last_ping: box.last_ping,
+    lat: gpsFix ? Number(box.lat) : null, lng: gpsFix ? Number(box.lng) : null,
+    gps_fix: gpsFix, state: online ? box.state : null, wifi_connected: online,
+    stale: !online, source: 'database'
+  };
+}
+
+async function readRegisteredDeviceStatus(box) {
+  const response = await fetch(`http://${box.ip}/status`, {
+    headers: { Accept: 'application/json' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(3000)
+  });
+  if (!response.ok) throw new Error(`Device status HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_DEVICE_STATUS_BYTES) {
+    throw new Error('Device status is too large');
+  }
+  const text = await response.text();
+  if (Buffer.byteLength(text, 'utf8') > MAX_DEVICE_STATUS_BYTES) throw new Error('Device status is too large');
+  const status = JSON.parse(text);
+  if (!status || typeof status !== 'object' || Array.isArray(status) || status.id_box !== box.id_box) {
+    throw new Error('Device identity mismatch');
+  }
+
+  const latitude = Number(status.lat);
+  const longitude = Number(status.lng ?? status.lon);
+  const gpsFix = status.gps_fix === true && Number.isFinite(latitude) && Math.abs(latitude) <= 90 &&
+    Number.isFinite(longitude) && Math.abs(longitude) <= 180 && (latitude !== 0 || longitude !== 0);
+  const state = typeof status.state === 'string' && status.state.length <= 50 ? status.state : box.state;
+  const lcd0 = typeof status.lcd0 === 'string' ? status.lcd0.slice(0, 100) : '';
+  const lcd1 = typeof status.lcd1 === 'string' ? status.lcd1.slice(0, 100) : '';
+  const uptime = Number.isFinite(Number(status.uptime_ms)) && Number(status.uptime_ms) >= 0 ? Number(status.uptime_ms) : 0;
+  const hardware = JSON.stringify(status);
+
+  await pool.query(`UPDATE boxes SET state = ?, lat = COALESCE(?, lat), lng = COALESCE(?, lng),
+    lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, is_online = 1,
+    last_ping = NOW(), updated_at = NOW() WHERE id_box = ? AND ip = ?`,
+  [state, gpsFix ? latitude : null, gpsFix ? longitude : null, lcd0, lcd1,
+    Number(Boolean(status.relay_open)), uptime, hardware, box.id_box, box.ip]);
+
+  return {
+    id_box: box.id_box, ip: box.ip, is_online: 1, last_ping: new Date().toISOString(),
+    lat: gpsFix ? latitude : null, lng: gpsFix ? longitude : null, gps_fix: gpsFix,
+    state, wifi_connected: true, stale: false, source: 'device'
+  };
+}
+
 const boxController = {
   // 1. Mengambil semua data box
   getAllBoxes: async (req, res) => {
@@ -252,11 +316,12 @@ const boxController = {
     } catch (error) { next(error); }
   },
 
-  // Read an authenticated telemetry snapshot; never fetch a user-supplied address.
+  // Pull a registered private-LAN device, falling back to its authenticated telemetry snapshot.
   probeDevice: async (req, res, next) => {
     try {
       const ip = String(req.params.ip || '').trim();
       if (!isIP(ip)) return res.status(400).json({ success: false, message: 'IP address tidak valid.' });
+      if (!isPrivateIpv4(ip)) return res.status(400).json({ success: false, message: 'IP boks harus berada di jaringan private.' });
       const [rows] = await pool.query(`SELECT id_box, ip, state, lat, lng, hw_data, last_ping,
         CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
         FROM boxes WHERE ip = ? LIMIT 2`, [ip]);
@@ -274,23 +339,18 @@ const boxController = {
             state: null,
             wifi_connected: false,
             stale: true,
+            source: 'database',
             message: 'Belum ada telemetri untuk IP ini.'
           }
         });
       }
       if (rows.length > 1) return res.status(409).json({ success: false, message: 'IP dipakai lebih dari satu boks.' });
       const box = rows[0];
-      let hardware = {};
-      try { hardware = JSON.parse(box.hw_data || '{}') || {}; } catch { /* Invalid snapshots have no trusted GPS fix. */ }
-      const online = Number(box.is_online) === 1;
-      const gpsFix = online && hardware.gps_fix === true && box.lat != null && box.lng != null &&
-        Number.isFinite(Number(box.lat)) && Math.abs(Number(box.lat)) <= 90 &&
-        Number.isFinite(Number(box.lng)) && Math.abs(Number(box.lng)) <= 180;
-      return res.json({ success: true, data: {
-        id_box: box.id_box, ip: box.ip, is_online: online ? 1 : 0, last_ping: box.last_ping,
-        lat: gpsFix ? Number(box.lat) : null, lng: gpsFix ? Number(box.lng) : null,
-        gps_fix: gpsFix, state: online ? box.state : null, wifi_connected: online, stale: !online
-      } });
+      try {
+        return res.json({ success: true, data: await readRegisteredDeviceStatus(box) });
+      } catch {
+        return res.json({ success: true, data: databaseProbeData(box) });
+      }
     } catch (error) { next(error); }
   },
 

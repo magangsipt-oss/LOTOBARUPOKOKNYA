@@ -59,39 +59,67 @@ test('box registration accepts empty GPS fields as unknown and rejects invalid c
   }
 });
 
-test('GPS lookup only uses a known, fresh authenticated snapshot, with no outbound requests', async () => {
-  const checkNetwork = noNetwork();
+test('GPS lookup pulls and persists live status only for a registered private box IP', async () => {
+  let updated = false;
   pool.query = async (sql, args) => {
-    assert.match(sql, /FROM boxes WHERE ip = \? LIMIT 2/);
-    assert.deepEqual(args, ['192.168.1.20']);
-    return [[{ id_box: 'box-1', ip: args[0], state: 'STATE_IDLE', lat: '-1.25', lng: '117.5',
-      hw_data: '{"gps_fix":true}', is_online: 1, last_ping: new Date() }]];
+    if (sql.includes('FROM boxes WHERE ip = ? LIMIT 2')) {
+      assert.deepEqual(args, ['192.168.1.20']);
+      return [[{ id_box: 'box-1', ip: args[0], state: 'STATE_IDLE', lat: null, lng: null,
+        hw_data: null, is_online: 0, last_ping: null }]];
+    }
+    assert.match(sql, /UPDATE boxes SET/);
+    assert.equal(args.at(-2), 'box-1');
+    assert.equal(args.at(-1), '192.168.1.20');
+    updated = true;
+    return [{ affectedRows: 1 }];
+  };
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, 'http://192.168.1.20/status');
+    assert.equal(options.redirect, 'error');
+    assert.ok(options.signal);
+    return {
+      ok: true,
+      headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+      text: async () => JSON.stringify({ id_box: 'box-1', ip: '192.168.1.20', state: 'WAIT_SPV',
+        lat: -1.25, lng: 117.5, gps_fix: true, wifi_connected: true, relay_open: false,
+        uptime_ms: 1234, queue: [] })
+    };
   };
   const res = response();
   await boxController.probeDevice({ params: { ip: '192.168.1.20' } }, res, error => { throw error; });
   assert.equal(res.body.data.gps_fix, true);
   assert.equal(res.body.data.lat, -1.25);
   assert.equal(res.body.data.id_box, 'box-1');
-  checkNetwork();
+  assert.equal(res.body.data.source, 'device');
+  assert.equal(updated, true);
 });
 
-test('GPS lookup reports unknown IP, duplicate IP, offline and invalid snapshots explicitly', async () => {
+test('GPS lookup never contacts unknown, duplicate or non-private addresses', async () => {
   const checkNetwork = noNetwork();
   for (const [rows, status] of [[[], 200], [[{}, {}], 409]]) {
     pool.query = async () => [rows];
     const res = response();
-    await boxController.probeDevice({ params: { ip: '127.0.0.1' } }, res, error => { throw error; });
+    await boxController.probeDevice({ params: { ip: '192.168.1.99' } }, res, error => { throw error; });
     assert.equal(res.statusCode, status);
   }
+  pool.query = async () => [[{ id_box: 'box-1', ip: '127.0.0.1' }]];
+  const blocked = response();
+  await boxController.probeDevice({ params: { ip: '127.0.0.1' } }, blocked, error => { throw error; });
+  assert.equal(blocked.statusCode, 400);
+  checkNetwork();
+});
+
+test('GPS lookup falls back to the database when a registered ESP is unreachable or invalid', async () => {
   for (const snapshot of [{ is_online: 0, hw_data: '{"gps_fix":true}' }, { is_online: 1, hw_data: 'broken-json' }]) {
-    pool.query = async () => [[{ id_box: 'box-1', lat: 1, lng: 117, ...snapshot }]];
+    pool.query = async () => [[{ id_box: 'box-1', ip: '192.168.1.20', lat: 1, lng: 117, ...snapshot }]];
+    globalThis.fetch = async () => { throw new Error('device unavailable'); };
     const res = response();
-    await boxController.probeDevice({ params: { ip: '127.0.0.1' } }, res, error => { throw error; });
+    await boxController.probeDevice({ params: { ip: '192.168.1.20' } }, res, error => { throw error; });
     assert.equal(res.body.data.gps_fix, false);
     assert.equal(res.body.data.lat, null);
     assert.equal(res.body.data.lng, null);
+    assert.equal(res.body.data.source, 'database');
   }
-  checkNetwork();
 });
 
 test('deleting a box clears stale active sessions instead of rejecting the delete', async () => {
