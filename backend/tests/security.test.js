@@ -99,6 +99,18 @@ test('device tokens are scoped to their own box and cannot administer accounts',
   assert.equal((await call('/api/users',{method:'POST',headers,body:'{}'})).status,403);
   assert.equal((await call('/api/boxes/BOX%20ELOTO%201/telemetry',{method:'POST',headers,body:'{}'})).status,400);
 });
+test('device telemetry diagnostics log HTTP outcome and event name without card identifiers', async t => {
+  const messages = [];
+  t.mock.method(console, 'info', message => messages.push(message));
+  const headers = {'X-Device-Token':deviceToken,'Content-Type':'application/json'};
+  const response = await call('/api/boxes/BOX%20ELOTO%201/telemetry', {
+    method: 'POST', headers, body: JSON.stringify({ event: 'MECHANIC_LOG_IN', uid: 'private-card-id' })
+  });
+  assert.equal(response.status, 400);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(messages.some(message => message === '[DEVICE_TELEMETRY] HTTP 400 event=MECHANIC_LOG_IN'));
+  assert.ok(messages.every(message => !message.includes('private-card-id')));
+});
 test('unknown device tokens cannot claim unconfigured boxes or register new boxes', async () => {
   const query = pool.query;
   const queries = [];

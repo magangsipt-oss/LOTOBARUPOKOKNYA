@@ -135,8 +135,10 @@ export default function Dashboard() {
       if (!coordinates) return;
       const [bLat, bLng] = coordinates;
       currentMarkerKeys.add(box.id);
+      const isOnline = Number(box.is_online) === 1;
+      const liveGps = isOnline && box.gps_fix === true;
       const isBoxLocked = box.state && box.state !== 'STATE_IDLE' && box.state !== 'STATE_REGISTER_RFID';
-      const markerColor = isBoxLocked ? '#ef4444' : (box.state === 'STATE_REGISTER_RFID' ? '#2563eb' : '#22c55e');
+      const markerColor = !isOnline ? '#64748b' : isBoxLocked ? '#ef4444' : (box.state === 'STATE_REGISTER_RFID' ? '#2563eb' : '#22c55e');
       const customIcon = L.divIcon({
         className: 'custom-gps-marker',
         html: `<svg width="30" height="42" viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 0C5.37 0 0 5.37 0 12C0 21 12 32 12 32C12 32 24 21 24 12C24 5.37 18.63 0 12 0ZM12 16C9.79 16 8 14.21 8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12C16 14.21 14.21 16 12 16Z" fill="${markerColor}"/></svg>`,
@@ -147,7 +149,7 @@ export default function Dashboard() {
         const addressText = geoAddressCacheRef.current[cacheKey];
         let locationHtml = `<div id="geo-${escapeHtml(bId)}" class="text-[10px] text-slate-600 mt-1 font-mono"><i class="fa-solid fa-location-crosshairs text-red-500"></i> Koordinat: ${lat.toFixed(5)}, ${lng.toFixed(5)}</div>`;
         if (addressText) locationHtml = `<div id="geo-${escapeHtml(bId)}" class="text-[10px] text-slate-700 font-semibold mt-1"><i class="fa-solid fa-map-pin text-red-500"></i> ${escapeHtml(addressText)}</div>`;
-        return `<b>${escapeHtml(bId)}</b><br>Unit: ${escapeHtml(bUnit)}<br>Status: ${escapeHtml(bState || 'STATE_IDLE')}<br>${locationHtml}`;
+        return `<b>${escapeHtml(bId)}</b><br>Unit: ${escapeHtml(bUnit)}<br>Status: ${escapeHtml(bState || 'STATE_IDLE')}<br>Perangkat: ${isOnline ? 'ONLINE' : 'OFFLINE'}<br>GPS: ${liveGps ? 'FIX TERKINI' : 'POSISI TERAKHIR / TERSIMPAN'}<br>${locationHtml}`;
       };
 
       if (markersRef.current[box.id]) {
@@ -265,6 +267,7 @@ export default function Dashboard() {
             <span className="text-slate-500 font-bold">RADAR TARGET: </span>
             <span className="text-slate-950 font-black">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : 'Belum Ada Boks'}</span>
             <span className="ml-2 text-blue-600 font-bold">[<i className="fa-solid fa-wifi text-[10px] mr-1"></i>SSID: {isHwOnline ? (selectedBox?.ssid || hwData.ssid || 'Wi-Fi Hotspot') : 'OFFLINE'}]</span>
+            <span className={`ml-2 font-bold ${hwData.telemetry_online ? 'text-green-700' : 'text-amber-700'}`}>[TAP/SYNC: {hwData.telemetry_online ? 'TERSAMBUNG' : 'BELUM MASUK' }]</span>
           </div>
         </div>
         <div className="flex items-center gap-2">

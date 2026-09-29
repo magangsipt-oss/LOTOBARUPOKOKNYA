@@ -88,6 +88,7 @@ export function AppProvider({ children }) {
   const excelFileInputRef = useRef(null);
   const selectedBoxIdRef = useRef(null);
   const gpsRequestRef = useRef(0);
+  const deviceProbeRef = useRef({ id: '', at: 0, status: null });
 
   // Form states
   const [formData, setFormData] = useState({ sid: '', password: '' });
@@ -365,7 +366,36 @@ export function AppProvider({ children }) {
       try {
         const resultAset = await boxService.getAllBoxes();
         if (!active) return;
-        const dataAset = resultAset.data || resultAset;
+        let dataAset = resultAset.data || resultAset;
+        if (Array.isArray(dataAset) && dataAset.length) {
+          const probeBox = dataAset.find(box => boxKey(box.id_box || box.id) === boxKey(selectedBoxIdRef.current)) || dataAset[0];
+          const probeId = boxKey(probeBox.id_box || probeBox.id);
+          const probeIp = deviceHost(probeBox.ip);
+          const privateIp = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})$/.test(probeIp);
+          const probeDue = deviceProbeRef.current.id !== probeId || Date.now() - deviceProbeRef.current.at >= 15000;
+          if (probeId && privateIp && !boxIsOnline(probeBox) && probeDue) {
+            deviceProbeRef.current = { ...deviceProbeRef.current, id: probeId, at: Date.now() };
+            try {
+              const { data: probeResult } = await api.get(`/boxes/probe/${encodeURIComponent(probeIp)}`, { timeout: 4000 });
+              if (!active) return;
+              if (probeResult.success && probeResult.data?.source === 'device') {
+                deviceProbeRef.current.status = probeResult.data;
+              }
+            } catch { /* Keep the database snapshot when the device is unreachable. */ }
+          }
+          const liveStatus = deviceProbeRef.current.id === probeId && Date.now() - deviceProbeRef.current.at < 20000
+            ? deviceProbeRef.current.status
+            : null;
+          if (liveStatus) {
+            dataAset = dataAset.map(box => boxKey(box.id_box || box.id) === probeId ? {
+              ...box,
+              ...liveStatus,
+              id: box.id_box || box.id,
+              id_box: box.id_box || box.id,
+              hw_data: liveStatus.hw_data || box.hw_data
+            } : box);
+          }
+        }
         const dataMapped = Array.isArray(dataAset)
           ? dataAset.map(b => {
             const id_box = b.id_box || b.id;
@@ -373,6 +403,10 @@ export function AppProvider({ children }) {
             if (b.hw_data) { try { extraHw = typeof b.hw_data === 'string' ? JSON.parse(b.hw_data) : b.hw_data; } catch {} }
             const realLat = (b.lat && !isNaN(Number(b.lat)) && Number(b.lat) !== 0) ? Number(b.lat) : (extraHw.lat ? Number(extraHw.lat) : 0);
             const realLng = (b.lng && !isNaN(Number(b.lng)) && Number(b.lng) !== 0) ? Number(b.lng) : ((b.lon && !isNaN(Number(b.lon)) && Number(b.lon) !== 0) ? Number(b.lon) : (extraHw.lng || extraHw.lon ? Number(extraHw.lng || extraHw.lon) : 0));
+            const telemetryLastPing = b.telemetry_last_ping ?? b.last_ping;
+            const telemetryOnline = b.telemetry_online == null
+              ? boxIsOnline(b)
+              : Number(b.telemetry_online) === 1 && timestampIsFresh(telemetryLastPing, TELEMETRY_MAX_AGE_MS);
             if (realLat !== 0 && realLng !== 0) {
               const oldCoords = lastKnownCoordsRef.current[id_box];
               if (oldCoords) {
@@ -381,7 +415,7 @@ export function AppProvider({ children }) {
               }
               lastKnownCoordsRef.current[id_box] = { lat: realLat, lng: realLng };
             }
-            return { ...extraHw, ...b, is_online: boxIsOnline(b) ? 1 : 0, id: id_box, id_box: id_box, lat: realLat, lng: realLng, lon: realLng };
+            return { ...extraHw, ...b, is_online: b.source === 'device' || boxIsOnline(b) ? 1 : 0, telemetry_online: telemetryOnline ? 1 : 0, telemetry_last_ping: telemetryLastPing, id: id_box, id_box: id_box, lat: realLat, lng: realLng, lon: realLng };
           })
           : [];
 
@@ -950,7 +984,7 @@ export function AppProvider({ children }) {
     }
     logsYgDitampilkan.forEach((l, i) => {
       const eventLower = String(l.event || '').toLowerCase();
-      const isValidTappingEvent = /^(supervisor_lock_in|supervisor_log_out|mechanic_log_in|mechanic_log_out|refuel_start|refuel_end)$/i.test(String(l.event || '').trim());
+      const isValidTappingEvent = /^(supervisor_lock_in|supervisor_extra_lock_in|supervisor_log_out|supervisor_extra_log_out|mechanic_log_in|mechanic_log_out|refuel_start|refuel_end)$/i.test(String(l.event || '').trim());
       if (!isValidTappingEvent || isAdminUidLocal(l.uid)) return;
       const isOut = eventLower.includes('out') || eventLower.includes('keluar');
       const isIn = eventLower.includes('in') || eventLower.includes('masuk');

@@ -225,8 +225,8 @@ test('all ESP32 telemetry payload shapes pass validateTelemetry', () => {
 // Event type classification
 // ============================================================================
 test('eventType maps ESP32 events correctly', () => {
-  const inEvents = ['SUPERVISOR_LOCK_IN', 'MECHANIC_LOG_IN', 'REFUEL_START'];
-  const outEvents = ['SUPERVISOR_LOG_OUT', 'MECHANIC_LOG_OUT', 'REFUEL_END'];
+  const inEvents = ['SUPERVISOR_LOCK_IN', 'SUPERVISOR_EXTRA_LOCK_IN', 'MECHANIC_LOG_IN', 'REFUEL_START'];
+  const outEvents = ['SUPERVISOR_LOG_OUT', 'SUPERVISOR_EXTRA_LOG_OUT', 'MECHANIC_LOG_OUT', 'REFUEL_END'];
   const checkEvents = ['HEARTBEAT_SYNC', 'REGISTER_NEW_CARD', 'GPS_FIX_LOCKED',
     'WIFI_CONNECTED', 'SCAN_REJECTED_UNREGISTERED', 'SCAN_REJECTED_DUPLICATE',
     'SCAN_REJECTED_NOT_SPV', 'SESSION_CLOSED_NORMAL', 'HARDWARE_HARD_RESET'];
@@ -238,6 +238,8 @@ test('eventType maps ESP32 events correctly', () => {
 
 test('isTap returns true for IN/OUT events, false for CHECK', () => {
   assert.equal(isTap('SUPERVISOR_LOCK_IN'), true);
+  assert.equal(isTap('SUPERVISOR_EXTRA_LOCK_IN'), true);
+  assert.equal(isTap('SUPERVISOR_EXTRA_LOG_OUT'), true);
   assert.equal(isTap('MECHANIC_LOG_OUT'), true);
   assert.equal(isTap('REFUEL_START'), true);
   assert.equal(isTap('REFUEL_END'), true);

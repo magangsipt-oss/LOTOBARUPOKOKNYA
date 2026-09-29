@@ -26,6 +26,8 @@ export function boxHardwareSnapshot(box) {
     active_fuelman: boksTerbaru.active_fuelman || '',
     last_uid: boksTerbaru.last_uid || '—',
     wifi_connected: isSmoothOnline,
+    telemetry_online: boksTerbaru.telemetry_online == null ? isSmoothOnline : Number(boksTerbaru.telemetry_online) === 1,
+    telemetry_last_ping: boksTerbaru.telemetry_last_ping || boksTerbaru.last_ping || null,
     queue: queueFinal,
     audit_log: boksTerbaru.audit_log || [],
     uptime_ms: Number(boksTerbaru.uptime_ms || 0),

@@ -2249,111 +2249,148 @@ void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
 void uploadOfflineLogsSDCard() {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
     if (ESP.getFreeHeap() < 30000) return;
-    if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
 
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
+    const uint8_t MAX_OFFLINE_BATCH = 1;
+    String lines[MAX_OFFLINE_BATCH];
+    size_t lineEnds[MAX_OFFLINE_BATCH] = {};
+    uint8_t lineCount = 0;
+
+    if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
     if (recoverSdFile(active, temporary, backup) && SD.exists(active)) {
         File logFile = SD.open(active, FILE_READ);
         if (logFile) {
-            File pendingFile = SD.open(temporary, FILE_WRITE);
-            if (pendingFile) {
-                bool stopped = false;
-                bool writeOk = true;
-                size_t pendingBytes = 0;
-                while (logFile.available()) {
-                    String line = logFile.readStringUntil('\n');
-                    line.trim();
-                    if (line.length() == 0) continue;
-
-                    if (!stopped) {
-                        int p1 = line.indexOf(',');
-                        int p2 = p1 >= 0 ? line.indexOf(',', p1 + 1) : -1;
-                        int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
-                        if (p1 > 0 && p2 > p1 + 1) {
-                            String eventId = line.substring(0, p1);
-                            String event = line.substring(p1 + 1, p2);
-                            String uid = line.substring(p2 + 1, p3 >= 0 ? p3 : line.length());
-                            int p4 = p3 >= 0 ? line.indexOf(',', p3 + 1) : -1;
-                            String latitude = p3 >= 0 ? line.substring(p3 + 1, p4 >= 0 ? p4 : line.length()) : "";
-                            String longitude = p4 >= 0 ? line.substring(p4 + 1) : "";
-                            uid.trim(); latitude.trim(); longitude.trim();
-
-                            bool legacyId = eventId.length() > 0;
-                            for (size_t i = 0; i < eventId.length(); i++) {
-                                if (eventId[i] < '0' || eventId[i] > '9') legacyId = false;
-                            }
-                            if (legacyId) {
-                                uint32_t hash = 2166136261UL;
-                                for (size_t i = 0; i < line.length(); i++) {
-                                    hash = (hash ^ (uint8_t)line[i]) * 16777619UL;
-                                }
-                                eventId = "legacy-" + getDeviceId() + "-" + String(hash, HEX);
-                            }
-
-                            DynamicJsonDocument doc(512);
-                            doc["event_id"] = eventId;
-                            doc["id_box"] = getDeviceId();
-                            doc["event"] = event;
-                            doc["uid"] = uid;
-                            doc["last_uid"] = uid;
-                            doc["is_tap"] = isTapEventName(event);
-                            doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
-                            doc["is_online"] = true;
-                            if (latitude.length() > 0 && longitude.length() > 0) {
-                                doc["lat"] = latitude.toDouble();
-                                doc["lon"] = longitude.toDouble();
-                                doc["lng"] = longitude.toDouble();
-                                doc["gps_fix"] = true;
-                            }
-                            if (doc.overflowed()) {
-                                // skip
-                            } else {
-                                String payload; serializeJson(doc, payload);
-                                // Lepas SD mutex selama request HTTP
-                                giveSd();
-                                WiFiClient client; client.setTimeout(2000);
-                                HTTPClient http;
-                                http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
-                                http.addHeader("Content-Type", "application/json");
-                                http.addHeader("X-Device-Token", device_token);
-                                http.setTimeout(3000);
-                                int httpCode = http.POST(payload);
-                                http.end();
-                                takeSd(portMAX_DELAY);
-                                if (httpCode >= 200 && httpCode < 300) {
-                                    continue;
-                                }
-                            }
-                        }
-                        stopped = true;
-                    }
-
-                    if (pendingFile.print(line) != line.length() || pendingFile.write('\n') != 1) {
-                        writeOk = false;
-                        break;
-                    }
-                    pendingBytes += line.length() + 1;
-                }
-                pendingFile.flush();
-                pendingFile.close();
-                logFile.close();
-
-                File verifyFile = SD.open(temporary, FILE_READ);
-                bool valid = writeOk && verifyFile && verifyFile.size() == pendingBytes;
-                if (verifyFile) verifyFile.close();
-                if (valid) {
-                    if (pendingBytes == 0) {
-                        if (SD.remove(active)) SD.remove(temporary);
-                    } else {
-                        commitSdFile(active, temporary, backup);
-                    }
-                }
-            } else {
-                logFile.close();
+            while (logFile.available() && lineCount < MAX_OFFLINE_BATCH) {
+                size_t lineStart = logFile.position();
+                String line = logFile.readStringUntil('\n');
+                size_t lineEnd = logFile.position();
+                line.trim();
+                if (lineEnd <= lineStart || line.length() > 512) break;
+                lines[lineCount] = line;
+                lineEnds[lineCount] = lineEnd;
+                lineCount++;
             }
+            logFile.close();
         }
+    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
+    if (lineCount == 0) return;
+
+    size_t acknowledgedBytes = 0;
+    for (uint8_t i = 0; i < lineCount; i++) {
+        String line = lines[i];
+        if (line.length() == 0) {
+            acknowledgedBytes = lineEnds[i];
+            continue;
+        }
+
+        int p1 = line.indexOf(',');
+        int p2 = p1 >= 0 ? line.indexOf(',', p1 + 1) : -1;
+        int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
+        if (p1 <= 0 || p2 <= p1 + 1) {
+            Serial.println("[SYNC] Offline record invalid; retry held");
+            break;
+        }
+
+        String eventId = line.substring(0, p1);
+        String event = line.substring(p1 + 1, p2);
+        String uid = line.substring(p2 + 1, p3 >= 0 ? p3 : line.length());
+        int p4 = p3 >= 0 ? line.indexOf(',', p3 + 1) : -1;
+        String latitude = p3 >= 0 ? line.substring(p3 + 1, p4 >= 0 ? p4 : line.length()) : "";
+        String longitude = p4 >= 0 ? line.substring(p4 + 1) : "";
+        uid.trim(); latitude.trim(); longitude.trim();
+
+        bool legacyId = eventId.length() > 0;
+        for (size_t j = 0; j < eventId.length(); j++) {
+            if (eventId[j] < '0' || eventId[j] > '9') legacyId = false;
+        }
+        if (legacyId) {
+            uint32_t hash = 2166136261UL;
+            for (size_t j = 0; j < line.length(); j++) {
+                hash = (hash ^ (uint8_t)line[j]) * 16777619UL;
+            }
+            eventId = "legacy-" + getDeviceId() + "-" + String(hash, HEX);
+        }
+
+        DynamicJsonDocument doc(512);
+        doc["event_id"] = eventId;
+        doc["id_box"] = getDeviceId();
+        doc["event"] = event;
+        doc["uid"] = uid;
+        doc["last_uid"] = uid;
+        doc["is_tap"] = isTapEventName(event);
+        doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
+        doc["is_online"] = true;
+        doc["replay"] = true;
+        if (latitude.length() > 0 && longitude.length() > 0) {
+            doc["lat"] = latitude.toDouble();
+            doc["lon"] = longitude.toDouble();
+            doc["lng"] = longitude.toDouble();
+            doc["gps_fix"] = true;
+        }
+        if (doc.overflowed()) {
+            Serial.println("[SYNC] Offline payload overflow; retry held");
+            break;
+        }
+
+        String payload;
+        serializeJson(doc, payload);
+        WiFiClient client; client.setTimeout(2000);
+        HTTPClient http;
+        http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("X-Device-Token", device_token);
+        http.setTimeout(3000);
+        int httpCode = http.POST(payload);
+        http.end();
+        Serial.printf("[TELEMETRY_RETRY] HTTP %d event=%s\n", httpCode, event.c_str());
+        if (httpCode >= 200 && httpCode < 300) acknowledgedBytes = lineEnds[i];
+        else break;
+    }
+
+    if (acknowledgedBytes == 0 || takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return;
+    File source = SD.open(active, FILE_READ);
+    size_t sourceSize = source ? source.size() : 0;
+    bool writeOk = source && acknowledgedBytes <= sourceSize && source.seek(acknowledgedBytes);
+    size_t copiedBytes = 0;
+    if (writeOk) {
+        if (SD.exists(temporary) && !SD.remove(temporary)) writeOk = false;
+        File pendingFile;
+        if (writeOk) pendingFile = SD.open(temporary, FILE_WRITE);
+        if (!pendingFile) writeOk = false;
+        uint8_t buffer[256];
+        while (writeOk && source.available()) {
+            size_t readBytes = source.read(buffer, sizeof(buffer));
+            if (readBytes == 0 || pendingFile.write(buffer, readBytes) != readBytes) {
+                writeOk = false;
+                break;
+            }
+            copiedBytes += readBytes;
+        }
+        if (pendingFile) {
+            pendingFile.flush();
+            pendingFile.close();
+        }
+    }
+    if (source) source.close();
+
+    size_t expectedBytes = sourceSize >= acknowledgedBytes ? sourceSize - acknowledgedBytes : 0;
+    File verifyFile;
+    if (writeOk) verifyFile = SD.open(temporary, FILE_READ);
+    bool valid = writeOk && copiedBytes == expectedBytes &&
+        (expectedBytes == 0 || (verifyFile && verifyFile.size() == expectedBytes));
+    if (verifyFile) verifyFile.close();
+    if (valid) {
+        if (expectedBytes == 0) {
+            if (SD.remove(active)) SD.remove(temporary);
+        } else {
+            commitSdFile(active, temporary, backup);
+        }
+    } else if (SD.exists(temporary)) {
+        SD.remove(temporary);
     }
     digitalWrite(SD_CS_PIN, HIGH);
     giveSd();
@@ -2442,6 +2479,7 @@ void networkTaskCore0(void * pvParameters) {
     unsigned long lastDbSyncTask    = 0;
     unsigned long lastBlePresenceTask = 0;
     unsigned long lastReconnectAttempt = 0;
+    unsigned long lastOfflineUploadTask = 0;
     bool wasWifiConnected = (WiFi.status() == WL_CONNECTED);
     uint8_t heartbeatFailCount = 0;
     bool initialHeartbeatSent = false;
@@ -2456,13 +2494,6 @@ void networkTaskCore0(void * pvParameters) {
 
             if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 25000) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
-                WiFiClient client; client.setTimeout(2000);
-                HTTPClient http;
-                http.begin(client, url);
-                http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
-                http.addHeader("Content-Type", "application/json");
-                http.addHeader("X-Device-Token", device_token);
-                http.setTimeout(3000);
 
                 DynamicJsonDocument doc(2048);
                 String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
@@ -2518,8 +2549,23 @@ void networkTaskCore0(void * pvParameters) {
                     o["uid"]  = safetyQueue.workers[i].uid; o["name"] = safetyQueue.workers[i].name; o["role"] = safetyQueue.workers[i].role;
                 }
                 String jsonPayload; serializeJson(doc, jsonPayload);
-                int httpCode = http.POST(jsonPayload);
-                http.end();
+                int httpCode = -1;
+                for (uint8_t attempt = 1; attempt <= 3; attempt++) {
+                    WiFiClient retryClient; retryClient.setTimeout(2000);
+                    HTTPClient retryHttp;
+                    if (retryHttp.begin(retryClient, url)) {
+                        retryHttp.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
+                        retryHttp.addHeader("Content-Type", "application/json");
+                        retryHttp.addHeader("X-Device-Token", device_token);
+                        retryHttp.setTimeout(3000);
+                        httpCode = retryHttp.POST(jsonPayload);
+                        retryHttp.end();
+                    }
+                    Serial.printf("[TELEMETRY] HTTP %d event=%s try=%u\n", httpCode, job.event, attempt);
+                    if (httpCode >= 200 && httpCode < 300) break;
+                    if (httpCode >= 400 && httpCode < 500) break;
+                    if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(250 * attempt));
+                }
 
                 if (httpCode >= 200 && httpCode < 300) {
                     heartbeatFailCount = 0;
@@ -2592,6 +2638,14 @@ void networkTaskCore0(void * pvParameters) {
             if (WiFi.status() == WL_CONNECTED) {
                 logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
             }
+        }
+
+        if (millis() > 60000 && millis() - lastOfflineUploadTask >= 30000 &&
+            WiFi.status() == WL_CONNECTED && sdCardMounted && sdSyncOk &&
+            !relayPulseActive && networkQueue != NULL &&
+            uxQueueMessagesWaiting(networkQueue) == 0 && ESP.getFreeHeap() > 30000) {
+            lastOfflineUploadTask = millis();
+            uploadOfflineLogsSDCard();
         }
         vTaskDelay(pdMS_TO_TICKS(15));
     }

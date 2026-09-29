@@ -40,3 +40,15 @@ test('firmware declares custom GPS return type before Arduino prototype generati
 
   assert.match(source, /struct GpsSnapshot \{[^}]+\};\s*GpsSnapshot readGpsSnapshot\(\);/);
 });
+
+test('firmware retries SD event records with byte-accurate acknowledgement', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+
+  assert.match(source, /\[TELEMETRY\] HTTP %d event=%s try=%u/);
+  assert.match(source, /\[TELEMETRY_RETRY\] HTTP %d event=%s/);
+  assert.match(source, /source\.seek\(acknowledgedBytes\)/);
+  assert.match(source, /copiedBytes == expectedBytes/);
+  assert.match(source, /MAX_OFFLINE_BATCH = 1/);
+  assert.match(source, /millis\(\) > 60000[\s\S]{0,400}sdSyncOk[\s\S]{0,250}uploadOfflineLogsSDCard\(\)/);
+});

@@ -87,6 +87,18 @@ export function createApp() {
   });
   app.get('/', (_req, res) => res.json({ success: true, service: 'E-LOTO' }));
 
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && /^\/api\/boxes\/[^/]+\/telemetry\/?$/.test(req.path)) {
+      res.on('finish', () => {
+        const event = typeof req.body?.event === 'string' && /^[A-Z_]{1,100}$/i.test(req.body.event)
+          ? req.body.event
+          : 'UNKNOWN';
+        console.info(`[DEVICE_TELEMETRY] HTTP ${res.statusCode} event=${event}`);
+      });
+    }
+    next();
+  });
+
   app.use('/api', authentication);
   // Independent budgets per authenticated principal; polling clients behind one NAT do not share a quota.
   app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300,

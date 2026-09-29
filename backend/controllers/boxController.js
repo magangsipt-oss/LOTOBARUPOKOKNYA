@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import crypto from 'node:crypto';
 import BoxModel from '../models/boxModel.js';
 import pool from '../config/database.js';
-import { validateTelemetry } from '../domain/telemetry.js';
+import { TELEMETRY_ONLINE_WINDOW_SECONDS, validateTelemetry } from '../domain/telemetry.js';
 import { recordTelemetry } from '../models/telemetryModel.js';
 import { validDeviceCredential } from '../security/deviceCredential.js';
 
@@ -33,6 +33,7 @@ function databaseProbeData(box) {
     id_box: box.id_box, ip: box.ip, is_online: online ? 1 : 0, last_ping: box.last_ping,
     lat: gpsFix ? Number(box.lat) : null, lng: gpsFix ? Number(box.lng) : null,
     gps_fix: gpsFix, state: online ? box.state : null, wifi_connected: online,
+    telemetry_online: online ? 1 : 0, telemetry_last_ping: box.last_ping,
     stale: !online, source: 'database'
   };
 }
@@ -63,18 +64,22 @@ async function readRegisteredDeviceStatus(box) {
   const lcd0 = typeof status.lcd0 === 'string' ? status.lcd0.slice(0, 100) : '';
   const lcd1 = typeof status.lcd1 === 'string' ? status.lcd1.slice(0, 100) : '';
   const uptime = Number.isFinite(Number(status.uptime_ms)) && Number(status.uptime_ms) >= 0 ? Number(status.uptime_ms) : 0;
-  const hardware = JSON.stringify(status);
+  let previousHardware = {};
+  try { previousHardware = JSON.parse(box.hw_data || '{}') || {}; } catch { /* Ignore malformed saved telemetry. */ }
+  const hardware = JSON.stringify({ ...previousHardware, ...status });
 
   await pool.query(`UPDATE boxes SET state = ?, lat = COALESCE(?, lat), lng = COALESCE(?, lng),
-    lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, is_online = 1,
-    last_ping = NOW(), updated_at = NOW() WHERE id_box = ? AND ip = ?`,
+    lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, updated_at = NOW()
+    WHERE id_box = ? AND ip = ?`,
   [state, gpsFix ? latitude : null, gpsFix ? longitude : null, lcd0, lcd1,
     Number(Boolean(status.relay_open)), uptime, hardware, box.id_box, box.ip]);
 
   return {
-    id_box: box.id_box, ip: box.ip, is_online: 1, last_ping: new Date().toISOString(),
+    id_box: box.id_box, ip: box.ip, is_online: 1, last_ping: box.last_ping,
     lat: gpsFix ? latitude : null, lng: gpsFix ? longitude : null, gps_fix: gpsFix,
-    state, wifi_connected: true, stale: false, source: 'device'
+    state, wifi_connected: true, telemetry_online: Number(box.is_online) === 1 ? 1 : 0,
+    telemetry_last_ping: box.last_ping, device_checked_at: new Date().toISOString(),
+    stale: Number(box.is_online) !== 1, source: 'device', hw_data: hardware
   };
 }
 
@@ -323,7 +328,7 @@ const boxController = {
       if (!isIP(ip)) return res.status(400).json({ success: false, message: 'IP address tidak valid.' });
       if (!isPrivateIpv4(ip)) return res.status(400).json({ success: false, message: 'IP boks harus berada di jaringan private.' });
       const [rows] = await pool.query(`SELECT id_box, ip, state, lat, lng, hw_data, last_ping,
-        CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL 60 SECOND THEN 1 ELSE 0 END AS is_online
+        CASE WHEN is_online = 1 AND last_ping >= NOW() - INTERVAL ${TELEMETRY_ONLINE_WINDOW_SECONDS} SECOND THEN 1 ELSE 0 END AS is_online
         FROM boxes WHERE ip = ? LIMIT 2`, [ip]);
       if (!rows.length) {
         return res.json({

@@ -65,11 +65,16 @@ test('GPS lookup pulls and persists live status only for a registered private bo
     if (sql.includes('FROM boxes WHERE ip = ? LIMIT 2')) {
       assert.deepEqual(args, ['192.168.1.20']);
       return [[{ id_box: 'box-1', ip: args[0], state: 'STATE_IDLE', lat: null, lng: null,
-        hw_data: null, is_online: 0, last_ping: null }]];
+        hw_data: JSON.stringify({ sd_card_ok: true, sd_sync_ok: true, ble_scan_ok: true, ble_tag_count: 3 }), is_online: 0, last_ping: null }]];
     }
     assert.match(sql, /UPDATE boxes SET/);
+    assert.doesNotMatch(sql, /is_online\s*=\s*1|last_ping\s*=\s*NOW\(\)/i);
     assert.equal(args.at(-2), 'box-1');
     assert.equal(args.at(-1), '192.168.1.20');
+    const hardware = JSON.parse(args[7]);
+    assert.equal(hardware.sd_sync_ok, true);
+    assert.equal(hardware.ble_tag_count, 3);
+    assert.equal(hardware.gps_fix, true);
     updated = true;
     return [{ affectedRows: 1 }];
   };
@@ -91,6 +96,10 @@ test('GPS lookup pulls and persists live status only for a registered private bo
   assert.equal(res.body.data.lat, -1.25);
   assert.equal(res.body.data.id_box, 'box-1');
   assert.equal(res.body.data.source, 'device');
+  assert.equal(res.body.data.is_online, 1);
+  assert.equal(res.body.data.telemetry_online, 0);
+  assert.equal(res.body.data.telemetry_last_ping, null);
+  assert.equal(JSON.parse(res.body.data.hw_data).sd_card_ok, true);
   assert.equal(updated, true);
 });
 
