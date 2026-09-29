@@ -20,6 +20,8 @@
 #include <SD.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
+#include "network_secrets.h"
+#include "device_secrets.h"
 
 // ============================================================================
 // DEFINISI WARNA TEMA E-LOTO
@@ -77,15 +79,15 @@
 #define SD_CS_PIN       5
 #define TFT_CS_PIN      15
 #define TOUCH_CS_PIN    21
-String device_id        = "";
+String device_id        = ELOTO_DEVICE_ID;
 
 // ============================================================================
 // KONFIGURASI JARINGAN & SERVER
 // ============================================================================
-String wifi_ssid        = "vivoV29";
-String wifi_password    = "112233445566";
+String wifi_ssid        = ELOTO_NETWORK_SSID;
+String wifi_password    = ELOTO_NETWORK_PASSWORD;
 String server_host      = "";
-String device_token     = "";
+String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const uint16_t SERVER_PORT       = 5002;
 
@@ -602,7 +604,9 @@ void loadConfigFromSD() {
             if (value.length() > 0) device_id = value;
         } else if (line.startsWith("TOKEN=")) {
             String value = line.substring(6); value.trim();
-            if (value.length() > 0) device_token = value;
+            if (value.length() >= 32 && value.length() <= 256 && !value.startsWith("replace-with-")) {
+                device_token = value;
+            }
         } else if (loadWifiFromSd && (line.startsWith("SSID=") || line.startsWith("WIFI_SSID=") || line.startsWith("WIFI_1_SSID="))) {
             wifi_ssid = line.substring(line.indexOf('=') + 1); wifi_ssid.trim();
         } else if (loadWifiFromSd && (line.startsWith("PASS=") || line.startsWith("WIFI_PASSWORD=") || line.startsWith("WIFI_1_PASS="))) {
@@ -4071,6 +4075,7 @@ void loop() {
             mounted = initializeSDCard();
             if (mounted) {
                 sdCardMounted = true;
+                loadConfigFromSD();
             }
             digitalWrite(SD_CS_PIN, HIGH);
             giveSd();

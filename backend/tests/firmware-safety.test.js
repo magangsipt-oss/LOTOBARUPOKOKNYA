@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,4 +22,14 @@ test('firmware host helpers preserve replay identity and reject corrupt restore/
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('firmware keeps device credentials available and reloads SD config after a delayed mount', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+
+  assert.match(source, /#include "device_secrets\.h"/);
+  assert.match(source, /String device_id\s*=\s*ELOTO_DEVICE_ID;/);
+  assert.match(source, /String device_token\s*=\s*ELOTO_DEVICE_TOKEN;/);
+  assert.match(source, /if \(mounted\) \{\s*sdCardMounted = true;\s*loadConfigFromSD\(\);/);
 });
