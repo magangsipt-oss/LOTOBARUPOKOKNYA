@@ -1947,6 +1947,27 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
     needsRedraw = true;
 }
 
+void displayTapGateNotice(const String &instruction) {
+    tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
+    tft.drawRoundRect(14, 54, 452, 204, 8, ELOTO_HEADER);
+    tft.setTextDatum(MC_DATUM);
+    setStoryFont(12);
+    tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+    tft.drawString("TAP BELUM DIPROSES", 240, 92);
+    setStoryFont(9);
+    tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
+    drawTextFit(instruction, 240, 150, 420, ELOTO_TEXT, ELOTO_BG, 9);
+    drawTftFooter("", "");
+
+    waitNotification(NOTIFICATION_ERROR_DURATION);
+
+    pendingRfidUid = "";
+    clearMainScreenArea();
+    clearRfidBuffer();
+    lastRenderedState = STATE_SYSTEM_ERROR;
+    needsRedraw = true;
+}
+
 bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     if (!isFuelmanRole(card.role)) return false;
 
@@ -3918,6 +3939,10 @@ void drawScreen() {
         tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
         drawTextFit("SID      : " + formatSid(safetyQueue.workers[safetyQueue.topIndex].sid), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : PENGAWAS", 190, 180, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        setStoryFont(9);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
+        tft.drawString("TEKAN LANJUT, LALU PILIH JUMLAH MEKANIK", 240, 232);
         drawTftFooter("DAFTAR KARTU", "LANJUT");
         if (!photoAlreadyDrawn) {
             if (!drawPhotoFromAPI(safetyQueue.workers[safetyQueue.topIndex].uid, 20, 92, 150, 150)) {
@@ -3941,6 +3966,9 @@ void drawScreen() {
         tft.drawString(twoDigits(targetMekanikCount), 240, 145);
         setStoryFont(18);
         tft.drawString("ORANG", 240, 205);
+        setStoryFont(9);
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawString("ATUR TARGET, LALU TEKAN LANJUT", 240, 238);
         drawTftFooter("DAFTAR KARTU", "LANJUT");
     }
     else if (currentState == STATE_MEKANIK_IN) {
@@ -4559,6 +4587,14 @@ void loop() {
     if (authUID != "") {
         if (!rfidInputEnabled) {
             clearRfidBuffer();
+            if (currentState == STATE_SUPERVISOR_VALID || currentState == STATE_SET_MEKANIK_COUNT) {
+                lastScannedRfidUID = normalizeRfidUid(authUID);
+                lastScannedRfidTime = millis();
+                buzzFailed();
+                displayTapGateNotice(currentState == STATE_SUPERVISOR_VALID
+                    ? "TEKAN LANJUT, LALU TENTUKAN JUMLAH MEKANIK"
+                    : "ATUR TARGET MEKANIK, LALU TEKAN LANJUT");
+            }
         } else {
             bool sameCard = authUID.equalsIgnoreCase(lastScannedRfidUID);
             if (!fromPending) {
