@@ -462,7 +462,7 @@ void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t colo
 void drawDecorativeLine(int16_t y, uint16_t color);
 void loadConfigFromSD();
 void reportBlePresence();
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 120, bool reportFailure = false, bool trustConfiguredHttp200 = false);
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 300, bool reportFailure = false);
 bool discoverServer();
 
 String hexToDecStringPadded(String hexStr) {
@@ -3177,7 +3177,7 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 300, bool reportFailure = false) {
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs, bool reportFailure) {
     if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
     if (device_token.length() < 32) {
         if (reportFailure) Serial.println("[NET] Backend probe skipped: device token invalid");
