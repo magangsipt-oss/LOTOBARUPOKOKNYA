@@ -96,7 +96,7 @@ String server_host      = "";
 // Jangan mematok IP laptop di firmware: alamat ini berubah saat jaringan/hotspot
 // berganti. SERVER pada SD adalah prioritas; bila tidak diisi, discovery mencari
 // backend E-LOTO pada subnet Wi-Fi yang sama dengan ESP32.
-IPAddress configuredServerIp(0, 0, 0, 0);
+IPAddress configuredServerIp(10, 91, 191, 81);
 bool configuredServerIpValid = false;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
