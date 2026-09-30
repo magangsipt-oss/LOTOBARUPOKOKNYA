@@ -12,6 +12,8 @@ async function start() {
   // Check BLE LOTO compliance migration
   const [bleMigration] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260915-ble-loto-compliance.cjs']);
   if (!bleMigration.length) throw new Error('BLE LOTO compliance migration is incomplete');
+  const [tappingMigration] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260930-rebuild-tapping-history.cjs']);
+  if (!tappingMigration.length) throw new Error('Tapping-history repair migration is incomplete');
   const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
   const port = Number(process.env.PORT) || 5002;
   const server = app.listen(port, host, () => {

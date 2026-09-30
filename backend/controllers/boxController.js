@@ -68,6 +68,17 @@ async function readRegisteredDeviceStatus(box) {
   try { previousHardware = JSON.parse(box.hw_data || '{}') || {}; } catch { /* Ignore malformed saved telemetry. */ }
   const hardware = JSON.stringify({ ...previousHardware, ...status });
 
+    if (status.last_uid && typeof status.last_uid === 'string' && status.last_uid.length >= 8 && status.last_uid !== '---') {
+      if (true) {
+        pool.query('SELECT id FROM rfid_buffer WHERE id_box = ? AND rfid_uid = ? LIMIT 1', [box.id_box, status.last_uid]).then(([bufferCheck]) => {
+          if (!bufferCheck.length) {
+            pool.query('INSERT INTO rfid_buffer (id_box, rfid_uid) VALUES (?, ?)', [box.id_box, status.last_uid]);
+            console.log('[PULL WORKAROUND] Inserted new card into buffer: ' + status.last_uid);
+          }
+        });
+      }
+    }
+
   await pool.query(`UPDATE boxes SET state = ?, lat = COALESCE(?, lat), lng = COALESCE(?, lng),
     lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, updated_at = NOW()
     WHERE id_box = ? AND ip = ?`,
@@ -319,6 +330,20 @@ const boxController = {
       const result = await recordTelemetry(boxId, body);
       res.json({ success: true, data: result });
     } catch (error) { next(error); }
+  },
+
+  // Firmware verifies this authenticated response before trusting a discovered
+  // host as its backend. Authorization has already bound the URL to boxId.
+  deviceHandshake: (req, res) => {
+    const idBox = req.auth?.boxId;
+    return res.json({
+      success: true,
+      data: {
+        contract: 'eloto-device-v1',
+        id_box: idBox,
+        telemetry_endpoint: `/api/boxes/${encodeURIComponent(idBox)}/telemetry`
+      }
+    });
   },
 
   // Pull a registered private-LAN device, falling back to its authenticated telemetry snapshot.

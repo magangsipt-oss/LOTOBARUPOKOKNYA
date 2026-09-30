@@ -10,6 +10,7 @@ export default function authorization(req, res, next) {
     const box = req.auth.boxId;
     if (req.method === 'POST' && route === '/users/check-card') return next();
     if (read && (route === '/users' || route.startsWith('/users/photo/'))) return next();
+    if (read && route === `/boxes/${box}/device-handshake`) return next();
     if (req.method === 'POST' && route === `/boxes/${box}/telemetry` &&
         (req.body?.id_box === undefined || req.body.id_box === box)) return next();
     if (read && route === '/logs/tapping-history/stats' && (req.query.id_box || req.query.idBox) === box) return next();

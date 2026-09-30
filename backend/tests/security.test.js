@@ -99,6 +99,18 @@ test('device tokens are scoped to their own box and cannot administer accounts',
   assert.equal((await call('/api/users',{method:'POST',headers,body:'{}'})).status,403);
   assert.equal((await call('/api/boxes/BOX%20ELOTO%201/telemetry',{method:'POST',headers,body:'{}'})).status,400);
 });
+test('device handshake is scoped to the token-bound box and publishes the telemetry contract', async () => {
+  const headers = { 'X-Device-Token': deviceToken };
+  const response = await call('/api/boxes/BOX%20ELOTO%201/device-handshake', { headers });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.data, {
+    contract: 'eloto-device-v1',
+    id_box: 'BOX ELOTO 1',
+    telemetry_endpoint: '/api/boxes/BOX%20ELOTO%201/telemetry'
+  });
+  assert.equal((await call('/api/boxes/BOX%20ELOTO%202/device-handshake', { headers })).status, 403);
+});
 test('device telemetry diagnostics log HTTP outcome and event name without card identifiers', async t => {
   const messages = [];
   t.mock.method(console, 'info', message => messages.push(message));

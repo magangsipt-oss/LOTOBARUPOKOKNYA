@@ -1,6 +1,6 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import api, { setCsrfToken, getSessionVersion, beginAuthChange, cancelAuthChange } from '../../frontend/src/services/api.js';
+import api, { normalizeApiBaseUrl, setCsrfToken, getSessionVersion, beginAuthChange, cancelAuthChange } from '../../frontend/src/services/api.js';
 
 const originalWindow = globalThis.window;
 let expirations;
@@ -69,4 +69,10 @@ test('invalid login credentials do not expire an existing session', async () => 
   pending.fail();
   await pending.result;
   assert.equal(expirations, 0);
+});
+
+test('API base URL consistently includes the /api contract prefix', () => {
+  assert.equal(normalizeApiBaseUrl(), '/api');
+  assert.equal(normalizeApiBaseUrl('https://eloto.example.com'), 'https://eloto.example.com/api');
+  assert.equal(normalizeApiBaseUrl('https://eloto.example.com/api/'), 'https://eloto.example.com/api');
 });

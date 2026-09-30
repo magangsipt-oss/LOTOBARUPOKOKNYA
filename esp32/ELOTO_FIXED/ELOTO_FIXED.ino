@@ -100,6 +100,7 @@ IPAddress configuredServerIp(10, 87, 211, 81);
 bool configuredServerIpValid = false;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
+const char* API_PATH_PREFIX      = "api/";
 const uint16_t SERVER_PORT       = 5002;
 // Discovery must never monopolize CPU 0.  Probe only a small slice of the
 // subnet per pass; the next pass continues from the saved address.
@@ -129,7 +130,7 @@ String getServerBaseUrl() {
 }
 
 String getApiUrl(const char* endpoint) {
-    return getServerBaseUrl() + "api/" + endpoint;
+    return getServerBaseUrl() + API_PATH_PREFIX + endpoint;
 }
 
 String getDeviceId() {
@@ -144,9 +145,26 @@ String getDeviceId() {
 }
 
 String getDeviceIdPath() {
-    String deviceId = getDeviceId();
-    deviceId.replace(" ", "%20");
-    return deviceId;
+    const String deviceId = getDeviceId();
+    const char hex[] = "0123456789ABCDEF";
+    String encoded;
+    encoded.reserve(deviceId.length() * 3);
+    for (size_t i = 0; i < deviceId.length(); ++i) {
+        const uint8_t c = static_cast<uint8_t>(deviceId[i]);
+        const bool unreserved = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) encoded += char(c);
+        else {
+            encoded += '%';
+            encoded += hex[c >> 4];
+            encoded += hex[c & 0x0F];
+        }
+    }
+    return encoded;
+}
+
+String getDeviceHandshakePath() {
+    return String("/") + API_PATH_PREFIX + "boxes/" + getDeviceIdPath() + "/device-handshake";
 }
 
 enum SystemState {
@@ -3159,8 +3177,12 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs, bool reportFailure, bool trustConfiguredHttp200) {
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 300, bool reportFailure = false) {
     if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
+    if (device_token.length() < 32) {
+        if (reportFailure) Serial.println("[NET] Backend probe skipped: device token invalid");
+        return false;
+    }
 
     WiFiClient client;
     client.setTimeout(250);
@@ -3174,43 +3196,38 @@ bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs, boo
     }
 
     String host = candidate.toString();
-    client.print("GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n");
+    client.print("GET " + getDeviceHandshakePath() + " HTTP/1.1\r\nHost: " + host +
+        "\r\nX-Device-Token: " + device_token + "\r\nConnection: close\r\n\r\n");
 
     String response;
-    response.reserve(512);
+    response.reserve(768);
     unsigned long startedAt = millis();
     bool matched = false;
-    while (millis() - startedAt < 1500 && response.length() < 512) {
-        while (client.available() && response.length() < 512) {
+    while (millis() - startedAt < 1500 && response.length() < 768) {
+        while (client.available() && response.length() < 768) {
             response += (char)client.read();
         }
-        if (response.indexOf("\"service\":\"E-LOTO\"") >= 0) {
+        const String expectedBox = String("\"id_box\":\"") + getDeviceId() + "\"";
+        if (response.startsWith("HTTP/1.1 200 ") &&
+            response.indexOf("\"contract\":\"eloto-device-v1\"") >= 0 &&
+            response.indexOf(expectedBox) >= 0) {
             matched = true;
             break;
         }
-        // Keep polling until the expected body arrives or the response timeout expires.
-        // The peer may close the socket after sending headers while body bytes are
-        // still pending in the WiFiClient receive buffer.
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     client.stop();
 
-    const bool configuredHttpOk = trustConfiguredHttp200 &&
-        response.startsWith("HTTP/1.1 200 ");
-    if (matched || configuredHttpOk) {
+    if (matched) {
         server_host = host + ":" + String(SERVER_PORT);
-        if (matched) {
-            Serial.printf("[NET] Backend E-LOTO ditemukan: %s\n", server_host.c_str());
-        } else {
-            Serial.printf("[NET] Configured backend returned HTTP 200; using %s\n", server_host.c_str());
-        }
+        Serial.printf("[NET] Backend perangkat terverifikasi: %s\n", server_host.c_str());
     } else if (reportFailure) {
         int statusEnd = response.indexOf("\r\n");
         String statusLine = statusEnd >= 0 ? response.substring(0, statusEnd) : response;
-        Serial.printf("[NET] Backend TCP connected but root probe did not match E-LOTO: %s\n",
+        Serial.printf("[NET] Backend handshake tidak cocok: %s\n",
             statusLine.c_str());
     }
-    return matched || configuredHttpOk;
+    return matched;
 }
 
 bool discoverServer() {
@@ -3222,7 +3239,7 @@ bool discoverServer() {
         configuredServerIp.toString().c_str(), SERVER_PORT);
 
     if (configuredServerIpValid) {
-        if (probeElotoServer(configuredServerIp, 800, true, true)) return true;
+        if (probeElotoServer(configuredServerIp, 800, true)) return true;
         Serial.printf("[NET] Configured backend %s:%u unreachable; scanning subnet\n",
             configuredServerIp.toString().c_str(), SERVER_PORT);
     }

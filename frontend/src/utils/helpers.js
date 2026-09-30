@@ -2,6 +2,7 @@
  * Shared constants and helper functions for E-LOTO Platform
  */
 
+import { API_BASE_URL } from '../services/api.js';
 
 
 export const STATE_DESC = {
@@ -89,7 +90,7 @@ export const formatWaktuDowntime = (totalDetik) => {
 
 export const resolveProfilePhotoUrl = photo => {
   const value = String(photo || '').trim();
-  const base = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+  const base = API_BASE_URL;
   if (!value || value === 'assets/default-avatar.png') return 'assets/default-avatar.png';
   if (/^data:image\/(jpeg|png|webp);base64,/.test(value)) return value;
   if (value.startsWith('api/uploads/')) return `${base}/legacy-uploads/${value.slice(12)}`;
@@ -102,7 +103,7 @@ export const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => 
 
 export const resolveUserPhotoUrl = (profile, fallbackPhoto) => {
   const uid = String(profile?.rfidUid || profile?.rfid_uid || profile?.uid || '').trim();
-  if (uid) return `${import.meta.env.VITE_API_URL || '/api'}/users/photo/${encodeURIComponent(uid)}`;
+  if (uid) return `${API_BASE_URL}/users/photo/${encodeURIComponent(uid)}`;
   return resolveProfilePhotoUrl(fallbackPhoto || profile?.foto);
 };
 
