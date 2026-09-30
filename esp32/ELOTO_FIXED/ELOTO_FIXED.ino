@@ -96,7 +96,7 @@ String server_host      = "";
 // Jangan mematok IP laptop di firmware: alamat ini berubah saat jaringan/hotspot
 // berganti. SERVER pada SD adalah prioritas; bila tidak diisi, discovery mencari
 // backend E-LOTO pada subnet Wi-Fi yang sama dengan ESP32.
-IPAddress configuredServerIp(10, 91, 191, 81);
+IPAddress configuredServerIp(0, 0, 0, 0);
 bool configuredServerIpValid = false;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
@@ -106,7 +106,7 @@ portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
 uint32_t wifiConnectStartedAt = 0;
 
-const uint32_t NOTIFICATION_SUCCESS_DURATION = 450;   // was 800
+const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 700;   // was 1000
 const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 // Batas ini menjaga JPEG hasil resize tetap aman untuk ESP32 tanpa PSRAM.
@@ -425,7 +425,7 @@ void getLcdText(String &lcd0, String &lcd1);
 void sanitizeQueueDeadlock();
 void displayCardNotification(String uid, String name, String role, String statusMsg, bool isSuccess);
 void displayErrorCardPopup(String uid, String title, String name, String role, String sid, String bottomHint);
-bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH);
+bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, bool allowNetwork = true);
 void clearMainScreenArea();
 void executeFooterChoice();
 void parseGpsResponse(const String &response);
@@ -1068,7 +1068,7 @@ bool fetchPhotoFromAPI(const String &uid, uint8_t *&jpegData, size_t &jpegSize) 
 
 // Cache SD diprioritaskan agar popup tap tetap cepat; apabila cache/kartu SD tidak
 // tersedia, foto diunduh langsung dari backend lalu dicache untuk tap berikutnya.
-bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH) {
+bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, bool allowNetwork) {
     uid.trim(); uid.toUpperCase();
     if (uid == "" || ESP.getFreeHeap() < PHOTO_MIN_FREE_HEAP) return false;
 
@@ -1094,7 +1094,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         giveSd();
     }
 
-    if (jpegData == NULL && fetchPhotoFromAPI(uid, jpegData, jpegSize)) {
+    if (jpegData == NULL && allowNetwork && fetchPhotoFromAPI(uid, jpegData, jpegSize)) {
         if (cachePhotoToSD(photoPath, jpegData, jpegSize)) {
             Serial.printf("[PHOTO] Cache diperbarui uid=%s (%u byte)\n", uid.c_str(), (unsigned)jpegSize);
         }
@@ -1662,39 +1662,24 @@ String extractRfidCardID() {
             if (rd6300ByteBuffer[i] == 0x03) { etxPos = i; break; }
         }
     }
-    if (stxPos >= 0 && etxPos > stxPos) {
-        String frame = "";
-        for (int i = stxPos + 1; i < etxPos; i++) {
-            char c = (char)rd6300ByteBuffer[i];
-            if (c != '\r' && c != '\n') frame += c;
-        }
-        frame.trim(); frame.toUpperCase();
-        if (frame.length() == 12) {
-            String uid = frame.substring(0, 10);
-            if (isValidRfidUID(uid)) return uid;
-        }
-        if (isValidRfidUID(frame)) return frame;
-    }
+    // RDM6300 mengirim STX + data ASCII + ETX. Jangan mengubah byte acak
+    // menjadi hex: RX yang noisy dapat terlihat seperti UID sah.
+    if (stxPos < 0 || etxPos <= stxPos) return "";
 
-    String rawHex = "";
-    for (uint16_t i = 0; i < rd6300ByteCount; i++) {
+    String frame = "";
+    for (int i = stxPos + 1; i < etxPos; i++) {
         char c = (char)rd6300ByteBuffer[i];
-        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) rawHex += c;
-        else if (c >= 'a' && c <= 'f') rawHex += (char)(c - 32);
+        if (c == '\r' || c == '\n') continue;
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) return "";
+        frame += c;
     }
-    if (isValidRfidUID(rawHex)) return rawHex;
-
-    String byteHex = "";
-    for (uint16_t i = 0; i < rd6300ByteCount; i++) {
-        uint8_t b = rd6300ByteBuffer[i];
-        if (b == 0x02 || b == 0x03 || b == 0x0D || b == 0x0A) continue;
-        if (byteHex.length() < 14) {
-            if (b < 0x10) byteHex += "0";
-            byteHex += String(b, HEX);
-        }
+    frame.toUpperCase();
+    // Format umum RDM6300: 10 karakter UID + 2 karakter checksum.
+    if (frame.length() == 12) {
+        String uid = frame.substring(0, 10);
+        if (isValidRfidUID(uid)) return uid;
     }
-    byteHex.toUpperCase();
-    if (isValidRfidUID(byteHex)) return byteHex;
+    if (isValidRfidUID(frame)) return frame;
 
     return "";
 }
@@ -1712,7 +1697,10 @@ String checkRfidSensor() {
                 rd6300ByteBuffer[0] = 0x02;
                 rd6300ByteCount = 1;
             }
-            else if (data == 0x03 || data == '\n' || data == '\r') {
+            // RDM6300 biasa mengirim CR/LF sebelum ETX. Jika STX sudah ada,
+            // tunggu ETX supaya frame utuh dan noise tidak menjadi UID.
+            else if (data == 0x03 ||
+                     ((data == '\n' || data == '\r') && rd6300ByteBuffer[0] != 0x02)) {
                 frameComplete = true;
                 break;
             }
@@ -1870,7 +1858,8 @@ void displayCardNotification(String uid, String name, String role, String status
 
     tft.fillRect(25, 91, 150, 150, ELOTO_BG);
     tft.drawRect(25, 91, 150, 150, ELOTO_TEXT);
-    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150)) {
+    // Popup masuk/keluar harus cepat: hanya gunakan cache lokal di jalur ini.
+    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, false)) {
         drawSinglePersonIcon(100, 166, 2.5, ELOTO_HEADER, false);
     }
 
@@ -1988,7 +1977,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
 
     tft.fillRect(25, 91, 150, 150, ELOTO_BG);
     tft.drawRect(25, 91, 150, 150, TFT_GREEN);
-    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150)) {
+    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, false)) {
         drawSinglePersonIcon(100, 166, 2.5, TFT_GREEN, false);
     }
 
@@ -2349,11 +2338,13 @@ void syncDatabaseToSDCard() {
     Serial.printf("[SYNC] GET /api/users HTTP %d\n", httpCode);
     sdSyncOk = false;
     if (httpCode == HTTP_CODE_OK) {
-        DynamicJsonDocument doc(6144);
+        DynamicJsonDocument doc(12288);
         DeserializationError err = deserializeJson(doc, http.getStream());
         JsonArray arr = !err && doc["data"].is<JsonArray>() ? doc["data"].as<JsonArray>() : JsonArray();
 
-        if (!err && !arr.isNull()) {
+        if (err) {
+            Serial.printf("[SYNC] users.json gagal dibaca: %s\n", err.c_str());
+        } else if (!arr.isNull()) {
             int syncCount = 0;
             bool synced = false;
             if (takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -2732,7 +2723,14 @@ void networkTaskCore0(void * pvParameters) {
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
 
-            if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 25000) {
+            // Tap dapat terjadi sebelum heartbeat pertama. Temukan backend lebih
+            // dulu agar event tidak tertahan di offline_logs sampai siklus retry.
+            if (WiFi.status() == WL_CONNECTED && server_host.length() == 0) {
+                Serial.println("[NET] Mencari backend sebelum mengirim event");
+                discoverServer();
+            }
+
+            if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && ESP.getFreeHeap() > 25000) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
 
                 DynamicJsonDocument doc(2048);
@@ -2858,12 +2856,14 @@ void networkTaskCore0(void * pvParameters) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                     tryConnectBestWifi();
                 }
-            } else if ((!wasWifiConnected || startupSyncPending || millis() - lastDbSyncTask > 120000) && ESP.getFreeHeap() > 30000) {
+            } else if ((!wasWifiConnected || startupSyncPending || !sdSyncOk || millis() - lastDbSyncTask > 120000) && ESP.getFreeHeap() > 30000) {
                 portENTER_CRITICAL(&wifiConnectMux);
                 wifiConnectInProgress = false;
                 portEXIT_CRITICAL(&wifiConnectMux);
                 bool justReconnected = !wasWifiConnected;
                 wasWifiConnected = true;
+                // Retry lebih cepat saat users.csv belum valid; kartu yang ada di
+                // RAM/SD tidak perlu lagi menunggu request API ketika ditap.
                 lastDbSyncTask = millis();
                 if (justReconnected) {
                     server_host = "";
