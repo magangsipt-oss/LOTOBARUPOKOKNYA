@@ -12,8 +12,10 @@ async function start() {
   // Check BLE LOTO compliance migration
   const [bleMigration] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260915-ble-loto-compliance.cjs']);
   if (!bleMigration.length) throw new Error('BLE LOTO compliance migration is incomplete');
-  const server = app.listen(Number(process.env.PORT) || 5002, process.env.HOST || '0.0.0.0', () => {
-    console.log('E-LOTO backend ready on port ' + (Number(process.env.PORT) || 5002));
+  const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
+  const port = Number(process.env.PORT) || 5002;
+  const server = app.listen(port, host, () => {
+    console.log(`E-LOTO backend ready on ${host}:${port}`);
   });
   let closing = false;
   const shutdown = () => {

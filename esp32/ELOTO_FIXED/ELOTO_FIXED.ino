@@ -21,6 +21,11 @@
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
 #include "network_secrets.h"
+#if defined(__has_include)
+#if __has_include("device_secrets.local.h")
+#include "device_secrets.local.h"
+#endif
+#endif
 #include "device_secrets.h"
 
 // ============================================================================
@@ -87,7 +92,7 @@ String device_id        = ELOTO_DEVICE_ID;
 String wifi_ssid        = ELOTO_NETWORK_SSID;
 String wifi_password    = ELOTO_NETWORK_PASSWORD;
 String server_host      = "";
-IPAddress configuredServerIp(192, 168, 137, 1);
+IPAddress configuredServerIp(10, 91, 191, 35);
 bool configuredServerIpValid = true;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
@@ -427,7 +432,7 @@ void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t colo
 void drawDecorativeLine(int16_t y, uint16_t color);
 void loadConfigFromSD();
 void reportBlePresence();
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 120);
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 120, bool reportFailure = false, bool trustConfiguredHttp200 = false);
 bool discoverServer();
 
 String hexToDecStringPadded(String hexStr) {
@@ -542,12 +547,14 @@ bool initializeSDCard() {
     }
 
     if (!terhubung) {
+        Serial.println("[SD] Card mount failed after retries");
         digitalWrite(SD_CS_PIN, HIGH);
         return false;
     }
 
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
+        Serial.println("[SD] No card detected after mount");
         SD.end();
         return false;
     }
@@ -556,6 +563,7 @@ bool initializeSDCard() {
     if (SD.exists(testPath)) SD.remove(testPath);
     File testFile = SD.open(testPath, FILE_WRITE);
     if (!testFile) {
+        Serial.println("[SD] Read/write check could not create test file");
         SD.end();
         digitalWrite(SD_CS_PIN, HIGH);
         return false;
@@ -573,6 +581,7 @@ bool initializeSDCard() {
     }
     SD.remove(testPath);
     if (testValue != "ELOTO_SD_OK") {
+        Serial.println("[SD] Read/write check failed");
         SD.end();
         digitalWrite(SD_CS_PIN, HIGH);
         return false;
@@ -587,30 +596,69 @@ bool initializeSDCard() {
     }
 
     digitalWrite(SD_CS_PIN, HIGH);
+    Serial.println("[SD] Mounted and read/write verified");
     return terhubung;
+}
+
+bool isConfigPlaceholder(String value) {
+    value.trim();
+    value.toLowerCase();
+    return value.length() == 0 || value.startsWith("isi_") ||
+            value.startsWith("your-") || value.startsWith("replace-with-");
 }
 
 void loadConfigFromSD() {
     if (!sdCardMounted) return;
-    const bool loadWifiFromSd = wifi_ssid.length() == 0 || wifi_password.length() == 0 ||
-            wifi_ssid.startsWith("ISI_");
     File configFile;
-    const char *configPaths[] = { "/config.txt", "/SD_CARD_CONFIG/config.txt" };
+    const char *configPaths[] = {
+        "/config.txt", "/config.txt.txt",
+        "/SD_CARD_CONFIG/config.txt", "/SD_CARD_CONFIG/config.txt.txt"
+    };
+    const char *selectedConfigPath = NULL;
     for (const char *path : configPaths) {
         if (!SD.exists(path)) continue;
         configFile = SD.open(path, FILE_READ);
-        if (configFile) break;
+        if (configFile) {
+            selectedConfigPath = path;
+            break;
+        }
     }
-    if (!configFile) return;
+    if (!configFile) {
+        Serial.println("[CONFIG] config.txt not found; check SD root or SD_CARD_CONFIG folder");
+        return;
+    }
+
+    Serial.printf("[CONFIG] Reading %s\n", selectedConfigPath);
+    bool wifiSsidLoaded = false;
+    bool wifiPasswordLoaded = false;
+    bool serverLoaded = false;
+    bool deviceTokenLoaded = false;
+    const bool compiledDeviceTokenValid =
+        device_token.length() >= 32 && !isConfigPlaceholder(device_token);
     while (configFile.available()) {
         String line = configFile.readStringUntil('\n');
+        line.replace("\xef\xbb\xbf", "");
+        line.replace("\xff\xfe", "");
+        line.replace("\xfe\xff", "");
+        for (unsigned int i = 0; i < line.length();) {
+            if (line[i] == '\0') line.remove(i, 1);
+            else i++;
+        }
+        line.replace("\r", "");
         line.trim();
         if (line.length() == 0 || line.startsWith("#")) continue;
-        if (line.startsWith("DEVICE_ID=")) {
-            String value = line.substring(10); value.trim();
+
+        int separator = line.indexOf('=');
+        if (separator <= 0) continue;
+        String key = line.substring(0, separator);
+        String value = line.substring(separator + 1);
+        key.trim();
+        key.toUpperCase();
+        value.trim();
+
+        if (key == "DEVICE_ID") {
             if (value.length() > 0) device_id = value;
-        } else if (line.startsWith("SERVER=")) {
-            String value = line.substring(7); value.trim();
+        } else if (key == "SERVER") {
             int colon = value.indexOf(':');
             if (colon >= 0) {
                 if (value.indexOf(':', colon + 1) >= 0 || value.substring(colon + 1) != String(SERVER_PORT)) {
@@ -629,23 +677,46 @@ void loadConfigFromSD() {
                 candidate[3] > 0 && candidate[3] < 255) {
                 configuredServerIp = candidate;
                 configuredServerIpValid = true;
+                serverLoaded = true;
                 Serial.printf("[CONFIG] Backend target: %s:%u\n", candidate.toString().c_str(), SERVER_PORT);
             } else {
                 Serial.printf("[CONFIG] SERVER invalid; keeping target %s:%u\n",
                     configuredServerIp.toString().c_str(), SERVER_PORT);
             }
-        } else if (line.startsWith("TOKEN=")) {
-            String value = line.substring(6); value.trim();
-            if (value.length() >= 32 && value.length() <= 256 && !value.startsWith("replace-with-")) {
+        } else if (key == "TOKEN") {
+            if (!compiledDeviceTokenValid && value.length() >= 32 && value.length() <= 256 && !isConfigPlaceholder(value)) {
                 device_token = value;
+                deviceTokenLoaded = true;
+                Serial.println("[CONFIG] Device token loaded");
             }
-        } else if (loadWifiFromSd && (line.startsWith("SSID=") || line.startsWith("WIFI_SSID=") || line.startsWith("WIFI_1_SSID="))) {
-            wifi_ssid = line.substring(line.indexOf('=') + 1); wifi_ssid.trim();
-        } else if (loadWifiFromSd && (line.startsWith("PASS=") || line.startsWith("WIFI_PASSWORD=") || line.startsWith("WIFI_1_PASS="))) {
-            wifi_password = line.substring(line.indexOf('=') + 1); wifi_password.trim();
+        } else if (key == "SSID" || key == "WIFI_SSID" || key == "WIFI_1_SSID") {
+            if (!isConfigPlaceholder(value) && value.length() <= 32) {
+                wifi_ssid = value;
+                wifiSsidLoaded = true;
+            }
+        } else if (key == "PASS" || key == "WIFI_PASSWORD" || key == "WIFI_1_PASS") {
+            if (!isConfigPlaceholder(value) && value.length() <= 63) {
+                wifi_password = value;
+                wifiPasswordLoaded = true;
+            }
         }
     }
     configFile.close();
+    if (wifiSsidLoaded || wifiPasswordLoaded) {
+        Serial.printf("[CONFIG] Wi-Fi SD fields loaded: SSID=%s PASS=%s\n",
+            wifiSsidLoaded ? "yes" : "no", wifiPasswordLoaded ? "yes" : "no");
+    } else {
+        Serial.println("[CONFIG] No usable Wi-Fi fields; keeping firmware credentials");
+    }
+    if (!serverLoaded) Serial.println("[CONFIG] No valid SERVER override; using default backend target");
+    if (!deviceTokenLoaded) {
+        if (device_token.length() >= 32 && !isConfigPlaceholder(device_token)) {
+            Serial.println("[CONFIG] Using compiled local device secret; it takes precedence over SD TOKEN");
+        } else {
+            device_token = "";
+            Serial.println("[CONFIG] No valid device token; set TOKEN in config.txt or local device secret");
+        }
+    }
 }
 
 void setStoryFont(uint8_t pointSize) {
@@ -1179,6 +1250,10 @@ void serviceGeofence() {
 // POST kehadiran BLE hanya jika daftar tag berubah, atau paling lama tiap 15 detik
 void reportBlePresence() {
     if (WiFi.status() != WL_CONNECTED || device_token.length() == 0 || ESP.getFreeHeap() < 30000) return;
+    if (server_host.length() == 0) {
+        Serial.println("[BLE] Presence deferred: backend not discovered");
+        return;
+    }
 
     uint32_t scanHeartbeat;
     bool scanCompleted;
@@ -1208,18 +1283,42 @@ void reportBlePresence() {
     WiFiClient client;
     client.setTimeout(1500);
     HTTPClient http;
-    http.begin(client, getApiUrl("loto/presence"));
+    String url = getApiUrl("loto/presence");
+    if (!http.begin(client, url)) {
+        Serial.println("[BLE] Presence URL initialization failed");
+        return;
+    }
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Token", device_token);
     http.setTimeout(2500);
     String payload;
-    serializeJson(doc, payload);
+    size_t payloadBytes = serializeJson(doc, payload);
+    if (doc.overflowed() || payloadBytes == 0) {
+        Serial.printf("[BLE] Presence payload invalid bytes=%u tags=%u\n",
+            (unsigned)payloadBytes, (unsigned)tags.size());
+        http.end();
+        return;
+    }
     int httpCode = http.POST(payload);
+    String responseBody = http.getString();
     if (httpCode >= 200 && httpCode < 300) {
         lastTagHash = h;
         lastSentMs = millis();
+        DynamicJsonDocument ack(512);
+        int receivedTags = -1;
+        int registeredTags = -1;
+        if (!deserializeJson(ack, responseBody)) {
+            receivedTags = ack["data"]["received_tag_count"] | -1;
+            registeredTags = ack["data"]["registered_tag_count"] | -1;
+        }
+        Serial.printf("[BLE] Presence HTTP %d payload_tags=%u server_received=%d registered=%d\n",
+            httpCode, (unsigned)tags.size(), receivedTags, registeredTags);
     } else {
-        Serial.printf("[BLE] Presence HTTP %d\n", httpCode);
+        responseBody.replace("\r", " ");
+        responseBody.replace("\n", " ");
+        if (responseBody.length() > 120) responseBody.remove(120);
+        Serial.printf("[BLE] Presence HTTP %d payload_tags=%u response=%s\n",
+            httpCode, (unsigned)tags.size(), responseBody.c_str());
     }
     http.end();
 }
@@ -2920,12 +3019,16 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs) {
+bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs, bool reportFailure, bool trustConfiguredHttp200) {
     if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
 
     WiFiClient client;
     client.setTimeout(250);
     if (!client.connect(candidate, SERVER_PORT, connectTimeoutMs)) {
+        if (reportFailure) {
+            Serial.printf("[NET] TCP connect to backend failed: %s:%u\n",
+                candidate.toString().c_str(), SERVER_PORT);
+        }
         client.stop();
         return false;
     }
@@ -2937,7 +3040,7 @@ bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs) {
     response.reserve(512);
     unsigned long startedAt = millis();
     bool matched = false;
-    while (millis() - startedAt < 350 && response.length() < 512) {
+    while (millis() - startedAt < 1500 && response.length() < 512) {
         while (client.available() && response.length() < 512) {
             response += (char)client.read();
         }
@@ -2945,16 +3048,29 @@ bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs) {
             matched = true;
             break;
         }
-        if (!client.connected() && !client.available()) break;
+        // Keep polling until the expected body arrives or the response timeout expires.
+        // The peer may close the socket after sending headers while body bytes are
+        // still pending in the WiFiClient receive buffer.
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     client.stop();
 
-    if (matched) {
+    const bool configuredHttpOk = trustConfiguredHttp200 &&
+        response.startsWith("HTTP/1.1 200 ");
+    if (matched || configuredHttpOk) {
         server_host = host + ":" + String(SERVER_PORT);
-        Serial.printf("[NET] Backend E-LOTO ditemukan: %s\n", server_host.c_str());
+        if (matched) {
+            Serial.printf("[NET] Backend E-LOTO ditemukan: %s\n", server_host.c_str());
+        } else {
+            Serial.printf("[NET] Configured backend returned HTTP 200; using %s\n", server_host.c_str());
+        }
+    } else if (reportFailure) {
+        int statusEnd = response.indexOf("\r\n");
+        String statusLine = statusEnd >= 0 ? response.substring(0, statusEnd) : response;
+        Serial.printf("[NET] Backend TCP connected but root probe did not match E-LOTO: %s\n",
+            statusLine.c_str());
     }
-    return matched;
+    return matched || configuredHttpOk;
 }
 
 bool discoverServer() {
@@ -2966,7 +3082,7 @@ bool discoverServer() {
         configuredServerIp.toString().c_str(), SERVER_PORT);
 
     if (configuredServerIpValid) {
-        if (probeElotoServer(configuredServerIp, 1200)) return true;
+        if (probeElotoServer(configuredServerIp, 3000, true, true)) return true;
         Serial.printf("[NET] Configured backend %s:%u unreachable; scanning subnet\n",
             configuredServerIp.toString().c_str(), SERVER_PORT);
     }
@@ -4207,17 +4323,31 @@ void loop() {
     if (!sdCardMounted && millis() - lastSdRecheck > 30000) {
         lastSdRecheck = millis();
         bool mounted = false;
+        bool wifiConfigChanged = false;
         if (sdMutex != NULL && takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
             mounted = initializeSDCard();
             if (mounted) {
+                String previousWifiSsid = wifi_ssid;
+                String previousWifiPassword = wifi_password;
                 sdCardMounted = true;
                 loadConfigFromSD();
+                wifiConfigChanged = wifi_ssid != previousWifiSsid ||
+                                    wifi_password != previousWifiPassword;
             }
             digitalWrite(SD_CS_PIN, HIGH);
             giveSd();
         }
         if (mounted) {
             loadUsersToRAM();
+            if (wifiConfigChanged) {
+                Serial.println("[CONFIG] Wi-Fi changed after SD mount; reconnecting");
+                portENTER_CRITICAL(&wifiConnectMux);
+                wifiConnectInProgress = false;
+                portEXIT_CRITICAL(&wifiConnectMux);
+                WiFi.disconnect();
+                delay(100);
+                tryConnectBestWifi();
+            }
             buzzSuccess();
         }
     }

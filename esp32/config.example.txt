@@ -1,6 +1,6 @@
 DEVICE_ID=BOX-CLIENT-001
 WIFI_1_SSID=your-primary-wifi
 WIFI_1_PASS=your-primary-wifi-password
-WIFI_2_SSID=your-backup-wifi
-WIFI_2_PASS=your-backup-wifi-password
+# Ganti dengan IPv4 privat komputer backend yang terlihat dari Wi-Fi ESP32.
+SERVER=10.91.191.35:5002
 TOKEN=replace-with-a-random-device-token-at-least-32-characters

@@ -128,6 +128,8 @@ const lotoComplianceController = {
           message: 'BLE presence & LOTO compliance updated',
           data: {
             id_box,
+            received_tag_count: macs.length,
+            registered_tag_count: tagRows.length,
             ble_detected_count: detectedSids.length,
             loto_tapped_count: tappedSids.length,
             missing_count: missingSids.length,

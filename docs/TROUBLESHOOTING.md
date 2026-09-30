@@ -16,9 +16,13 @@ Pastikan akun ada dan memiliki password bcrypt. Akun baru wajib diberi password 
 
 Periksa role akun, header `X-CSRF-Token`, dan origin frontend. Login ulang atau muat ulang aplikasi untuk memulihkan CSRF lewat `/users/me`. Untuk perangkat, pastikan token cocok dengan ID boks pada path, query, atau payload. Izin UI tidak menggantikan pemeriksaan server.
 
-## Perangkat gagal TLS atau mendapat 401
+## ESP32 tidak mencapai backend atau mendapat 401
 
-Periksa `SERVER` eksplisit, CA pada `/server_ca.pem`, waktu NTP, dan token SD. Production wajib HTTPS. Development dapat memakai HTTP hanya ke alamat LAN privat. Token harus sudah diprovision untuk boks terdaftar. Setelah rotasi, token lama tidak berlaku. Jangan menonaktifkan verifikasi TLS untuk mengatasi masalah sertifikat.
+Pastikan backend development bind ke `0.0.0.0:5002`, firewall komputer mengizinkan TCP 5002 pada jaringan privat, dan `SERVER` pada SD berisi IPv4 privat komputer backend. Dari perangkat lain di Wi-Fi yang sama, buka `http://<IP-backend>:5002/health/live`; respons sukses membuktikan jalur jaringan ke backend. Jika koneksi sampai tetapi mendapat 401, cocokkan token SD dengan token boks yang diprovision. Firmware `ELOTO_FIXED` saat ini belum mendukung HTTPS.
+
+## ESP32 tidak membaca konfigurasi SD
+
+Pastikan layar menunjukkan `SD OK` dan Serial Monitor menampilkan `[SD] Mounted and read/write verified`, lalu `[CONFIG] Reading ...`. Letakkan file sebagai `/config.txt` di root SD atau `/SD_CARD_CONFIG/config.txt`; nama `.txt.txt` juga dideteksi untuk kasus ekstensi Windows tersembunyi. Baris konfigurasi memakai format `KEY=VALUE`. Placeholder `your-...` dan `replace-with-...` diabaikan. Log hanya menampilkan apakah kredensial dimuat, tidak mencetak password atau token.
 
 ## Video tidak muncul atau counting stale
 

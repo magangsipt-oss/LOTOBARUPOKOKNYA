@@ -7,7 +7,7 @@ Buat `backend/.env` dari [backend/.env.example](../backend/.env.example). Backen
 | Variabel | Nilai contoh / aturan |
 | --- | --- |
 | `NODE_ENV` | `development`; gunakan `production` pada deployment |
-| `HOST`, `PORT` | `127.0.0.1`, `5002` |
+| `HOST`, `PORT` | `0.0.0.0`, `5002` untuk development agar ESP32 dapat masuk melalui LAN; `127.0.0.1` hanya untuk akses lokal/proxy |
 | `FRONTEND_URL` | `http://localhost:3000`; wajib HTTPS pada production |
 | `DB_HOST`, `DB_PORT` | Host MySQL, port `3306` |
 | `DB_NAME` | Nama database yang telah dibuat |
@@ -59,10 +59,8 @@ Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config
 
 | Kunci / file | Fungsi |
 | --- | --- |
-| `WIFI_1_SSID` … `WIFI_5_SSID` | Nama Wi-Fi, dicoba berurutan sampai tersambung |
-| `WIFI_1_PASS` … `WIFI_5_PASS` | Password Wi-Fi pasangannya; `SSID`/`PASS` tetap didukung sebagai fallback lama |
-| `SERVER` | Base URL eksplisit. HTTPS untuk production; HTTP hanya diterima pada host LAN privat untuk development |
+| `WIFI_1_SSID`, `WIFI_1_PASS` | Kredensial Wi-Fi dari SD; nilai valid mengganti kredensial compile-time. Format lama `SSID`/`PASS` juga didukung; nilai contoh seperti `your-...` diabaikan |
+| `SERVER` | IPv4 privat komputer backend, misalnya `192.168.137.1:5002`; firmware mencoba alamat ini lalu discovery subnet bila gagal |
 | `TOKEN` | Token asli untuk boks yang telah diprovision |
-| `/server_ca.pem` | Sertifikat CA untuk memvalidasi domain server |
 
-Perangkat membutuhkan sinkronisasi waktu NTP untuk TLS. Firmware tidak memakai discovery UDP, gateway otomatis, atau `setInsecure`; `SERVER` wajib diisi. Rotasi token harus memperbarui server dan SD perangkat secara terkoordinasi. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
+`ELOTO_FIXED` saat ini mengirim HTTP ke IPv4 privat pada port tetap `5002`; URL domain dan HTTPS belum didukung firmware ini. Untuk production gunakan firmware dengan TLS sebelum mengirim token melalui jaringan yang tidak tepercaya. Rotasi token harus memperbarui server dan SD perangkat secara terkoordinasi. Langkah provisioning ada di [deployment](DEPLOYMENT.md).

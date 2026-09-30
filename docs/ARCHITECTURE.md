@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
     Browser[Dashboard React] -->|API dan cookie sesi| API[Backend Express]
-    ESP[ESP32] -->|HTTPS dan token perangkat| API
+    ESP[ESP32] -->|HTTP LAN dan token perangkat| API
     Camera[Kamera RTSP] --> Counting[Worker Python]
     Counting -->|Count dan token perangkat| API
     API --> DB[(MySQL)]

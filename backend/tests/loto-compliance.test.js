@@ -67,6 +67,8 @@ test('an empty BLE scan records zero detections without an empty SQL IN clause',
   const state = presenceFixture();
   const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [] });
   assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.received_tag_count, 0);
+  assert.equal(res.body.data.registered_tag_count, 0);
   assert.equal(res.body.data.ble_detected_count, 0);
   assert.equal(res.body.data.missing_count, 0);
   assert.deepEqual(res.body.data.detected_sids, []);
@@ -92,6 +94,8 @@ test('BLE compliance resolves RFID to SID and counts people once across multiple
   });
   const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [mac.toLowerCase(), mac, secondMac], session_id: 7 });
   assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.received_tag_count, 2);
+  assert.equal(res.body.data.registered_tag_count, 2);
   assert.equal(res.body.data.ble_detected_count, 1);
   assert.equal(res.body.data.loto_tapped_count, 1);
   assert.equal(res.body.data.missing_count, 0);

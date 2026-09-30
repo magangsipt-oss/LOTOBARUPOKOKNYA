@@ -49,7 +49,7 @@ pnpm --filter backend run provision-device
 unset ELOTO_DEVICE_TOKEN
 ```
 
-Boks harus sudah terdaftar. Database menyimpan hash token. Pasang token asli pada `/config.txt` di SD ESP32 menggunakan format `esp32/config.example.txt`. Pasang sertifikat CA yang memvalidasi domain API sebagai `/server_ca.pem`. `SERVER` harus memakai HTTPS; firmware tidak menggunakan `setInsecure`. Host perangkat harus dapat menyinkronkan waktu NTP agar validasi sertifikat berhasil. Token baru menggantikan token lama; lakukan pembaruan server, firmware, dan counting secara terkoordinasi.
+Boks harus sudah terdaftar. Database menyimpan hash token. Pasang token asli pada `/config.txt` di SD ESP32 menggunakan format `esp32/config.example.txt`. `ELOTO_FIXED` saat ini hanya mendukung HTTP ke IPv4 privat pada port `5002`; gunakan hanya pada LAN tepercaya dan jangan mengekspos port ini ke internet. Production melalui HTTPS memerlukan firmware TLS yang belum tersedia pada sketch ini. Token baru menggantikan token lama; lakukan pembaruan server, firmware, dan counting secara terkoordinasi.
 
 Isi `counting/.env` berdasarkan `counting/.env.example` bila menjalankan lewat `pnpm dev:counting` (atau `pnpm dev` untuk seluruh layanan development). Untuk layanan yang menjalankan Python langsung, export konfigurasi ke environment proses. Set URL RTSP dan kredensial kamera melalui environment. Gunakan port MJPEG berbeda per boks dan petakan secara eksplisit dalam `MJPEG_PORTS` backend. Server MJPEG hanya bind loopback.
 

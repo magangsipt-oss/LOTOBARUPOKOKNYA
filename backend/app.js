@@ -96,6 +96,15 @@ export function createApp() {
         console.info(`[DEVICE_TELEMETRY] HTTP ${res.statusCode} event=${event}`);
       });
     }
+    if (req.method === 'POST' && req.path === '/api/loto/presence') {
+      res.on('finish', () => {
+        const boxId = typeof req.body?.id_box === 'string'
+          ? req.body.id_box.replace(/[^A-Za-z0-9_. -]/g, '?').slice(0, 50)
+          : 'missing';
+        const tagCount = Array.isArray(req.body?.ble_tags) ? req.body.ble_tags.length : 'invalid';
+        console.info(`[BLE_PRESENCE] HTTP ${res.statusCode} id_box=${boxId} payload_tags=${tagCount}`);
+      });
+    }
     next();
   });
 
