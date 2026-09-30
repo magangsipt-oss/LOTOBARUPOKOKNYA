@@ -101,6 +101,9 @@ bool configuredServerIpValid = false;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const uint16_t SERVER_PORT       = 5002;
+// Discovery must never monopolize CPU 0.  Probe only a small slice of the
+// subnet per pass; the next pass continues from the saved address.
+const uint8_t DISCOVERY_PROBES_PER_PASS = 6;
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 45000;
 portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
@@ -668,6 +671,19 @@ void loadConfigFromSD() {
         if (key == "DEVICE_ID") {
             if (value.length() > 0) device_id = value;
         } else if (key == "SERVER") {
+            // Accept the usual SD-card forms: 192.168.1.10:5002 and
+            // http://192.168.1.10:5002/.  The firmware remains HTTP-only.
+            int comment = value.indexOf('#');
+            if (comment >= 0) value = value.substring(0, comment);
+            value.trim();
+            if (value.startsWith("http://")) value.remove(0, 7);
+            else if (value.startsWith("https://")) {
+                Serial.println("[CONFIG] SERVER HTTPS is unsupported; use an HTTP IPv4 address");
+                continue;
+            }
+            int slash = value.indexOf('/');
+            if (slash >= 0) value = value.substring(0, slash);
+            value.trim();
             int colon = value.indexOf(':');
             if (colon >= 0) {
                 if (value.indexOf(':', colon + 1) >= 0 || value.substring(colon + 1) != String(SERVER_PORT)) {
@@ -3206,7 +3222,7 @@ bool discoverServer() {
         configuredServerIp.toString().c_str(), SERVER_PORT);
 
     if (configuredServerIpValid) {
-        if (probeElotoServer(configuredServerIp, 3000, true, true)) return true;
+        if (probeElotoServer(configuredServerIp, 800, true, true)) return true;
         Serial.printf("[NET] Configured backend %s:%u unreachable; scanning subnet\n",
             configuredServerIp.toString().c_str(), SERVER_PORT);
     }
@@ -3215,17 +3231,30 @@ bool discoverServer() {
     if (probeElotoServer(gateway)) return true;
 
     IPAddress local = WiFi.localIP();
-    uint8_t localHost = local[3];
-    for (uint16_t offset = 1; offset <= 254; offset++) {
-        uint8_t host = (localHost + offset) % 255;
-        if (host == 0) continue;
-        IPAddress candidate(local[0], local[1], local[2], host);
-        if (candidate == gateway) continue;
-        if (probeElotoServer(candidate)) return true;
-        if ((offset % 8) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    static uint8_t discoverySubnetA = 0, discoverySubnetB = 0, discoverySubnetC = 0;
+    static uint8_t nextDiscoveryHost = 0;
+    if (discoverySubnetA != local[0] || discoverySubnetB != local[1] ||
+        discoverySubnetC != local[2] || nextDiscoveryHost == 0) {
+        discoverySubnetA = local[0];
+        discoverySubnetB = local[1];
+        discoverySubnetC = local[2];
+        nextDiscoveryHost = local[3] == 254 ? 1 : local[3] + 1;
     }
 
-    Serial.println("[NET] Backend E-LOTO tidak ditemukan di subnet lokal");
+    uint8_t probes = 0;
+    uint16_t attempts = 0;
+    while (probes < DISCOVERY_PROBES_PER_PASS && attempts++ < 254) {
+        uint8_t host = nextDiscoveryHost;
+        nextDiscoveryHost = nextDiscoveryHost >= 254 ? 1 : nextDiscoveryHost + 1;
+        if (host == 0 || host == local[3]) continue;
+        IPAddress candidate(local[0], local[1], local[2], host);
+        if (candidate == gateway) continue;
+        probes++;
+        if (probeElotoServer(candidate)) return true;
+        // Yield after every blocking TCP probe so IDLE0 continues feeding WDT.
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    Serial.printf("[NET] Backend belum ditemukan; discovery lanjut dari .%u\n", nextDiscoveryHost);
     return false;
 }
 
