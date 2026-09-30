@@ -62,14 +62,14 @@ test('firmware obtains a profile photo from the backend when the SD cache is una
   assert.match(source, /jpegData == NULL && allowNetwork && fetchPhotoFromAPI\(uid, jpegData, jpegSize\)/);
 });
 
-test('firmware rejects unframed RFID noise, keeps tap popups local, and discovers the backend before a queued event', () => {
+test('firmware rejects unframed RFID noise, loads tap photos when needed, and discovers the backend before a queued event', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
 
   assert.match(source, /if \(stxPos < 0 \|\| etxPos <= stxPos\) return "";/);
   assert.doesNotMatch(source, /String byteHex = "";/);
   assert.match(source, /RDM6300 biasa mengirim CR\/LF sebelum ETX[\s\S]{0,250}rd6300ByteBuffer\[0\] != 0x02/);
-  assert.match(source, /drawPhotoFromAPI\(uid, 25, 91, 150, 150, false\)/);
+  assert.match(source, /drawPhotoFromAPI\(uid, 25, 91, 150, 150, true\)/);
   assert.match(source, /server_host\.length\(\) == 0\) \{\s*Serial\.println\("\[NET\] Mencari backend sebelum mengirim event"\);\s*discoverServer\(\);/);
   assert.match(source, /DynamicJsonDocument doc\(12288\)/);
   assert.match(source, /startupSyncPending \|\| !sdSyncOk \|\| millis\(\) - lastDbSyncTask > 120000/);

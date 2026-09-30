@@ -50,8 +50,15 @@ export default function Dashboard() {
   const currentPage = Math.min(boxPage, pageCount);
   const visibleBoxes = matchingBoxes.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-  const complianceUnavailable = lotoCompliance.stale || !isHwOnline;
+  // Compliance is stored independently from the radar heartbeat.  A fresh
+  // server snapshot must remain visible even if the device heartbeat is late;
+  // otherwise a successful RFID tap is incorrectly hidden as "no data".
+  const complianceUnavailable = lotoCompliance.stale;
   const countMismatch = !complianceUnavailable && Number(lotoCompliance.missing_count) > 0;
+  const complianceSids = [...new Set([
+    ...(Array.isArray(lotoCompliance.detected_sids) ? lotoCompliance.detected_sids : []),
+    ...(Array.isArray(lotoCompliance.tapped_sids) ? lotoCompliance.tapped_sids : [])
+  ])];
 
   // Riwayat Refueling
   const [refuelingLogs, setRefuelingLogs] = useState([]);
@@ -238,6 +245,12 @@ export default function Dashboard() {
                 <ul className="list-disc list-inside text-xs text-red-600">{lotoCompliance.missing_sids.map((sid, i) => <li key={i}>{sid}</li>)}</ul>
               </div>
             )}
+            {!complianceUnavailable && lotoCompliance.tapped_sids && lotoCompliance.tapped_sids.length > 0 && (
+              <div className="bg-green-50 border border-green-300 rounded-lg p-2">
+                <p className="text-xs font-bold text-green-700">Sudah Apply LOTO:</p>
+                <ul className="list-disc list-inside text-xs text-green-700">{lotoCompliance.tapped_sids.map((sid, i) => <li key={i}>{sid}</li>)}</ul>
+              </div>
+            )}
             <table className="w-full text-left"><thead><tr><th>Waktu</th><th>BLE Detected</th><th>Sudah LOTO</th><th>Belum</th></tr></thead>
               <tbody>{lotoComplianceHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.ble_detected_count}</td><td>{row.loto_tapped_count}</td><td className={row.missing_count > 0 ? 'font-bold text-red-600' : ''}>{row.missing_count}</td></tr>)}</tbody>
             </table>
@@ -322,20 +335,25 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {!complianceUnavailable && lotoCompliance.detected_sids && lotoCompliance.detected_sids.length > 0 ? (
-                        lotoCompliance.detected_sids.map((sid, i) => {
+                      {!complianceUnavailable && complianceSids.length > 0 ? (
+                        complianceSids.map((sid, i) => {
+                          const hasBleTag = lotoCompliance.detected_sids?.includes(sid);
                           const hasTapped = lotoCompliance.tapped_sids?.includes(sid);
-                          const isMissing = !hasTapped || lotoCompliance.missing_sids?.includes(sid);
+                          // A SID can tap successfully while its BLE tag is out
+                          // of range.  That is not a missing LOTO tap.
+                          const isMissing = hasBleTag && (!hasTapped || lotoCompliance.missing_sids?.includes(sid));
                           return (
                             <tr key={i} className={`border-b border-slate-100 ${isMissing ? 'bg-red-50' : 'bg-green-50/50'}`}>
                               <td className="p-2">
-                                {isMissing
+                                {hasTapped
+                                  ? <span className="text-green-600 font-bold">✅ SUDAH LOTO</span>
+                                  : isMissing
                                   ? <span className="text-red-600 font-bold">❌ BELUM</span>
-                                  : <span className="text-green-600 font-bold">✅ AMAN</span>
+                                  : <span className="text-slate-600 font-bold">— BELUM ADA TAP</span>
                                 }
                               </td>
                               <td className="p-2 font-bold">{sid}</td>
-                              <td className="p-2 text-blue-600">BLE Active</td>
+                              <td className={`p-2 ${hasBleTag ? 'text-blue-600' : 'text-slate-400'}`}>{hasBleTag ? 'BLE Active' : 'Tidak terdeteksi'}</td>
                               <td className="p-2">{hasTapped ? '✅ Tapped' : '❌ Belum'}</td>
                             </tr>
                           );
@@ -343,7 +361,7 @@ export default function Dashboard() {
                       ) : (
                         <tr>
                           <td colSpan="4" className="p-6 text-center text-slate-400 italic">
-                            {complianceUnavailable ? 'Menunggu data BLE...' : 'Tidak ada mekanik terdeteksi'}
+                            {complianceUnavailable ? 'Menunggu snapshot compliance terbaru...' : 'Belum ada BLE atau LOTO tap pada snapshot ini'}
                           </td>
                         </tr>
                       )}

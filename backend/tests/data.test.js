@@ -26,6 +26,7 @@ function telemetryFixture({duplicate=false,failInsert=false}={}) {
   return connectionFixture(sql=>{
     if(sql.startsWith('SELECT * FROM boxes'))return [[box]];
     if(sql.startsWith('SELECT event_id'))return [duplicate?[{event_id:'event-1'}]:[]];
+    if(sql.startsWith('SELECT id FROM rfid_buffer'))return [[]];
     if(sql.startsWith('SELECT nama'))return [[{nama:'Test'}]];
     if(failInsert && sql.startsWith('INSERT INTO tapping_history'))throw new Error('simulated storage failure');
     return [{affectedRows:1}];
@@ -52,6 +53,16 @@ test('offline refueling replay cannot open or close a current refueling session'
     assert.ok(state.queries.some(([sql]) => sql.startsWith('INSERT INTO tapping_history')));
     assert.equal(state.commits, 1);
   }
+});
+test('an unregistered card scan is queued once for personnel registration', async () => {
+  const state = telemetryFixture();
+  await recordTelemetry('box-1', {
+    event_id: 'new-card-scan', event: 'SCAN_REJECTED_UNREGISTERED', uid: 'NEW-CARD-UID'
+  });
+  const insert = state.queries.find(([sql]) => sql.startsWith('INSERT INTO rfid_buffer'));
+  assert.ok(insert);
+  assert.deepEqual(insert[1], ['box-1', 'NEW-CARD-UID']);
+  assert.equal(state.commits, 1);
 });
 test('GPS without fix preserves coordinates and session start is serialized on the box row',async()=>{
   const state=telemetryFixture();

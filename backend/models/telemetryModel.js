@@ -55,7 +55,11 @@ export async function recordTelemetry(idBox, body) {
       await c.query(`INSERT INTO tapping_history (id_box, session_id, rfid_uid, nama, event_type, event_text, lat, lng, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [idBox, body.replay ? null : session, uid, users[0]?.nama || null, eventType(event), event, lat, lng]);
     }
-    if (event === 'REGISTER_NEW_CARD') {
+    // A new card may be scanned from the dedicated registration screen or
+    // encountered during normal LOTO operation.  Both cases need to reach
+    // the personnel-registration buffer; the latter remains an audit
+    // rejection and never authorizes the card for the active session.
+    if (event === 'REGISTER_NEW_CARD' || event === 'SCAN_REJECTED_UNREGISTERED') {
       const [buffer] = await c.query('SELECT id FROM rfid_buffer WHERE id_box = ? AND rfid_uid = ? LIMIT 1', [idBox, uid]);
       if (!buffer.length) await c.query('INSERT INTO rfid_buffer (id_box, rfid_uid) VALUES (?, ?)', [idBox, uid]);
     }

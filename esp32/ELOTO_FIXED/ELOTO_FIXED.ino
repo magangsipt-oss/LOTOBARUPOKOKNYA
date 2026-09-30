@@ -106,7 +106,9 @@ portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
 uint32_t wifiConnectStartedAt = 0;
 
-const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
+// Keep a successful card popup on screen long enough for a cached or freshly
+// downloaded profile photo to be seen.
+const uint32_t NOTIFICATION_SUCCESS_DURATION = 1500;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 700;   // was 1000
 const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 // Batas ini menjaga JPEG hasil resize tetap aman untuk ESP32 tanpa PSRAM.
@@ -1183,6 +1185,10 @@ bool isFuelmanRole(const String &role) {
     return (r.indexOf("FUEL") != -1 || r.indexOf("BBM") != -1);
 }
 
+// Optional local allow-list for an offline-only geofence warning.  The
+// backend is the source of truth for registered BLE tags, so an empty list
+// means the scanner reports nearby BLE advertisements and the server filters
+// them against ble_tags.mac_address.
 const char *const GEO_MECHANIC_MACS[] = { "" };
 const uint32_t GEO_TAG_TIMEOUT_MS = 25000;
 const uint32_t GEO_WARNING_DELAY_MS = 3000;
@@ -1207,14 +1213,19 @@ const uint32_t BLE_START_DELAY_MS = 12000;
 const uint32_t BLE_MIN_FREE_HEAP = 50000;
 uint32_t bleStartLastDeferredLogMs = 0;
 
-bool geoAllowedMac(const String &mac) {
-    bool configured = false;
+bool geoHasConfiguredMacs() {
     for (const char *allowed : GEO_MECHANIC_MACS) {
-        if (!allowed[0]) continue;
-        configured = true;
-        if (mac.equalsIgnoreCase(allowed)) return true;
+        if (allowed[0]) return true;
     }
-    return !configured;
+    return false;
+}
+
+bool geoAllowedMac(const String &mac) {
+    if (!geoHasConfiguredMacs()) return true;
+    for (const char *allowed : GEO_MECHANIC_MACS) {
+        if (allowed[0] && mac.equalsIgnoreCase(allowed)) return true;
+    }
+    return false;
 }
 
 class GeoAdvertCallbacks : public NimBLEScanCallbacks {
@@ -1226,10 +1237,6 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
         name.toUpperCase();
         if (name.indexOf("WATCH") >= 0 || name.indexOf("HAYLOU") >= 0 ||
             name.indexOf("BAND") >= 0 || name.indexOf("BUDS") >= 0 || name.indexOf("PHONE") >= 0) return;
-        bool itag = (device->haveServiceUUID() &&
-            device->isAdvertisingService(NimBLEUUID((uint16_t)0x1802))) ||
-            name.indexOf("ITAG") >= 0 || name.indexOf("ISEARCH") >= 0;
-
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
         for (uint8_t i = 0; i < geoTagCount; ++i) {
@@ -1238,13 +1245,14 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
                 portEXIT_CRITICAL(&geoMux); return;
             }
         }
-        if (itag) {
-            if (geoTagCount < GEO_MAX_TAGS) {
-                mac.toCharArray(geoTags[geoTagCount].mac, 18);
-                geoTags[geoTagCount].rssi = device->getRSSI();
-                geoTags[geoTagCount++].seen = now;
-            } else { geoOverflow = true; geoOverflowSeen = now; }
-        }
+        // Do not require the legacy iTag service/name here.  Registered tags
+        // can use another BLE advertisement format; report their MAC and let
+        // the backend resolve only registered ble_tags entries to a SID.
+        if (geoTagCount < GEO_MAX_TAGS) {
+            mac.toCharArray(geoTags[geoTagCount].mac, 18);
+            geoTags[geoTagCount].rssi = device->getRSSI();
+            geoTags[geoTagCount++].seen = now;
+        } else { geoOverflow = true; geoOverflowSeen = now; }
         portEXIT_CRITICAL(&geoMux);
     }
 };
@@ -1317,7 +1325,10 @@ void serviceGeofence() {
 
     bool healthy = completed && !overflow && uint32_t(now - heartbeat) <= GEO_SCANNER_STALE_MS;
     int taps = geoMechanicsTapped();
-    bool excess = isSessionActive && healthy && count > taps;
+    // Without a firmware allow-list, geoTagCount can include unrelated BLE
+    // advertisements.  The backend filters those by registered MAC, so keep
+    // the local count-warning disabled until an explicit allow-list is set.
+    bool excess = isSessionActive && healthy && geoHasConfiguredMacs() && count > taps;
     if (excess) {
         if (!geoPending) { geoPending = true; geoPendingSince = now; }
     } else geoPending = false;
@@ -1419,7 +1430,7 @@ void drawGeofencePage() {
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     tft.drawString("KONFIRMASI GEOFENCE / BLE", 240, 72);
     setStoryFont(12); tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-    tft.drawString("iTag terdeteksi : " + String(geoCount), 240, 112);
+    tft.drawString("BLE terdeteksi  : " + String(geoCount), 240, 112);
     tft.drawString("Mekanik sudah tap : " + String(geoTapCount), 240, 144);
     setStoryFont(9); tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     const char *status = !geoHealthy ? "BLE BELUM SIAP / DATA TIDAK VALID" :
@@ -1858,8 +1869,9 @@ void displayCardNotification(String uid, String name, String role, String status
 
     tft.fillRect(25, 91, 150, 150, ELOTO_BG);
     tft.drawRect(25, 91, 150, 150, ELOTO_TEXT);
-    // Popup masuk/keluar harus cepat: hanya gunakan cache lokal di jalur ini.
-    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, false)) {
+    // Prefer the SD cache, then fetch and cache the user's JPEG on its first
+    // tap so a valid profile photo is visible on the TFT.
+    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, true)) {
         drawSinglePersonIcon(100, 166, 2.5, ELOTO_HEADER, false);
     }
 
@@ -1899,7 +1911,9 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
         int16_t photoSize = 100;
         tft.fillRect(photoX, photoY, photoSize, photoSize, ELOTO_BG);
         tft.drawRect(photoX, photoY, photoSize, photoSize, ELOTO_TEXT);
-        drawSinglePersonIcon(photoX + (photoSize / 2), photoY + (photoSize / 2), 1.5, ELOTO_HEADER, false);
+        if (!drawPhotoFromAPI(uid, photoX, photoY, photoSize, photoSize, true)) {
+            drawSinglePersonIcon(photoX + (photoSize / 2), photoY + (photoSize / 2), 1.5, ELOTO_HEADER, false);
+        }
 
         tft.setTextDatum(TL_DATUM);
         drawTextFit("NAMA    : " + name, 138, 104, 310, ELOTO_HEADER, ELOTO_BG, 9);
@@ -1977,7 +1991,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
 
     tft.fillRect(25, 91, 150, 150, ELOTO_BG);
     tft.drawRect(25, 91, 150, 150, TFT_GREEN);
-    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, false)) {
+    if (!drawPhotoFromAPI(uid, 25, 91, 150, 150, true)) {
         drawSinglePersonIcon(100, 166, 2.5, TFT_GREEN, false);
     }
 
