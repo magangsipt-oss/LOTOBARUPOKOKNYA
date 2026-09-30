@@ -14,6 +14,7 @@
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
+#include <esp_system.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <FS.h>
@@ -92,8 +93,11 @@ String device_id        = ELOTO_DEVICE_ID;
 String wifi_ssid        = ELOTO_NETWORK_SSID;
 String wifi_password    = ELOTO_NETWORK_PASSWORD;
 String server_host      = "";
-IPAddress configuredServerIp(10, 91, 191, 35);
-bool configuredServerIpValid = true;
+// Jangan mematok IP laptop di firmware: alamat ini berubah saat jaringan/hotspot
+// berganti. SERVER pada SD adalah prioritas; bila tidak diisi, discovery mencari
+// backend E-LOTO pada subnet Wi-Fi yang sama dengan ESP32.
+IPAddress configuredServerIp(0, 0, 0, 0);
+bool configuredServerIpValid = false;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const uint16_t SERVER_PORT       = 5002;
@@ -105,6 +109,9 @@ uint32_t wifiConnectStartedAt = 0;
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 450;   // was 800
 const uint32_t NOTIFICATION_ERROR_DURATION   = 700;   // was 1000
 const uint16_t PHOTO_DISPLAY_SIZE            = 150;
+// Batas ini menjaga JPEG hasil resize tetap aman untuk ESP32 tanpa PSRAM.
+const size_t PHOTO_MAX_BYTES                 = 60000;
+const uint32_t PHOTO_MIN_FREE_HEAP           = 30000;
 
 String getServerBaseUrl() {
     String host = server_host;
@@ -997,10 +1004,73 @@ void drawTftFooterTriple(const String &leftText, const String &midText, const St
     }
 }
 
-// Foto dibaca dengan SATU kali akses SD (tanpa SD.exists terpisah)
+bool cachePhotoToSD(const String &photoPath, const uint8_t *jpegData, size_t jpegSize) {
+    if (!sdCardMounted || jpegData == NULL || jpegSize <= 100 || jpegSize > PHOTO_MAX_BYTES) return false;
+    if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return false;
+
+    String temporary = photoPath + ".tmp";
+    String backup = photoPath + ".bak";
+    bool cached = recoverSdFile(photoPath.c_str(), temporary.c_str(), backup.c_str());
+    if (cached) {
+        File file = SD.open(temporary, FILE_WRITE);
+        cached = file && file.write(jpegData, jpegSize) == jpegSize;
+        if (file) {
+            file.flush();
+            file.close();
+        }
+        if (cached) cached = commitSdFile(photoPath.c_str(), temporary.c_str(), backup.c_str());
+        else if (SD.exists(temporary)) SD.remove(temporary);
+    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
+    return cached;
+}
+
+// Ambil versi kecil JPEG dari backend saat cache SD tidak ada. Endpoint ini memang
+// mengizinkan kredensial perangkat, sehingga foto tidak perlu ikut dimasukkan ke users.csv.
+bool fetchPhotoFromAPI(const String &uid, uint8_t *&jpegData, size_t &jpegSize) {
+    jpegData = NULL;
+    jpegSize = 0;
+    if (WiFi.status() != WL_CONNECTED || getServerBaseUrl().length() == 0 ||
+        ESP.getFreeHeap() < PHOTO_MIN_FREE_HEAP) return false;
+
+    WiFiClient client;
+    client.setTimeout(2500);
+    HTTPClient http;
+    String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=55";
+    if (!http.begin(client, url)) {
+        Serial.println("[PHOTO] HTTP begin gagal");
+        return false;
+    }
+    http.addHeader("X-Device-Token", device_token);
+    http.setTimeout(2500);
+    int httpCode = http.GET();
+    int contentLength = http.getSize();
+    bool validLength = contentLength > 100 && contentLength <= (int)PHOTO_MAX_BYTES &&
+        (uint32_t)contentLength + PHOTO_MIN_FREE_HEAP <= ESP.getFreeHeap();
+    if (httpCode == HTTP_CODE_OK && validLength) {
+        jpegSize = (size_t)contentLength;
+        jpegData = static_cast<uint8_t *>(malloc(jpegSize));
+        WiFiClient *stream = http.getStreamPtr();
+        if (jpegData == NULL || stream == NULL || stream->readBytes(jpegData, jpegSize) != jpegSize ||
+            jpegData[0] != 0xFF || jpegData[1] != 0xD8) {
+            if (jpegData != NULL) free(jpegData);
+            jpegData = NULL;
+            jpegSize = 0;
+        }
+    }
+    if (jpegData == NULL) {
+        Serial.printf("[PHOTO] Backend gagal uid=%s HTTP=%d size=%d\n", uid.c_str(), httpCode, contentLength);
+    }
+    http.end();
+    return jpegData != NULL;
+}
+
+// Cache SD diprioritaskan agar popup tap tetap cepat; apabila cache/kartu SD tidak
+// tersedia, foto diunduh langsung dari backend lalu dicache untuk tap berikutnya.
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH) {
     uid.trim(); uid.toUpperCase();
-    if (uid == "" || ESP.getFreeHeap() < 40000) return false;
+    if (uid == "" || ESP.getFreeHeap() < PHOTO_MIN_FREE_HEAP) return false;
 
     String photoPath = "/foto/" + uid + ".jpg";
     uint8_t *jpegData = NULL;
@@ -1011,7 +1081,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         File f = SD.open(photoPath, FILE_READ);
         if (f) {
             jpegSize = f.size();
-            if (jpegSize > 100 && jpegSize < 50000) {
+            if (jpegSize > 100 && jpegSize <= PHOTO_MAX_BYTES) {
                 jpegData = static_cast<uint8_t *>(malloc(jpegSize));
                 if (jpegData != NULL && f.read(jpegData, jpegSize) != jpegSize) {
                     free(jpegData);
@@ -1022,6 +1092,12 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         }
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
+    }
+
+    if (jpegData == NULL && fetchPhotoFromAPI(uid, jpegData, jpegSize)) {
+        if (cachePhotoToSD(photoPath, jpegData, jpegSize)) {
+            Serial.printf("[PHOTO] Cache diperbarui uid=%s (%u byte)\n", uid.c_str(), (unsigned)jpegSize);
+        }
     }
 
     bool drawn = false;
@@ -1125,6 +1201,11 @@ bool geoPending = false;
 uint32_t geoPendingSince = 0;
 uint32_t geoLastPaint = 0;
 bool geoBannerWasVisible = false;
+// NimBLE memakai heap cukup besar. Menjalankannya bersamaan dengan inisialisasi
+// TFT, SD, GPS dan Wi-Fi dapat memicu panic/WDT pada ESP32 tanpa PSRAM.
+const uint32_t BLE_START_DELAY_MS = 12000;
+const uint32_t BLE_MIN_FREE_HEAP = 50000;
+uint32_t bleStartLastDeferredLogMs = 0;
 
 bool geoAllowedMac(const String &mac) {
     bool configured = false;
@@ -1200,6 +1281,14 @@ void geoScanTask(void *unused) {
 
 bool ensureGeoScanTask() {
     if (geoTaskHandle != NULL) return true;
+    if (millis() < BLE_START_DELAY_MS || ESP.getFreeHeap() < BLE_MIN_FREE_HEAP) {
+        if (millis() - bleStartLastDeferredLogMs >= 5000) {
+            bleStartLastDeferredLogMs = millis();
+            Serial.printf("[BLE] Scanner ditunda: uptime=%lu heap=%u\\n",
+                millis(), ESP.getFreeHeap());
+        }
+        return false;
+    }
     if (xTaskCreatePinnedToCore(geoScanTask, "BLEConfirm", 6144,
             NULL, 1, &geoTaskHandle, 0) == pdPASS) {
         Serial.println("[BLE] Scanner task started");
@@ -4189,6 +4278,8 @@ void handleNotFound() {
 void setup() {
     Serial.begin(115200);
     delay(50);
+    Serial.printf("[BOOT] reset_reason=%d free_heap=%u\\n",
+        (int)esp_reset_reason(), ESP.getFreeHeap());
     pinMode(TFT_CS_PIN, OUTPUT);
     digitalWrite(TFT_CS_PIN, HIGH);
     pinMode(SD_CS_PIN, OUTPUT);
@@ -4282,7 +4373,8 @@ void setup() {
         selectedFooterAction = 1; // Default sorot tombol LANJUT
     }
 
-    ensureGeoScanTask();
+    // BLE dimulai oleh loop setelah perangkat stabil; jangan bertabrakan dengan
+    // lonjakan inisialisasi SD/TFT/GPS/Wi-Fi saat boot.
     forceFullRedraw = true;
     lastRenderedState = STATE_SYSTEM_ERROR;
     needsRedraw = true;

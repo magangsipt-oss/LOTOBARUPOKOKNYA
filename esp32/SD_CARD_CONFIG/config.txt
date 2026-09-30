@@ -4,7 +4,8 @@ WIFI_1_PASS=replace-with-primary-wifi-password
 WIFI_2_SSID=your-backup-wifi
 WIFI_2_PASS=replace-with-backup-wifi-password
 
-# Backend laptop saat ESP memakai Windows hotspot. Ubah sesuai IP laptop di jaringan yang sama.
-SERVER=10.91.191.35:5002
+# Backend laptop. Isi dengan IPv4 laptop yang berada di Wi-Fi yang SAMA dengan ESP32.
+# Contoh sesi ini: SERVER=192.168.1.41:5002 (akan berubah bila jaringan berganti).
+SERVER=replace-with-backend-ip:5002
 TOKEN=replace-with-a-random-device-token-at-least-32-characters
 DEVICE_ID=BOX-CLIENT-001

@@ -31,7 +31,7 @@ test('firmware keeps device credentials available and reloads SD config after a 
   assert.match(source, /#include "device_secrets\.h"/);
   assert.match(source, /String device_id\s*=\s*ELOTO_DEVICE_ID;/);
   assert.match(source, /String device_token\s*=\s*ELOTO_DEVICE_TOKEN;/);
-  assert.match(source, /if \(mounted\) \{\s*sdCardMounted = true;\s*loadConfigFromSD\(\);/);
+  assert.match(source, /if \(mounted\) \{[\s\S]{0,300}sdCardMounted = true;\s*loadConfigFromSD\(\);/);
 });
 
 test('firmware declares custom GPS return type before Arduino prototype generation', () => {
@@ -51,4 +51,13 @@ test('firmware retries SD event records with byte-accurate acknowledgement', () 
   assert.match(source, /copiedBytes == expectedBytes/);
   assert.match(source, /MAX_OFFLINE_BATCH = 1/);
   assert.match(source, /millis\(\) > 60000[\s\S]{0,400}sdSyncOk[\s\S]{0,250}uploadOfflineLogsSDCard\(\)/);
+});
+
+test('firmware obtains a profile photo from the backend when the SD cache is unavailable', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+
+  assert.match(source, /getApiUrl\("users\/photo\/"\)/);
+  assert.match(source, /http\.addHeader\("X-Device-Token", device_token\)/);
+  assert.match(source, /jpegData == NULL && fetchPhotoFromAPI\(uid, jpegData, jpegSize\)/);
 });
