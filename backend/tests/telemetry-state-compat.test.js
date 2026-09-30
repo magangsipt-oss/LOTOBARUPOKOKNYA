@@ -248,6 +248,12 @@ test('isTap returns true for IN/OUT events, false for CHECK', () => {
   assert.equal(isTap('GPS_FIX_LOCKED'), false);
 });
 
+test('tap classification is case and whitespace insensitive', () => {
+  assert.equal(eventType(' mechanic_log_in '), 'IN');
+  assert.equal(eventType('supervisor_log_out'), 'OUT');
+  assert.equal(isTap(' refuel_start '), true);
+});
+
 // ============================================================================
 // GPS field handling — lon vs lng
 // ============================================================================

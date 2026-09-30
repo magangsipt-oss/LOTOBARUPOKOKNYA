@@ -11,7 +11,9 @@ export async function recordTelemetry(idBox, body) {
     const [seen] = await c.query('SELECT event_id FROM device_events WHERE id_box = ? AND event_id = ?', [idBox, body.event_id]);
     if (seen.length) { await c.commit(); return { duplicate: true }; }
     await c.query('INSERT INTO device_events (id_box, event_id) VALUES (?, ?)', [idBox, body.event_id]);
-    const event = body.event || 'HEARTBEAT_SYNC';
+    // The ESP32 emits upper-case event names, but normalize here as well so an
+    // older firmware or manual retry cannot silently skip tapping_history.
+    const event = String(body.event || 'HEARTBEAT_SYNC').trim().toUpperCase();
     const uid = body.uid || 'SYSTEM';
     let session = box.active_session_id;
     // Replayed records retain their event identity and never replace current hardware state.
