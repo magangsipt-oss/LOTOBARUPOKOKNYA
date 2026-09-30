@@ -1,4 +1,4 @@
-// E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (FAST REVISION)
+﻿// E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (FAST REVISION)
 // Target: original dual-core ESP32 shield. See PANDUAN_ELOTO.md before upload.
 // Perubahan revisi ini: GPS lebih cepat lock, tapping cepat (popup tidak buang tap,
 // simpan sesi ditunda, foto/pencarian SD satu kali akses), efisiensi jaringan BLE.
