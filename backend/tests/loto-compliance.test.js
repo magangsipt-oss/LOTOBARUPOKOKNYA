@@ -163,12 +163,50 @@ test('tag registration normalizes MAC and verifies the assigned user', async () 
     statements.push([sql, args]);
     if (sql.startsWith('SELECT id')) return [[]];
     if (sql.startsWith('SELECT sid')) return [[{ sid: 'SID-1' }]];
+    if (sql.startsWith('SELECT DISTINCT id_box')) return [[]];
     return [{ affectedRows: 1 }];
   };
   const res = await invoke('registerTag', { mac_address: ` ${mac.toLowerCase()} `, tag_name: ' Tag 1 ', assigned_sid: 'SID-1' });
   assert.equal(res.statusCode, 201);
   assert.deepEqual(res.body.data, { mac_address: mac, tag_name: 'Tag 1', assigned_sid: 'SID-1' });
   assert.deepEqual(statements.find(([sql]) => sql.startsWith('INSERT'))[1], [mac, 'Tag 1', 'SID-1']);
+});
+
+test('assigning a BLE tag refreshes compliance from recent presence immediately', async () => {
+  const snapshots = [];
+  pool.query = async sql => {
+    if (sql.startsWith('SELECT id')) return [[]];
+    if (sql.startsWith('SELECT sid')) return [[{ sid: 'SID-1' }]];
+    if (sql.startsWith('SELECT DISTINCT id_box')) return [[{ id_box: 'BOX-1' }]];
+    return [{ affectedRows: 1 }];
+  };
+  pool.getConnection = async () => ({
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    async query(sql, args) {
+      if (sql.startsWith('SELECT active_session_id')) return [[{ active_session_id: 7 }]];
+      if (sql.startsWith('SELECT DISTINCT u.sid')) return [[{ sid: 'SID-1' }]];
+      if (sql.includes('FROM queue q')) return [[{ sid: 'SID-1' }]];
+      if (sql.startsWith('INSERT INTO loto_compliance')) {
+        snapshots.push({ sql, args });
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected fixture query: ${sql}`);
+    }
+  });
+
+  const res = await invoke('registerTag', { mac_address: mac, assigned_sid: 'SID-1' });
+  assert.equal(res.statusCode, 201);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].args[0], 'BOX-1');
+  assert.equal(snapshots[0].args[1], 1);
+  assert.equal(snapshots[0].args[2], 1);
+  assert.equal(snapshots[0].args[3], 0);
+  assert.deepEqual(JSON.parse(snapshots[0].args[4]), ['SID-1']);
+  assert.deepEqual(JSON.parse(snapshots[0].args[5]), ['SID-1']);
+  assert.deepEqual(JSON.parse(snapshots[0].args[6]), []);
 });
 
 test('unknown user assignments fail without inserting or updating tags', async () => {
@@ -189,7 +227,11 @@ test('a concurrent duplicate tag registration returns conflict instead of a serv
 
 test('tag updates support explicit unassignment and preserve omitted fields', async () => {
   const statements = [];
-  pool.query = async (sql, args) => { statements.push([sql, args]); return [{ affectedRows: 1 }]; };
+  pool.query = async (sql, args) => {
+    if (sql.startsWith('SELECT DISTINCT id_box')) return [[]];
+    statements.push([sql, args]);
+    return [{ affectedRows: 1 }];
+  };
   assert.equal((await invoke('updateTag', { assigned_sid: null }, { params: { id: '1' } })).statusCode, 200);
   assert.deepEqual(statements[0], ['UPDATE ble_tags SET assigned_sid = ? WHERE id = ?', [null, 1]]);
   assert.equal((await invoke('updateTag', { is_active: false }, { params: { id: '1' } })).statusCode, 200);

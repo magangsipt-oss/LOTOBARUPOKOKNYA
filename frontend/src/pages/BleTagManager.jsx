@@ -14,6 +14,8 @@ export default function BleTagManager() {
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formTag, setFormTag] = useState({ mac_address: '', tag_name: '', assigned_sid: '' });
+  const [presenceAssignments, setPresenceAssignments] = useState({});
+  const [pairingMac, setPairingMac] = useState('');
   const [chosenBoxId, setSelectedBoxId] = useState('');
   const [tagRevision, setTagRevision] = useState(0);
   const selectedBoxId = boxes.some(box => String(box.id) === chosenBoxId) ? chosenBoxId : String(boxes[0]?.id || '');
@@ -84,6 +86,55 @@ export default function BleTagManager() {
       pemicuToast('Gagal mendaftarkan BLE tag: ' + (err.message || ''), 'fail');
     }
     setLoading(false);
+  };
+
+  const handlePairPresence = async (presence) => {
+    if (!canManageTags || pairingMac) return;
+    const mac = String(presence.ble_mac || '').trim().toUpperCase();
+    const assignedSid = presenceAssignments[mac] || presence.assigned_sid || '';
+    const assignedUser = userDatabase.find(user => String(user.sid) === String(assignedSid));
+    if (!mac || !assignedSid || !assignedUser) {
+      pemicuToast('Pilih mekanik sebelum memasangkan tag.', 'fail');
+      return;
+    }
+
+    setPairingMac(mac);
+    try {
+      const existingTag = bleTags.find(tag => String(tag.mac_address).toUpperCase() === mac);
+      const result = existingTag
+        ? await logService.updateBleTag(existingTag.id, { assigned_sid: assignedSid })
+        : await logService.registerBleTag({ mac_address: mac, assigned_sid: assignedSid });
+      if (!result?.success && result?.status !== 'success') {
+        throw new Error(result?.message || 'Gagal memasangkan BLE tag.');
+      }
+
+      const savedTag = {
+        ...(existingTag || {}),
+        id: existingTag?.id,
+        mac_address: mac,
+        tag_name: existingTag?.tag_name || presence.tag_name || null,
+        assigned_sid: assignedSid,
+        assigned_name: assignedUser.nama,
+        assigned_role: assignedUser.role,
+        is_active: existingTag?.is_active ?? 1,
+      };
+      if (existingTag) {
+        setBleTags(current => current.map(tag => tag.id === existingTag.id ? savedTag : tag));
+      }
+      setPresenceResult(current => current.boxId !== selectedBoxId ? current : {
+        ...current,
+        rows: current.rows.map(row => String(row.ble_mac).toUpperCase() === mac
+          ? { ...row, assigned_sid: assignedSid, nama: assignedUser.nama, role: assignedUser.role, is_registered: true }
+          : row)
+      });
+      setPresenceAssignments(current => ({ ...current, [mac]: assignedSid }));
+      pemicuToast(`BLE tag ${mac} langsung dipasangkan ke ${assignedUser.nama}.`, 'ok');
+      setTagRevision(revision => revision + 1);
+    } catch (error) {
+      pemicuToast(error.message || 'Gagal memasangkan BLE tag.', 'fail');
+    } finally {
+      setPairingMac('');
+    }
   };
 
   // Delete BLE tag
@@ -205,6 +256,7 @@ export default function BleTagManager() {
                 <th className="p-3">Mekanik (SID)</th>
                 <th className="p-3">Role</th>
                 <th className="p-3">Last Seen</th>
+                {canManageTags && <th className="p-3">Pairing</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -224,9 +276,32 @@ export default function BleTagManager() {
                   </td>
                   <td className="p-3 text-slate-600">{presence.role || '—'}</td>
                   <td className="p-3 text-slate-500">{presence.last_seen ? new Date(presence.last_seen).toLocaleTimeString('id-ID') : '—'}</td>
+                  {canManageTags && <td className="p-3">
+                    <div className="flex min-w-56 items-center gap-1.5">
+                      <select
+                        aria-label={`Pilih mekanik untuk BLE tag ${presence.ble_mac}`}
+                        value={presenceAssignments[presence.ble_mac] ?? presence.assigned_sid ?? ''}
+                        onChange={event => setPresenceAssignments(current => ({ ...current, [presence.ble_mac]: event.target.value }))}
+                        className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1.5 text-[10px]"
+                      >
+                        <option value="">Pilih mekanik</option>
+                        {userDatabase.filter(user => ['teknisi', 'mekanik', 'worker'].includes(user.role)).map(user => (
+                          <option key={user.sid} value={user.sid}>{user.nama} ({user.sid})</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={Boolean(pairingMac) || !(presenceAssignments[presence.ble_mac] || presence.assigned_sid)}
+                        onClick={() => handlePairPresence(presence)}
+                        className="shrink-0 rounded bg-red-600 px-2 py-1.5 text-[10px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {pairingMac === String(presence.ble_mac).toUpperCase() ? 'Menyimpan…' : presence.is_registered ? 'Simpan' : 'Pair'}
+                      </button>
+                    </div>
+                  </td>}
                 </tr>
               )) : (
-                <tr><td colSpan="6" className="p-8 text-center text-slate-400 italic">Tidak ada BLE tag yang terdeteksi aktif</td></tr>
+                <tr><td colSpan={canManageTags ? 7 : 6} className="p-8 text-center text-slate-400 italic">Tidak ada BLE tag yang terdeteksi aktif</td></tr>
               )}
             </tbody>
           </table>

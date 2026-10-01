@@ -46,6 +46,71 @@ function errorResponse(res, error, message, operation) {
   });
 }
 
+async function refreshComplianceForRecentPresence() {
+  const [recentBoxes] = await pool.query(
+    `SELECT DISTINCT id_box FROM ble_presence_log
+     WHERE detected_at >= NOW() - INTERVAL 60 SECOND`
+  );
+
+  for (const { id_box: idBox } of recentBoxes) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [boxes] = await connection.query(
+        'SELECT active_session_id FROM boxes WHERE id_box = ? FOR UPDATE',
+        [idBox]
+      );
+      if (!boxes.length) {
+        await connection.commit();
+        continue;
+      }
+
+      const [tagRows] = await connection.query(
+        `SELECT DISTINCT u.sid
+         FROM ble_presence_log p
+         JOIN ble_tags bt ON bt.mac_address = p.ble_mac AND bt.is_active = 1
+         JOIN users u ON u.sid = bt.assigned_sid
+         WHERE p.id_box = ? AND p.detected_at >= NOW() - INTERVAL 60 SECOND`,
+        [idBox]
+      );
+      const detectedSids = [...new Set(tagRows.map(row => row.sid).filter(Boolean))];
+      const sessionId = boxes[0].active_session_id;
+      const [tappedRows] = sessionId == null ? [[]] : await connection.query(
+        `SELECT DISTINCT COALESCE(card_user.sid, sid_user.sid) AS sid
+         FROM queue q
+         LEFT JOIN users card_user ON card_user.rfid_uid = q.rfid_uid
+         LEFT JOIN users sid_user ON sid_user.sid = q.rfid_uid AND card_user.sid IS NULL
+         WHERE q.id_box = ? AND q.session_id = ?`,
+        [idBox, sessionId]
+      );
+      const tappedSids = [...new Set(tappedRows.map(row => row.sid).filter(Boolean))];
+      const missingSids = detectedSids.filter(sid => !tappedSids.includes(sid));
+
+      await connection.query(
+        `INSERT INTO loto_compliance
+           (id_box, ble_detected_count, loto_tapped_count, missing_count,
+            detected_sids, tapped_sids, missing_sids, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [
+          idBox,
+          detectedSids.length,
+          tappedSids.length,
+          missingSids.length,
+          JSON.stringify(detectedSids),
+          JSON.stringify(tappedSids),
+          JSON.stringify(missingSids)
+        ]
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+}
+
 /**
  * Controller untuk BLE LOTO Compliance Monitoring
  * - BLE Smart Tag presence detection
@@ -233,6 +298,10 @@ const lotoComplianceController = {
         'INSERT INTO ble_tags (mac_address, tag_name, assigned_sid, is_active) VALUES (?, ?, ?, 1)',
         [cleanMac, tag_name, assigned_sid]
       );
+      if (assigned_sid) {
+        try { await refreshComplianceForRecentPresence(); }
+        catch (error) { console.error('BLE pairing snapshot refresh failed:', error.message); }
+      }
 
       return res.status(201).json({
         success: true,
@@ -265,6 +334,10 @@ const lotoComplianceController = {
       if (has(body, 'assigned_sid')) await validateAssignment(optionalText(body.assigned_sid, 50, 'assigned_sid'));
       const [result] = await pool.query(`UPDATE ble_tags SET ${updates.join(', ')} WHERE id = ?`, [...values, id]);
       if (result.affectedRows === 0) fail('BLE tag tidak ditemukan', 404);
+      if (has(body, 'assigned_sid') || has(body, 'is_active')) {
+        try { await refreshComplianceForRecentPresence(); }
+        catch (error) { console.error('BLE pairing snapshot refresh failed:', error.message); }
+      }
 
       return res.status(200).json({ success: true, message: 'BLE tag berhasil diperbarui' });
     } catch (error) {
