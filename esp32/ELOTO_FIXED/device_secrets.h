@@ -1,7 +1,3 @@
-#ifndef ELOTO_DEVICE_ID
-#define ELOTO_DEVICE_ID "BOX-CLIENT-001"
-#endif
-
-#ifndef ELOTO_DEVICE_TOKEN
-#define ELOTO_DEVICE_TOKEN ""
-#endif
+#pragma once
+// No device credentials belong in this tracked file.
+// Optional values are loaded from ignored local override headers or the SD card.

@@ -1,2 +1,2 @@
 #pragma once
-#define ELOTO_DEVICE_TOKEN "fb11b45dc7262764201948830f149e2e9308f643ea7fee8fd846a5741c5bfe8c"
+// Local credentials belong in this ignored file, not in Git.

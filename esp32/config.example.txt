@@ -1,6 +1,8 @@
 DEVICE_ID=BOX-CLIENT-001
 WIFI_1_SSID=your-primary-wifi
 WIFI_1_PASS=your-primary-wifi-password
-# Ganti dengan IPv4 privat komputer backend yang terlihat dari Wi-Fi ESP32.
-SERVER=replace-with-backend-ip:5002
+# Production: hostname HTTPS pada VPS; salin root CA TLS ke /server_ca.pem di SD.
+SERVER=https://your-eloto-domain.example
+# Untuk LAN tepercaya saja, boleh gunakan misalnya http://192.168.1.10:5002.
+# HTTPS will stay disabled unless a valid root CA PEM exists at /server_ca.pem.
 TOKEN=replace-with-a-random-device-token-at-least-32-characters

@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
     Browser[Dashboard React] -->|API dan cookie sesi| API[Backend Express]
-    ESP[ESP32] -->|HTTP LAN dan token perangkat| API
+    ESP[ESP32] -->|HTTPS + token perangkat; HTTP privat hanya di LAN| API
     Camera[Kamera RTSP] --> Counting[Worker Python]
     Counting -->|Count dan token perangkat| API
     API --> DB[(MySQL)]
@@ -13,7 +13,7 @@ flowchart LR
     ESP --> SD[SD: konfigurasi, cache pengguna, antrean offline]
 ```
 
-Saat development, Vite pada port 3000 mem-proxy `/api` ke backend port 5002. Saat production, reverse proxy HTTPS menyajikan `frontend/dist` dan meneruskan `/api` ke backend. Worker counting dan backend menggunakan loopback untuk MJPEG sehingga harus berada pada host/jaringan loopback yang sama pada konfigurasi saat ini.
+Saat development, Vite pada port 3000 mem-proxy `/api` ke backend port 5002. Saat production, reverse proxy HTTPS menyajikan `frontend/dist` dan meneruskan `/api` ke backend yang hanya bind ke loopback. ESP32 memakai hostname HTTPS, CA tepercaya dari SD, dan token per boks. HTTP hanya diterima untuk endpoint LAN privat yang dipilih eksplisit; sketch tidak lagi mengirim token ke hasil pemindaian subnet. Worker counting dan backend menggunakan loopback untuk MJPEG sehingga harus berada pada host/jaringan loopback yang sama pada konfigurasi saat ini.
 
 ## Identitas dan otorisasi
 

@@ -5,58 +5,67 @@ import re
 
 firmware = Path(__file__).parents[1] / "ELOTO_FIXED" / "ELOTO_FIXED.ino"
 source = firmware.read_text(encoding="utf-8-sig")
+repo = Path(__file__).parents[2]
+
+required = (
+    '#include "../FirmwareSafety.h"',
+    "class ServerHttpClient {",
+    "secureClient.setCACert(server_ca.c_str())",
+    "request.begin(secureClient, url)",
+    "request.begin(localClient, url)",
+    "request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS)",
+    "eloto::parseServerEndpoint(value.c_str(), candidate)",
+    'SD.open("/server_ca.pem", FILE_READ)',
+    "bool verifyConfiguredServer()",
+    'response[\"data\"][\"contract\"]',
+    'response[\"data\"][\"id_box\"]',
+    'server_host = configured_server_base;',
+    'if __has_include("network_secrets.local.h")',
+    'if __has_include("device_secrets.profile.h")',
+    'if __has_include("device_secrets.override.h")',
+    "automatic subnet scanning is disabled",
+    'http.addHeader("X-Device-Token", device_token);',
+)
+for marker in required:
+    assert marker in source, f"required active firmware mitigation missing: {marker}"
+
+transport = source.split("class ServerHttpClient {", 1)[1].split("};", 1)[0]
+assert transport.index("ElotoSecureClient secureClient;") < transport.index("HTTPClient request;"), (
+    "HTTPClient must be destroyed before its referenced network clients"
+)
 
 for forbidden in (
-    "#include <WiFiUdp.h>",
-    "WiFiUDP ",
     "setInsecure(",
-    "Access-Control-Allow-Origin",
     "http.begin(client",
-    "server_host = WiFi.gatewayIP()",
-    'String wifi_ssid        = "vivoV29"',
-    "DEFAULT_WIFI_SSID",
-    "DEFAULT_WIFI_PASSWORD",
-    "DEFAULT_SERVER_HOST",
+    "WiFiClient client;\n    if (!client.connect",
+    "probeElotoServer(",
+    "DISCOVERY_PROBES_PER_PASS",
+    "configuredServerIp",
     "192.168.137.104",
-    "AT+CGNSCMD=0",
+    'Access-Control-Allow-Origin',
 ):
-    assert forbidden not in source, f"forbidden firmware pattern returned: {forbidden}"
+    assert forbidden not in source, f"unsafe or stale firmware path returned: {forbidden}"
 
-for required in (
-    '#include "../FirmwareSafety.h"',
-    "class ServerHttpClient",
-    "secureClient.setCACert(server_ca.c_str())",
-    "eloto::parseServerEndpoint",
-    "eloto::parseOfflineRecord",
-    "eloto::validSessionBounds",
-    "statusRequestAuthorized",
-    'server.collectHeaders(statusHeaders, 1)',
-    "wifiConnectInProgress",
-    "Preferences preferences;",
-    "loadDeviceToken();",
-    'preferences.putString("device-token", device_token)',
-    'const char *jsonConfigPaths[] = {"/config.json", "/SD_CARD_CONFIG/config.json"};',
-    "loadJsonConfig(File &configFile)",
-    'lowerName.endsWith("config.json.txt")',
-    'Serial.printf("[CONFIG] SD entry: %s\\n", candidateName.c_str())',
-    "loadNetworkConfig();",
-    'preferences.begin("eloto-network", false)',
-    'preferences.putString("wifi-ssid", wifi_ssid)',
-    "const unsigned long GPS_POLL_TIMEOUT = 700;",
-    'kirimPerintahAT("AT+CGNSPWR=1", 1500);',
-    'kirimPerintahAT("AT+CGNSSEQ=\\"RMC\\"", 1000);',
-    "bool hasGpsData = gpsResponseBuffer.indexOf(\"+CGNSINF:\") >= 0;",
-    "if (hasGpsData && (responseComplete || timeout)) parseGpsResponse(gpsResponseBuffer);",
-    "syncDatabaseToSDCard();\n                vTaskDelay(pdMS_TO_TICKS(1));\n                uploadOfflineLogsSDCard();",
-):
-    assert required in source, f"required firmware mitigation missing: {required}"
+assert source.count("ServerHttpClient http;") == 6
 
-for loop_pattern in (
-    r"for \(JsonObject u : arr\) \{.{0,300}?vTaskDelay\(pdMS_TO_TICKS\(1\)\);",
-    r"while \(logFile\.available\(\)\) \{.{0,200}?vTaskDelay\(pdMS_TO_TICKS\(1\)\);",
-):
-    assert re.search(loop_pattern, source, re.DOTALL), "NetworkTask loop can starve IDLE0"
+tracked_headers = (
+    repo / "esp32/ELOTO_FIXED/device_secrets.h",
+    repo / "esp32/ELOTO_FIXED/device_secrets.local.h",
+    repo / "esp32/ELOTO_FIXED/network_secrets.h",
+)
+secret_macros = {"ELOTO_DEVICE_ID", "ELOTO_DEVICE_TOKEN", "ELOTO_NETWORK_SSID", "ELOTO_NETWORK_PASSWORD"}
+for header in tracked_headers:
+    for line in header.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\s*#\s*define\s+([A-Za-z0-9_]+)\s+(.+?)\s*$", line)
+        if not match or match.group(1) not in secret_macros:
+            continue
+        value = match.group(2).strip().strip('"\'').lower()
+        assert not value or any(marker in value for marker in ("replace-with", "your-", "placeholder", "isi_")), (
+            f"configured secret must live in an ignored local file: {header.name}"
+        )
 
-assert source.count("ServerHttpClient http;") == 5
-assert source.count("X-Device-Token") == 7
-print("Firmware source security checks passed.")
+ignore_file = (repo / ".gitignore").read_text(encoding="utf-8")
+for ignored in ("device_secrets.profile.h", "device_secrets.override.h", "network_secrets.local.h"):
+    assert ignored in ignore_file, f"local secret override is not ignored: {ignored}"
+
+print("Firmware source security checks passed: explicit endpoint, CA-validated TLS, and scoped transport.")

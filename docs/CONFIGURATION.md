@@ -12,7 +12,7 @@ Buat `backend/.env` dari [backend/.env.example](../backend/.env.example). Backen
 | `DB_HOST`, `DB_PORT` | Host MySQL, port `3306` |
 | `DB_NAME` | Nama database yang telah dibuat |
 | `DB_USER`, `DB_PASSWORD` | Akun database; production menolak user root dan password kosong |
-| `TRUST_PROXY` | Kosong untuk akses langsung; `loopback` hanya bila memakai proxy lokal tepercaya |
+| `TRUST_PROXY` | Production default `loopback`; ubah hanya bila topologi memakai proxy tepercaya lain |
 | `MJPEG_PORTS` | JSON pemetaan ID boks ke port, misalnya `{"BOX ELOTO 1":8081}`; port 1024–65535 |
 
 Gunakan akun DDL untuk migrasi dan akun dengan hak terbatas untuk runtime. Konfigurasi aplikasi/database memakai zona waktu `+08:00`.
@@ -60,7 +60,10 @@ Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config
 | Kunci / file | Fungsi |
 | --- | --- |
 | `WIFI_1_SSID`, `WIFI_1_PASS` | Kredensial Wi-Fi dari SD; nilai valid mengganti kredensial compile-time. Format lama `SSID`/`PASS` juga didukung; nilai contoh seperti `your-...` diabaikan |
-| `SERVER` | IPv4 privat komputer backend, misalnya `192.168.137.1:5002`; firmware mencoba alamat ini lalu discovery subnet bila gagal |
+| `SERVER` | VPS: `https://loto.domain-anda.id`; LAN tepercaya: `http://192.168.1.10:5002` |
 | `TOKEN` | Token asli untuk boks yang telah diprovision |
+| `/server_ca.pem` | Root CA TLS dalam PEM di root SD; wajib untuk endpoint HTTPS |
 
-`ELOTO_FIXED` saat ini mengirim HTTP ke IPv4 privat pada port tetap `5002`; URL domain dan HTTPS belum didukung firmware ini. Untuk production gunakan firmware dengan TLS sebelum mengirim token melalui jaringan yang tidak tepercaya. Rotasi token harus memperbarui server dan SD perangkat secara terkoordinasi. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
+`ELOTO_FIXED` memverifikasi hostname dan sertifikat TLS pada endpoint HTTPS, lalu memeriksa kontrak boks sebelum memakai API. Jam ESP32 harus tersinkron melalui NTP, dan root CA tepercaya harus tersedia sebagai `/server_ca.pem` di SD. Jangan mematikan verifikasi sertifikat. HTTP hanya diterima untuk host privat yang ditetapkan eksplisit. Tanpa `SERVER` valid, perangkat tetap offline; pemindaian subnet otomatis dimatikan agar token tidak dikirim ke host yang tidak dikenal. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
+
+Header rahasia yang terlacak Git sekarang hanya template kosong. Simpan nilai lokal pada `/config.txt` di SD, `device_secrets.profile.h`, `device_secrets.override.h`, atau `network_secrets.local.h`; tiga header lokal terakhir diabaikan Git. Karena revisi lama pernah memuat nilai perangkat/jaringan, rotasi token boks dan password Wi-Fi sebelum production; perubahan file tidak menghapus nilai dari riwayat Git.

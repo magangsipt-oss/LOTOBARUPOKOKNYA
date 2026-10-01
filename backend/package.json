@@ -15,8 +15,7 @@
     "reset:demo": "node scripts/reset-demo.js",
     "bootstrap-admin": "node scripts/bootstrap-admin.js",
     "reset-password": "node scripts/reset-password.js",
-    "provision-device": "node scripts/provision-device.js",
-    "prestart": "kill-port 5002"
+    "provision-device": "node scripts/provision-device.js"
   },
   "packageManager": "pnpm@11.25.0",
   "dependencies": {
@@ -30,8 +29,5 @@
     "mysql2": "^3.24.2",
     "sequelize": "^6.37.8",
     "sharp": "^0.35.4"
-  },
-  "devDependencies": {
-    "kill-port": "^2.0.1"
   }
 }

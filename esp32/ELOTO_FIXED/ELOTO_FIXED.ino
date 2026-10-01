@@ -11,23 +11,62 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include <WiFi.h>
+#if defined(__has_include)
+#if __has_include(<NetworkClientSecure.h>)
+#include <NetworkClientSecure.h>
+using ElotoSecureClient = NetworkClientSecure;
+#else
 #include <WiFiClientSecure.h>
+using ElotoSecureClient = WiFiClientSecure;
+#endif
+#else
+#include <WiFiClientSecure.h>
+using ElotoSecureClient = WiFiClientSecure;
+#endif
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <esp_system.h>
+#include <time.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <FS.h>
 #include <SD.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
+#include "../FirmwareSafety.h"
 #include "network_secrets.h"
 #if defined(__has_include)
+#if __has_include("network_secrets.local.h")
+#include "network_secrets.local.h"
+#endif
 #if __has_include("device_secrets.local.h")
 #include "device_secrets.local.h"
 #endif
 #endif
 #include "device_secrets.h"
+#if defined(__has_include)
+#if __has_include("device_secrets.profile.h")
+#include "device_secrets.profile.h"
+#endif
+#endif
+#if defined(__has_include)
+#if __has_include("device_secrets.override.h")
+#include "device_secrets.override.h"
+#endif
+#endif
+
+#ifndef ELOTO_DEVICE_ID
+#define ELOTO_DEVICE_ID ""
+#endif
+#ifndef ELOTO_DEVICE_TOKEN
+#define ELOTO_DEVICE_TOKEN ""
+#endif
+#ifndef ELOTO_NETWORK_SSID
+#define ELOTO_NETWORK_SSID ""
+#endif
+#ifndef ELOTO_NETWORK_PASSWORD
+#define ELOTO_NETWORK_PASSWORD ""
+#endif
 
 // ============================================================================
 // DEFINISI WARNA TEMA E-LOTO
@@ -93,18 +132,15 @@ String device_id        = ELOTO_DEVICE_ID;
 String wifi_ssid        = ELOTO_NETWORK_SSID;
 String wifi_password    = ELOTO_NETWORK_PASSWORD;
 String server_host      = "";
-// Jangan mematok IP laptop di firmware: alamat ini berubah saat jaringan/hotspot
-// berganti. SERVER pada SD adalah prioritas; bila tidak diisi, discovery mencari
-// backend E-LOTO pada subnet Wi-Fi yang sama dengan ESP32.
-IPAddress configuredServerIp(10, 87, 211, 81);
-bool configuredServerIpValid = false;
+String configured_server_base = "";
+String server_ca = "";
+bool configured_server_valid = false;
+bool server_endpoint_secure = false;
+bool ntp_sync_started = false;
+uint32_t last_server_probe_ms = 0;
 String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const char* API_PATH_PREFIX      = "api/";
-const uint16_t SERVER_PORT       = 5002;
-// Discovery must never monopolize CPU 0.  Probe only a small slice of the
-// subnet per pass; the next pass continues from the saved address.
-const uint8_t DISCOVERY_PROBES_PER_PASS = 6;
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 45000;
 portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
@@ -123,11 +159,53 @@ String getServerBaseUrl() {
     String host = server_host;
     host.trim();
     if (host.length() == 0) return "";
-    if (host.startsWith("http://") || host.startsWith("https://")) {
-        return host + SERVER_PROJECT_PATH + "/";
-    }
-    return "http://" + host + SERVER_PROJECT_PATH + "/";
+    if (!host.startsWith("http://") && !host.startsWith("https://")) host = "http://" + host;
+    while (host.endsWith("/")) host.remove(host.length() - 1);
+    host += SERVER_PROJECT_PATH;
+    host += "/";
+    return host;
 }
+
+bool tlsClockReady() {
+    if (time(nullptr) > 1704067200) return true; // 2024-01-01 UTC
+    if (!ntp_sync_started) {
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+        ntp_sync_started = true;
+    }
+    return time(nullptr) > 1704067200;
+}
+
+// HTTP is permitted only for an explicitly configured private-LAN endpoint.
+// Public endpoints use certificate-validated TLS; redirects are not followed.
+class ServerHttpClient {
+public:
+    bool begin(const String &url) {
+        if (!configured_server_valid) return false;
+        request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+        if (server_endpoint_secure) {
+            if (server_ca.length() == 0 || !tlsClockReady()) return false;
+            secureClient.setCACert(server_ca.c_str());
+            secureClient.setTimeout(5000);
+            return request.begin(secureClient, url);
+        }
+        localClient.setTimeout(5000);
+        return request.begin(localClient, url);
+    }
+
+    void setTimeout(uint16_t timeout) { request.setTimeout(timeout); }
+    void addHeader(const String &name, const String &value) { request.addHeader(name, value); }
+    int GET() { return request.GET(); }
+    int POST(const String &payload) { return request.POST(payload); }
+    int getSize() { return request.getSize(); }
+    String getString() { return request.getString(); }
+    void end() { request.end(); }
+    HTTPClient &client() { return request; }
+
+private:
+    WiFiClient localClient;
+    ElotoSecureClient secureClient;
+    HTTPClient request;
+};
 
 String getApiUrl(const char* endpoint) {
     return getServerBaseUrl() + API_PATH_PREFIX + endpoint;
@@ -462,7 +540,6 @@ void drawCornerAccents(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t colo
 void drawDecorativeLine(int16_t y, uint16_t color);
 void loadConfigFromSD();
 void reportBlePresence();
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs = 300, bool reportFailure = false);
 bool discoverServer();
 
 String hexToDecStringPadded(String hexStr) {
@@ -637,6 +714,26 @@ bool isConfigPlaceholder(String value) {
             value.startsWith("your-") || value.startsWith("replace-with-");
 }
 
+bool loadServerCaFromSD() {
+    server_ca = "";
+    if (!sdCardMounted) return false;
+    File caFile = SD.open("/server_ca.pem", FILE_READ);
+    if (!caFile) return false;
+    const size_t fileSize = caFile.size();
+    if (fileSize < 100 || fileSize > 8192) {
+        caFile.close();
+        return false;
+    }
+    String contents;
+    contents.reserve(fileSize + 1);
+    while (caFile.available() && contents.length() <= fileSize) contents += (char)caFile.read();
+    caFile.close();
+    if (contents.length() != fileSize || contents.indexOf("-----BEGIN CERTIFICATE-----") < 0 ||
+        contents.indexOf("-----END CERTIFICATE-----") < 0) return false;
+    server_ca = contents;
+    return true;
+}
+
 void loadConfigFromSD() {
     if (!sdCardMounted) return;
     File configFile;
@@ -663,8 +760,11 @@ void loadConfigFromSD() {
     bool wifiPasswordLoaded = false;
     bool serverLoaded = false;
     bool deviceTokenLoaded = false;
-    const bool compiledDeviceTokenValid =
-        device_token.length() >= 32 && !isConfigPlaceholder(device_token);
+    configured_server_valid = false;
+    configured_server_base = "";
+    server_host = "";
+    server_endpoint_secure = false;
+    server_ca = "";
     while (configFile.available()) {
         String line = configFile.readStringUntil('\n');
         line.replace("\xef\xbb\xbf", "");
@@ -687,47 +787,24 @@ void loadConfigFromSD() {
         value.trim();
 
         if (key == "DEVICE_ID") {
-            if (value.length() > 0) device_id = value;
+            if (eloto::validDeviceId(value.c_str())) device_id = value;
         } else if (key == "SERVER") {
-            // Accept the usual SD-card forms: 192.168.1.10:5002 and
-            // http://192.168.1.10:5002/.  The firmware remains HTTP-only.
             int comment = value.indexOf('#');
             if (comment >= 0) value = value.substring(0, comment);
             value.trim();
-            if (value.startsWith("http://")) value.remove(0, 7);
-            else if (value.startsWith("https://")) {
-                Serial.println("[CONFIG] SERVER HTTPS is unsupported; use an HTTP IPv4 address");
-                continue;
-            }
-            int slash = value.indexOf('/');
-            if (slash >= 0) value = value.substring(0, slash);
-            value.trim();
-            int colon = value.indexOf(':');
-            if (colon >= 0) {
-                if (value.indexOf(':', colon + 1) >= 0 || value.substring(colon + 1) != String(SERVER_PORT)) {
-                    Serial.printf("[CONFIG] SERVER invalid; keeping target %s:%u\n",
-                        configuredServerIp.toString().c_str(), SERVER_PORT);
-                    continue;
-                }
-                value = value.substring(0, colon);
-            }
-
-            IPAddress candidate;
-            if (candidate.fromString(value.c_str()) &&
-                (candidate[0] == 10 ||
-                 (candidate[0] == 172 && candidate[1] >= 16 && candidate[1] <= 31) ||
-                 (candidate[0] == 192 && candidate[1] == 168)) &&
-                candidate[3] > 0 && candidate[3] < 255) {
-                configuredServerIp = candidate;
-                configuredServerIpValid = true;
+            eloto::ServerEndpoint candidate;
+            if (eloto::parseServerEndpoint(value.c_str(), candidate)) {
+                configured_server_base = candidate.baseUrl.c_str();
+                server_endpoint_secure = candidate.secure;
+                configured_server_valid = true;
                 serverLoaded = true;
-                Serial.printf("[CONFIG] Backend target: %s:%u\n", candidate.toString().c_str(), SERVER_PORT);
+                Serial.printf("[CONFIG] Backend endpoint configured (%s)\n",
+                    server_endpoint_secure ? "HTTPS" : "private-LAN HTTP");
             } else {
-                Serial.printf("[CONFIG] SERVER invalid; keeping target %s:%u\n",
-                    configuredServerIp.toString().c_str(), SERVER_PORT);
+                Serial.println("[CONFIG] SERVER invalid; use HTTPS hostname or explicit private-LAN HTTP endpoint");
             }
         } else if (key == "TOKEN") {
-            if (!compiledDeviceTokenValid && value.length() >= 32 && value.length() <= 256 && !isConfigPlaceholder(value)) {
+            if (eloto::validDeviceToken(value.c_str()) && !isConfigPlaceholder(value)) {
                 device_token = value;
                 deviceTokenLoaded = true;
                 Serial.println("[CONFIG] Device token loaded");
@@ -751,10 +828,13 @@ void loadConfigFromSD() {
     } else {
         Serial.println("[CONFIG] No usable Wi-Fi fields; keeping firmware credentials");
     }
-    if (!serverLoaded) Serial.println("[CONFIG] No valid SERVER override; using default backend target");
+    if (!serverLoaded) Serial.println("[CONFIG] No valid SERVER endpoint; backend traffic is disabled");
+    if (serverLoaded && server_endpoint_secure && !loadServerCaFromSD()) {
+        Serial.println("[CONFIG] HTTPS selected but /server_ca.pem is missing or invalid; TLS remains disabled");
+    }
     if (!deviceTokenLoaded) {
         if (device_token.length() >= 32 && !isConfigPlaceholder(device_token)) {
-            Serial.println("[CONFIG] Using compiled local device secret; it takes precedence over SD TOKEN");
+            Serial.println("[CONFIG] Using compiled local device token fallback");
         } else {
             device_token = "";
             Serial.println("[CONFIG] No valid device token; set TOKEN in config.txt or local device secret");
@@ -1070,12 +1150,10 @@ bool fetchPhotoFromAPI(const String &uid, uint8_t *&jpegData, size_t &jpegSize) 
     if (WiFi.status() != WL_CONNECTED || getServerBaseUrl().length() == 0 ||
         ESP.getFreeHeap() < PHOTO_MIN_FREE_HEAP) return false;
 
-    WiFiClient client;
-    client.setTimeout(2500);
-    HTTPClient http;
+    ServerHttpClient http;
     String url = getApiUrl("users/photo/") + uid + "?size=" + String(PHOTO_DISPLAY_SIZE) + "&quality=55";
-    if (!http.begin(client, url)) {
-        Serial.println("[PHOTO] HTTP begin gagal");
+    if (!http.begin(url)) {
+        Serial.println("[PHOTO] Backend transport unavailable");
         return false;
     }
     http.addHeader("X-Device-Token", device_token);
@@ -1087,7 +1165,7 @@ bool fetchPhotoFromAPI(const String &uid, uint8_t *&jpegData, size_t &jpegSize) 
     if (httpCode == HTTP_CODE_OK && validLength) {
         jpegSize = (size_t)contentLength;
         jpegData = static_cast<uint8_t *>(malloc(jpegSize));
-        WiFiClient *stream = http.getStreamPtr();
+        auto *stream = http.client().getStreamPtr();
         if (jpegData == NULL || stream == NULL || stream->readBytes(jpegData, jpegSize) != jpegSize ||
             jpegData[0] != 0xFF || jpegData[1] != 0xD8) {
             if (jpegData != NULL) free(jpegData);
@@ -1414,12 +1492,10 @@ void reportBlePresence() {
         for (; m && *m; m++) h = (h ^ (uint8_t)*m) * 16777619UL;
     }
     if (h == lastTagHash && lastSentMs != 0 && millis() - lastSentMs < 15000) return;  // tidak berubah
-    WiFiClient client;
-    client.setTimeout(1500);
-    HTTPClient http;
+    ServerHttpClient http;
     String url = getApiUrl("loto/presence");
-    if (!http.begin(client, url)) {
-        Serial.println("[BLE] Presence URL initialization failed");
+    if (!http.begin(url)) {
+        Serial.println("[BLE] Presence transport unavailable");
         return;
     }
     http.addHeader("Content-Type", "application/json");
@@ -2375,9 +2451,12 @@ void syncDatabaseToSDCard() {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
     if (ESP.getFreeHeap() < 30000) return;
 
-    WiFiClient client; client.setTimeout(1500);
-    HTTPClient http;
-    http.begin(client, getApiUrl("users"));
+    ServerHttpClient http;
+    if (!http.begin(getApiUrl("users"))) {
+        Serial.println("[SYNC] Backend transport unavailable");
+        sdSyncOk = false;
+        return;
+    }
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
     http.addHeader("X-Device-Token", device_token);
     http.setTimeout(2000);
@@ -2387,7 +2466,7 @@ void syncDatabaseToSDCard() {
     sdSyncOk = false;
     if (httpCode == HTTP_CODE_OK) {
         DynamicJsonDocument doc(12288);
-        DeserializationError err = deserializeJson(doc, http.getStream());
+        DeserializationError err = deserializeJson(doc, http.client().getStream());
         JsonArray arr = !err && doc["data"].is<JsonArray>() ? doc["data"].as<JsonArray>() : JsonArray();
 
         if (err) {
@@ -2617,9 +2696,8 @@ void uploadOfflineLogsSDCard() {
 
         String payload;
         serializeJson(doc, payload);
-        WiFiClient client; client.setTimeout(2000);
-        HTTPClient http;
-        http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+        ServerHttpClient http;
+        if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) break;
         http.addHeader("Content-Type", "application/json");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(3000);
@@ -2716,9 +2794,8 @@ WorkerInfo fetchCardDataAPI(String uid) {
 
     // 3. Fallback ke API backend
     if (WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > 30000) {
-        WiFiClient client; client.setTimeout(250);
-        HTTPClient http;
-        http.begin(client, getApiUrl("users/check-card"));
+        ServerHttpClient http;
+        if (!http.begin(getApiUrl("users/check-card"))) return card;
         http.addHeader("Content-Type", "application/json");
         http.addHeader("X-Device-Token", device_token);
         http.setTimeout(350);
@@ -2837,9 +2914,8 @@ void networkTaskCore0(void * pvParameters) {
                 String jsonPayload; serializeJson(doc, jsonPayload);
                 int httpCode = -1;
                 for (uint8_t attempt = 1; attempt <= 3; attempt++) {
-                    WiFiClient retryClient; retryClient.setTimeout(2000);
-                    HTTPClient retryHttp;
-                    if (retryHttp.begin(retryClient, url)) {
+                    ServerHttpClient retryHttp;
+                    if (retryHttp.begin(url)) {
                         retryHttp.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                         retryHttp.addHeader("Content-Type", "application/json");
                         retryHttp.addHeader("X-Device-Token", device_token);
@@ -3177,102 +3253,64 @@ bool tryConnectBestWifi() {
     return true;
 }
 
-bool probeElotoServer(const IPAddress &candidate, uint32_t connectTimeoutMs, bool reportFailure) {
-    if (candidate == IPAddress(0, 0, 0, 0) || candidate == WiFi.localIP()) return false;
-    if (device_token.length() < 32) {
-        if (reportFailure) Serial.println("[NET] Backend probe skipped: device token invalid");
+bool verifyConfiguredServer() {
+    if (!configured_server_valid || device_token.length() < 32) return false;
+    if (server_endpoint_secure && (server_ca.length() == 0 || !tlsClockReady())) return false;
+
+    ServerHttpClient http;
+    const String url = configured_server_base + "api/boxes/" + getDeviceIdPath() + "/device-handshake";
+    if (!http.begin(url)) return false;
+    http.addHeader("X-Device-Token", device_token);
+    http.setTimeout(5000);
+    const int status = http.GET();
+    String payload = status == HTTP_CODE_OK ? http.getString() : "";
+    http.end();
+    if (status != HTTP_CODE_OK) {
+        Serial.printf("[NET] Backend handshake HTTP %d\n", status);
         return false;
     }
 
-    WiFiClient client;
-    client.setTimeout(250);
-    if (!client.connect(candidate, SERVER_PORT, connectTimeoutMs)) {
-        if (reportFailure) {
-            Serial.printf("[NET] TCP connect to backend failed: %s:%u\n",
-                candidate.toString().c_str(), SERVER_PORT);
-        }
-        client.stop();
+    DynamicJsonDocument response(1024);
+    if (deserializeJson(response, payload)) {
+        Serial.println("[NET] Backend handshake response invalid");
+        return false;
+    }
+    const String contract = response["data"]["contract"] | "";
+    const String responseBox = response["data"]["id_box"] | "";
+    if (!response["success"] || contract != "eloto-device-v1" || responseBox != getDeviceId()) {
+        Serial.println("[NET] Backend handshake contract or device ID mismatch");
         return false;
     }
 
-    String host = candidate.toString();
-    client.print("GET " + getDeviceHandshakePath() + " HTTP/1.1\r\nHost: " + host +
-        "\r\nX-Device-Token: " + device_token + "\r\nConnection: close\r\n\r\n");
-
-    String response;
-    response.reserve(768);
-    unsigned long startedAt = millis();
-    bool matched = false;
-    while (millis() - startedAt < 1500 && response.length() < 768) {
-        while (client.available() && response.length() < 768) {
-            response += (char)client.read();
-        }
-        const String expectedBox = String("\"id_box\":\"") + getDeviceId() + "\"";
-        if (response.startsWith("HTTP/1.1 200 ") &&
-            response.indexOf("\"contract\":\"eloto-device-v1\"") >= 0 &&
-            response.indexOf(expectedBox) >= 0) {
-            matched = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    client.stop();
-
-    if (matched) {
-        server_host = host + ":" + String(SERVER_PORT);
-        Serial.printf("[NET] Backend perangkat terverifikasi: %s\n", server_host.c_str());
-    } else if (reportFailure) {
-        int statusEnd = response.indexOf("\r\n");
-        String statusLine = statusEnd >= 0 ? response.substring(0, statusEnd) : response;
-        Serial.printf("[NET] Backend handshake tidak cocok: %s\n",
-            statusLine.c_str());
-    }
-    return matched;
+    server_host = configured_server_base;
+    Serial.printf("[NET] Backend endpoint verified (%s)\n",
+        server_endpoint_secure ? "HTTPS" : "private-LAN HTTP");
+    return true;
 }
 
 bool discoverServer() {
     if (WiFi.status() != WL_CONNECTED) return false;
     if (server_host.length() > 0) return true;
+    if (last_server_probe_ms != 0 && uint32_t(millis() - last_server_probe_ms) < 5000) return false;
+    last_server_probe_ms = millis();
 
-    Serial.printf("[NET] Discovery local=%s gateway=%s configured=%s:%u\n",
-        WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
-        configuredServerIp.toString().c_str(), SERVER_PORT);
-
-    if (configuredServerIpValid) {
-        if (probeElotoServer(configuredServerIp, 800, true)) return true;
-        Serial.printf("[NET] Configured backend %s:%u unreachable; scanning subnet\n",
-            configuredServerIp.toString().c_str(), SERVER_PORT);
+    if (!configured_server_valid) {
+        Serial.println("[NET] Set SERVER in SD config; automatic subnet scanning is disabled");
+        return false;
     }
-
-    IPAddress gateway = WiFi.gatewayIP();
-    if (probeElotoServer(gateway)) return true;
-
-    IPAddress local = WiFi.localIP();
-    static uint8_t discoverySubnetA = 0, discoverySubnetB = 0, discoverySubnetC = 0;
-    static uint8_t nextDiscoveryHost = 0;
-    if (discoverySubnetA != local[0] || discoverySubnetB != local[1] ||
-        discoverySubnetC != local[2] || nextDiscoveryHost == 0) {
-        discoverySubnetA = local[0];
-        discoverySubnetB = local[1];
-        discoverySubnetC = local[2];
-        nextDiscoveryHost = local[3] == 254 ? 1 : local[3] + 1;
+    if (device_token.length() < 32) {
+        Serial.println("[NET] Backend probe skipped: device token invalid");
+        return false;
     }
-
-    uint8_t probes = 0;
-    uint16_t attempts = 0;
-    while (probes < DISCOVERY_PROBES_PER_PASS && attempts++ < 254) {
-        uint8_t host = nextDiscoveryHost;
-        nextDiscoveryHost = nextDiscoveryHost >= 254 ? 1 : nextDiscoveryHost + 1;
-        if (host == 0 || host == local[3]) continue;
-        IPAddress candidate(local[0], local[1], local[2], host);
-        if (candidate == gateway) continue;
-        probes++;
-        if (probeElotoServer(candidate)) return true;
-        // Yield after every blocking TCP probe so IDLE0 continues feeding WDT.
-        vTaskDelay(pdMS_TO_TICKS(1));
+    if (server_endpoint_secure && server_ca.length() == 0) {
+        Serial.println("[NET] HTTPS blocked: valid /server_ca.pem required");
+        return false;
     }
-    Serial.printf("[NET] Backend belum ditemukan; discovery lanjut dari .%u\n", nextDiscoveryHost);
-    return false;
+    if (server_endpoint_secure && !tlsClockReady()) {
+        Serial.println("[NET] HTTPS waiting for system time synchronization");
+        return false;
+    }
+    return verifyConfiguredServer();
 }
 
 void connectWiFiRoutine() {

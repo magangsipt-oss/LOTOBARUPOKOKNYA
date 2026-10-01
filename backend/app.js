@@ -55,7 +55,8 @@ export function createApp() {
   const isAllowedOrigin = origin => !origin || origin === frontend || devOrigins.includes(origin) || isPrivateDevOrigin(origin);
   if (production && !frontend.startsWith('https://')) throw new Error('FRONTEND_URL must use HTTPS in production');
   if (production && (!process.env.DB_HOST || !process.env.DB_NAME || !process.env.DB_USER || process.env.DB_USER === 'root' || !process.env.DB_PASSWORD)) throw new Error('Configure a dedicated database account before production startup');
-  if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY.split(',').map(s => s.trim()));
+  const trustedProxies = process.env.TRUST_PROXY || (production ? 'loopback' : '');
+  if (trustedProxies) app.set('trust proxy', trustedProxies.split(',').map(s => s.trim()));
   const streamPorts = JSON.parse(process.env.MJPEG_PORTS || '{}');
   if (!streamPorts || Array.isArray(streamPorts) || typeof streamPorts !== 'object' || Object.values(streamPorts).some(p => !Number.isInteger(p) || p < 1024 || p > 65535)) throw new Error('MJPEG_PORTS must map box IDs to valid local ports');
   app.disable('x-powered-by');

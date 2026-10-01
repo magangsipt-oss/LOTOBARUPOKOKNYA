@@ -18,7 +18,7 @@ Periksa role akun, header `X-CSRF-Token`, dan origin frontend. Login ulang atau 
 
 ## ESP32 tidak mencapai backend atau mendapat 401
 
-Pastikan backend development bind ke `0.0.0.0:5002`, firewall komputer mengizinkan TCP 5002 pada jaringan privat, dan `SERVER` pada SD berisi IPv4 privat komputer backend. Dari perangkat lain di Wi-Fi yang sama, buka `http://<IP-backend>:5002/health/live`; respons sukses membuktikan jalur jaringan ke backend. Jika koneksi sampai tetapi mendapat 401, cocokkan token SD dengan token boks yang diprovision. Firmware `ELOTO_FIXED` saat ini belum mendukung HTTPS.
+Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002`, firewall mengizinkan TCP 5002 hanya pada jaringan privat, dan `SERVER` pada SD berisi URL seperti `http://192.168.1.10:5002`. Untuk VPS, gunakan `SERVER=https://domain-anda` dan root CA tepercaya di `/server_ca.pem`; DNS, NTP, dan TCP 443 harus dapat dijangkau ESP32. Jangan membuka port 5002 ke internet. Tanpa endpoint valid, perangkat tidak memindai subnet. Jika handshake mendapat 401, cocokkan token SD dengan token boks yang diprovision; jika TLS gagal, periksa waktu NTP, hostname sertifikat, dan CA tanpa mematikan verifikasi.
 
 ## ESP32 tidak membaca konfigurasi SD
 

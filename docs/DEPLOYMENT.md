@@ -49,7 +49,7 @@ pnpm --filter backend run provision-device
 unset ELOTO_DEVICE_TOKEN
 ```
 
-Boks harus sudah terdaftar. Database menyimpan hash token. Pasang token asli pada `/config.txt` di SD ESP32 menggunakan format `esp32/config.example.txt`. `ELOTO_FIXED` saat ini hanya mendukung HTTP ke IPv4 privat pada port `5002`; gunakan hanya pada LAN tepercaya dan jangan mengekspos port ini ke internet. Production melalui HTTPS memerlukan firmware TLS yang belum tersedia pada sketch ini. Token baru menggantikan token lama; lakukan pembaruan server, firmware, dan counting secara terkoordinasi.
+Boks harus sudah terdaftar. Database menyimpan hash token. Pasang token asli pada `/config.txt` di SD ESP32 menggunakan format `esp32/config.example.txt`; nilai `TOKEN` di SD menggantikan fallback compile lokal. Untuk VPS, set `SERVER=https://domain-anda`, salin root CA sertifikat tepercaya ke `/server_ca.pem` pada SD, lalu pastikan ESP32 dapat menjangkau DNS dan NTP. Sketch memverifikasi CA dan nama host; jangan mengekspos backend port `5002` ke internet. HTTP hanya untuk IP privat di LAN tepercaya. Tanpa `SERVER` valid, firmware tidak menebak host atau memindai subnet. Rotasi token mengganti token lama, jadi perbarui server dan SD perangkat secara terkoordinasi sebelum operasi dilanjutkan.
 
 Isi `counting/.env` berdasarkan `counting/.env.example` bila menjalankan lewat `pnpm dev:counting` (atau `pnpm dev` untuk seluruh layanan development). Untuk layanan yang menjalankan Python langsung, export konfigurasi ke environment proses. Set URL RTSP dan kredensial kamera melalui environment. Gunakan port MJPEG berbeda per boks dan petakan secara eksplisit dalam `MJPEG_PORTS` backend. Server MJPEG hanya bind loopback.
 
@@ -59,8 +59,8 @@ Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh l
 
 - Sajikan **hanya** `frontend/dist`. Jangan jadikan root repository, `api/`, `.git`, `.env`, atau firmware sebagai document root.
 - Jalankan backend sebagai pengguna OS terbatas dengan `NODE_ENV=production`, `FRONTEND_URL=https://domain-aktual`, dan akun database non-root dengan password kuat. Binding backend tetap loopback.
-- Terminasi HTTPS pada reverse proxy. Proxy `/api/` ke `http://127.0.0.1:5002/api/`. Pertahankan header `Origin` dan cookie; tetapkan `TRUST_PROXY=loopback` hanya untuk proxy lokal yang benar-benar dipercaya.
-- Cookie production menggunakan `__Host-eloto_session`, Secure, HttpOnly, SameSite=Strict. Gunakan frontend dan API pada origin yang sama. Jangan memindahkan token sesi ke localStorage atau URL gambar/stream.
+- Terminasi HTTPS pada reverse proxy. Proxy `/api/` ke `http://127.0.0.1:5002/api/`. Pertahankan `Host`, `Origin`, cookie, dan header `X-Device-Token`; backend production mempercayai proxy loopback secara default. Jangan membuka port backend `5002` ke internet.
+- Cookie production menggunakan `__Host-eloto_session`, Secure, HttpOnly, SameSite=Lax. Sajikan frontend dan API pada origin yang sama (`VITE_API_URL=/api`). Jangan memindahkan token sesi ke localStorage atau URL gambar/stream.
 - Proxy stream memerlukan buffering dimatikan. Atur timeout stream, batas request body 8 MB, dan header keamanan pada penyajian frontend.
 - Probe `/health/live` untuk proses dan `/health/ready` untuk koneksi database. Pakai process manager yang meneruskan SIGTERM; backend menutup koneksi pada shutdown.
 - Ambil backup database/media secara berkala, uji restore, dan siapkan retensi log/event. Jangan menghapus receipt deduplikasi selama perangkat masih mungkin mengirim replay yang bersangkutan.
@@ -70,12 +70,16 @@ Contoh lokasi Nginx di dalam virtual host HTTPS yang telah dikonfigurasi:
 ```nginx
 root /srv/eloto/frontend/dist;
 client_max_body_size 8m;
+add_header X-Content-Type-Options nosniff always;
+add_header X-Frame-Options DENY always;
+add_header Referrer-Policy strict-origin-when-cross-origin always;
 
 location /api/ {
     proxy_pass http://127.0.0.1:5002;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Device-Token $http_x_device_token;
     proxy_buffering off;
     proxy_read_timeout 60s;
 }

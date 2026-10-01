@@ -37,6 +37,31 @@ const authHeaders = (role = 'WORKER') => {
   return { Cookie: `eloto_session=${token}`, 'X-CSRF-Token': csrfToken(token), 'Content-Type': 'application/json' };
 };
 
+test('production defaults to trusting only the loopback reverse proxy', () => {
+  const keys = ['NODE_ENV', 'FRONTEND_URL', 'DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'TRUST_PROXY', 'MJPEG_PORTS'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      FRONTEND_URL: 'https://eloto.example.com',
+      DB_HOST: '127.0.0.1',
+      DB_NAME: 'eloto_test',
+      DB_USER: 'eloto_app',
+      DB_PASSWORD: 'test-only-password',
+      TRUST_PROXY: '',
+      MJPEG_PORTS: '{}'
+    });
+    delete process.env.TRUST_PROXY;
+    const app = createApp();
+    assert.deepEqual(app.get('trust proxy'), ['loopback']);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
 test('anonymous users cannot read or mutate protected data, even without API_SECRET_KEY', async () => {
   delete process.env.API_SECRET_KEY;
   for (const [path, method] of [['/api/users','GET'],['/api/users','POST'],['/api/logs/clear','DELETE'],['/api/maintenance','POST'],['/api/stream','GET'],['/api/diagnostic/device','GET']]) {

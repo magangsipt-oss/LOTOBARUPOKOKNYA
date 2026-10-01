@@ -6,9 +6,32 @@ export const normalizeApiBaseUrl = value => {
   return base === '/api' || /\/api$/i.test(base) ? base : `${base}/api`;
 };
 
+export const resolveApiBaseUrl = (value, appOrigin, production = false) => {
+  const base = normalizeApiBaseUrl(value);
+  if (!production) return base;
+  let appUrl, apiUrl;
+  try {
+    appUrl = new URL(appOrigin);
+    apiUrl = new URL(base, appUrl);
+  } catch {
+    throw new Error('Production API configuration must use a valid application origin.');
+  }
+  const localPreview = ['localhost', '127.0.0.1', '[::1]'].includes(appUrl.hostname);
+  if (apiUrl.origin !== appUrl.origin || apiUrl.pathname.replace(/\/+$/, '') !== '/api' || apiUrl.search || apiUrl.hash ||
+      (appUrl.protocol !== 'https:' && !localPreview)) {
+    throw new Error('Production API must use the same HTTPS origin and /api path.');
+  }
+  return base;
+};
+
 // The deployed frontend may point VITE_API_URL either at the API origin or at
 // its /api prefix. Normalize both forms so every FE service has one contract.
-export const API_BASE_URL = normalizeApiBaseUrl(import.meta.env?.VITE_API_URL);
+const appOrigin = typeof window === 'undefined' ? 'https://eloto.invalid' : window.location.origin;
+export const API_BASE_URL = resolveApiBaseUrl(
+  import.meta.env?.VITE_API_URL,
+  appOrigin,
+  import.meta.env?.PROD === true
+);
 let csrfToken = '';
 let sessionVersion = 0;
 let authPending = false;

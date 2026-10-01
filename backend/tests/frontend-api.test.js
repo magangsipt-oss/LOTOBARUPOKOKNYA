@@ -1,6 +1,6 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import api, { normalizeApiBaseUrl, setCsrfToken, getSessionVersion, beginAuthChange, cancelAuthChange } from '../../frontend/src/services/api.js';
+import api, { normalizeApiBaseUrl, resolveApiBaseUrl, setCsrfToken, getSessionVersion, beginAuthChange, cancelAuthChange } from '../../frontend/src/services/api.js';
 
 const originalWindow = globalThis.window;
 let expirations;
@@ -75,4 +75,13 @@ test('API base URL consistently includes the /api contract prefix', () => {
   assert.equal(normalizeApiBaseUrl(), '/api');
   assert.equal(normalizeApiBaseUrl('https://eloto.example.com'), 'https://eloto.example.com/api');
   assert.equal(normalizeApiBaseUrl('https://eloto.example.com/api/'), 'https://eloto.example.com/api');
+});
+
+test('production API URL stays on the HTTPS app origin while local preview remains usable', () => {
+  assert.equal(resolveApiBaseUrl('/api', 'https://eloto.example.com', true), '/api');
+  assert.equal(resolveApiBaseUrl('https://eloto.example.com/api', 'https://eloto.example.com', true), 'https://eloto.example.com/api');
+  assert.equal(resolveApiBaseUrl('/api', 'http://localhost:4173', true), '/api');
+  assert.throws(() => resolveApiBaseUrl('/v1', 'https://eloto.example.com', true), /HTTPS origin/);
+  assert.throws(() => resolveApiBaseUrl('http://api.eloto.example.com/api', 'https://eloto.example.com', true), /HTTPS origin/);
+  assert.throws(() => resolveApiBaseUrl('/api', 'http://eloto.example.com', true), /HTTPS origin/);
 });
