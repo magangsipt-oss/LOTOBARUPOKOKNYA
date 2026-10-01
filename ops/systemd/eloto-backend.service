@@ -1,0 +1,22 @@
+[Unit]
+Description=E-LOTO backend API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin123
+WorkingDirectory=/srv/eloto/current/backend
+EnvironmentFile=/srv/eloto/shared/backend.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/eloto/shared/uploads /srv/eloto/shared/legacy-uploads
+
+[Install]
+WantedBy=multi-user.target

@@ -68,7 +68,7 @@ Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh l
 Contoh lokasi Nginx di dalam virtual host HTTPS yang telah dikonfigurasi:
 
 ```nginx
-root /srv/eloto/frontend/dist;
+root /srv/eloto/current/frontend/dist;
 client_max_body_size 8m;
 add_header X-Content-Type-Options nosniff always;
 add_header X-Frame-Options DENY always;
@@ -94,6 +94,67 @@ location / { try_files $uri $uri/ /index.html; }
 ```
 
 Contoh ini bukan konfigurasi sertifikat lengkap. Uji pada hostname dan jaringan target sebelum dipakai.
+
+## Deploy dari GitHub Actions ke BiznetGIO
+
+Workflow [deploy-biznetgio.yml](../.github/workflows/deploy-biznetgio.yml) mengirim build frontend dan source backend dari branch `main` melalui SSH. Perubahan pada FE/BE di `main` otomatis memicu deploy; deploy manual tersedia dari tab **Actions**. Counting worker tidak dijalankan oleh workflow ini. Untuk migrasi awal, jalankan manual dengan `activate` mati agar backend tidak dinyalakan sebelum skema database ditinjau.
+
+### Rahasia GitHub
+
+Di repository, buka **Settings → Secrets and variables → Actions → New repository secret**, lalu isi:
+
+- `DEPLOY_SSH_KEY`: isi private key SSH lengkap untuk akun `admin123`. Private key tidak perlu dikirim ke chat atau disimpan di Git.
+- `DEPLOY_KNOWN_HOSTS`: baris host key SSH untuk `[103.197.188.61]:22`. Ambil public host key dari console/provider dan cocokkan fingerprint-nya sebelum dipercaya; jangan langsung percaya hasil `ssh-keyscan` yang belum diverifikasi.
+
+Key harus cocok dengan public key yang terpasang untuk akun `admin123` pada VPS dan dapat dibaca `ssh-keygen` tanpa passphrase.
+
+### Persiapan VPS satu kali
+
+Instruksi ini untuk Linux dengan systemd, Node.js 22+, Corepack/pnpm 11.25.0, MySQL yang sudah dibuat, dan Nginx/TLS pada domain production. Bila OS VPS berbeda, sesuaikan pemasangan paket dan lokasi executable sebelum deploy.
+
+Siapkan direktori agar `admin123` dapat menulis release dan Nginx (`www-data`) dapat membaca hasil frontend:
+
+```bash
+sudo install -d -o admin123 -g www-data -m 2750 \
+  /srv/eloto /srv/eloto/incoming /srv/eloto/releases /srv/eloto/shared \
+  /srv/eloto/shared/uploads /srv/eloto/shared/legacy-uploads
+sudo touch /srv/eloto/shared/backend.env
+sudo chown admin123:admin123 /srv/eloto/shared/backend.env
+sudo chmod 0600 /srv/eloto/shared/backend.env
+```
+
+Isi `/srv/eloto/shared/backend.env` di VPS dengan `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=5002`, `FRONTEND_URL=https://domain-anda`, akun MySQL non-root, password kuat, dan `MJPEG_PORTS={}` bila counting memang tidak dijalankan. Jangan commit atau mengirim file ini. Pastikan DNS domain menunjuk ke VPS, sertifikat HTTPS aktif, dan Nginx memakai konfigurasi di atas.
+
+Setelah workflow pertama selesai dengan `activate` mati, file service tersedia pada release yang tercetak di log Actions. Pasang unit itu dari VPS:
+
+```bash
+sudo install -m 0644 /srv/eloto/releases/<release-id>/ops/systemd/eloto-backend.service /etc/systemd/system/eloto-backend.service
+sudo systemctl daemon-reload
+sudo systemctl enable eloto-backend.service
+```
+
+Agar Actions hanya dapat restart dan memeriksa service tersebut, tambahkan aturan sempit melalui `sudo visudo -f /etc/sudoers.d/eloto-deploy`:
+
+```sudoers
+admin123 ALL=(root) NOPASSWD: /usr/bin/systemctl restart eloto-backend.service, /usr/bin/systemctl is-active eloto-backend.service
+```
+
+Pastikan aplikasi dapat terhubung ke MySQL sebelum activation. Untuk database baru, jalankan workflow dengan `activate` mati; setelah paket siap dan backup/schema ditinjau, pasang service lalu jalankan migrasi:
+
+```bash
+cd /srv/eloto/releases/<release-id>
+corepack pnpm --filter backend run migrate
+```
+
+`<release-id>` tercetak pada log job Actions. Setelah migrasi selesai, jalankan workflow lagi dengan `activate` dicentang. Deployment aktif mengganti symlink release, restart backend, memeriksa `/health/ready`, dan mengembalikan release sebelumnya bila pemeriksaan gagal. Workflow tidak menjalankan migrasi otomatis dan tidak menghapus release lama.
+
+### Menjalankan deploy
+
+1. Pastikan rahasia Actions di atas terisi dan VPS memenuhi persiapan satu kali sebelum mengubah FE/BE di `main`.
+2. Untuk deploy awal, buka **Actions → Deploy E-LOTO to BiznetGIO → Run workflow**, pilih `main`, lalu biarkan `activate` mati.
+3. Selesaikan migrasi database dan persiapan service. Jalankan workflow manual lagi dengan `activate` dicentang; push FE/BE berikutnya ke `main` akan deploy otomatis.
+
+SSH dan file workflow saja belum cukup untuk go-live jika domain/TLS, database, atau Node.js VPS belum disiapkan. Jangan push perubahan aplikasi ke `main` sebelum dua Actions secrets tersedia, karena job otomatis akan gagal saat SSH.
 
 ## Pemeriksaan
 

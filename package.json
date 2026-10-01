@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "pnpm --parallel -r run dev",
     "dev:backend": "pnpm --filter backend run dev",
