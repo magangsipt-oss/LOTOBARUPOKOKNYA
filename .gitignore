@@ -33,7 +33,6 @@ __pycache__/
 *.pyc
 esp32/config.txt
 esp32/config.json
-esp32/server_ca.pem
 esp32/ELOTO_FIXED/device_secrets.h
 esp32/ELOTO_FIXED/device_secrets.local.h
 esp32/ELOTO_FIXED/device_secrets.profile.h

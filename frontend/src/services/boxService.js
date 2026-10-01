@@ -16,6 +16,11 @@ const boxService = {
     return response.data;
   },
 
+  regenerateToken: async (idBox) => {
+    const response = await api.post(`/boxes/${encodeURIComponent(idBox)}/regenerate-token`);
+    return response.data;
+  },
+
   // Memperbarui data box
   updateBox: async (idBox, boxData) => {
     const response = await api.put(`/boxes/${encodeURIComponent(idBox)}`, boxData);

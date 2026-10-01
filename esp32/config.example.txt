@@ -1,8 +1,12 @@
+# Copy as /config.txt in the root of the ESP32 SD card and replace placeholders.
 DEVICE_ID=BOX-CLIENT-001
 WIFI_1_SSID=your-primary-wifi
 WIFI_1_PASS=your-primary-wifi-password
-# Production: hostname HTTPS pada VPS; salin root CA TLS ke /server_ca.pem di SD.
-SERVER=https://your-eloto-domain.example
-# Untuk LAN tepercaya saja, boleh gunakan misalnya http://192.168.1.10:5002.
-# HTTPS will stay disabled unless a valid root CA PEM exists at /server_ca.pem.
+WIFI_2_SSID=your-backup-wifi
+WIFI_2_PASS=your-backup-wifi-password
+
+# BiznetGIO production VPS. HTTPS requires /server_ca.pem in the SD root.
+SERVER=https://103.197.188.61
 TOKEN=replace-with-a-random-device-token-at-least-32-characters
+
+# ESP32 supports 2.4 GHz Wi-Fi. Up to five WIFI_n_SSID/WIFI_n_PASS profiles are supported.

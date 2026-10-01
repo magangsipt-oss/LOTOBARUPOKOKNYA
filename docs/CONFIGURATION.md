@@ -59,8 +59,8 @@ Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config
 
 | Kunci / file | Fungsi |
 | --- | --- |
-| `WIFI_1_SSID`, `WIFI_1_PASS` | Kredensial Wi-Fi dari SD; nilai valid mengganti kredensial compile-time. Format lama `SSID`/`PASS` juga didukung; nilai contoh seperti `your-...` diabaikan |
-| `SERVER` | VPS: `https://loto.domain-anda.id`; LAN tepercaya: `http://192.168.1.10:5002` |
+| `WIFI_1_SSID` … `WIFI_5_SSID` dan `WIFI_1_PASS` … `WIFI_5_PASS` | Hingga lima profil Wi-Fi; perangkat mencoba profil berurutan dan pindah setelah timeout. Format lama `SSID`/`PASS` tetap didukung; nilai contoh seperti `your-...` diabaikan. ESP32 hanya mendukung Wi-Fi 2,4 GHz |
+| `SERVER` | VPS BiznetGIO: `https://103.197.188.61`; LAN tepercaya: `http://192.168.1.10:5002` |
 | `TOKEN` | Token asli untuk boks yang telah diprovision |
 | `/server_ca.pem` | Root CA TLS dalam PEM di root SD; wajib untuk endpoint HTTPS |
 

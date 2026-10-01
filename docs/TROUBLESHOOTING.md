@@ -18,7 +18,7 @@ Periksa role akun, header `X-CSRF-Token`, dan origin frontend. Login ulang atau 
 
 ## ESP32 tidak mencapai backend atau mendapat 401
 
-Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002`, firewall mengizinkan TCP 5002 hanya pada jaringan privat, dan `SERVER` pada SD berisi URL seperti `http://192.168.1.10:5002`. Untuk VPS, gunakan `SERVER=https://domain-anda` dan root CA tepercaya di `/server_ca.pem`; DNS, NTP, dan TCP 443 harus dapat dijangkau ESP32. Jangan membuka port 5002 ke internet. Tanpa endpoint valid, perangkat tidak memindai subnet. Jika handshake mendapat 401, cocokkan token SD dengan token boks yang diprovision; jika TLS gagal, periksa waktu NTP, hostname sertifikat, dan CA tanpa mematikan verifikasi.
+Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002`, firewall mengizinkan TCP 5002 hanya pada jaringan privat, dan `SERVER` pada SD berisi URL seperti `http://192.168.1.10:5002`. Untuk VPS BiznetGIO ini gunakan `SERVER=https://103.197.188.61` dan root CA di `/server_ca.pem`; NTP dan TCP 443 harus dapat dijangkau ESP32. Jangan membuka port 5002 ke internet. Firmware mendukung sampai lima profil Wi-Fi 2,4 GHz (`WIFI_1_*` … `WIFI_5_*`) dan mencoba profil berikutnya setelah koneksi pertama timeout. Jika handshake mendapat 401, pastikan `DEVICE_ID` sudah didaftarkan dan token SD sama dengan token boks; jika TLS gagal, periksa waktu NTP, sertifikat IP, dan CA tanpa mematikan verifikasi.
 
 ## ESP32 tidak membaca konfigurasi SD
 

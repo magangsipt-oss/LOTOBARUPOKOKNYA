@@ -1,11 +1,10 @@
-# Template saja. Salin ke /config.txt pada SD dan isi nilai nyata di luar Git.
-WIFI_1_SSID=your-primary-wifi
-WIFI_1_PASS=replace-with-primary-wifi-password
-WIFI_2_SSID=your-backup-wifi
-WIFI_2_PASS=replace-with-backup-wifi-password
-
-# Backend laptop. Isi dengan IPv4 laptop yang berada di Wi-Fi yang SAMA dengan ESP32.
-# Contoh sesi ini: SERVER=192.168.1.41:5002 (akan berubah bila jaringan berganti).
-SERVER=replace-with-backend-ip:5002
-TOKEN=replace-with-a-random-device-token-at-least-32-characters
+# Salin sebagai /config.txt di root SD, lalu ganti placeholder dengan nilai nyata.
 DEVICE_ID=BOX-CLIENT-001
+WIFI_1_SSID=your-primary-wifi
+WIFI_1_PASS=your-primary-wifi-password
+WIFI_2_SSID=your-backup-wifi
+WIFI_2_PASS=your-backup-wifi-password
+
+# VPS BiznetGIO production; HTTPS wajib memakai /server_ca.pem di root SD.
+SERVER=https://103.197.188.61
+TOKEN=replace-with-a-random-device-token-at-least-32-characters

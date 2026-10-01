@@ -31,7 +31,16 @@ test('firmware keeps device credentials available and reloads SD config after a 
   assert.match(source, /#include "device_secrets\.h"/);
   assert.match(source, /String device_id\s*=\s*ELOTO_DEVICE_ID;/);
   assert.match(source, /String device_token\s*=\s*ELOTO_DEVICE_TOKEN;/);
-  assert.match(source, /if \(mounted\) \{[\s\S]{0,300}sdCardMounted = true;\s*loadConfigFromSD\(\);/);
+  assert.match(source, /if \(mounted\) \{[\s\S]{0,800}sdCardMounted = true;\s*loadConfigFromSD\(\);/);
+});
+
+test('firmware loads indexed Wi-Fi profiles and rotates after a connection timeout', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+
+  assert.match(source, /parseIndexedWifiKey\([\s\S]{0,180}MAX_WIFI_PROFILES/);
+  assert.match(source, /activeWifiProfileIndex = \(activeWifiProfileIndex \+ 1\) % MAX_WIFI_PROFILES/);
+  assert.match(source, /WiFi\.begin\(wifi_ssid\.c_str\(\), wifi_password\.c_str\(\)\)/);
 });
 
 test('firmware declares custom GPS return type before Arduino prototype generation', () => {

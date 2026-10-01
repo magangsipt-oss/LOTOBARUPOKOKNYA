@@ -131,6 +131,14 @@ String device_id        = ELOTO_DEVICE_ID;
 // ============================================================================
 String wifi_ssid        = ELOTO_NETWORK_SSID;
 String wifi_password    = ELOTO_NETWORK_PASSWORD;
+const uint8_t MAX_WIFI_PROFILES = 5;
+struct WifiProfile {
+    String ssid;
+    String password;
+};
+WifiProfile wifiProfiles[MAX_WIFI_PROFILES];
+uint8_t wifiProfileCount = 0;
+uint8_t activeWifiProfileIndex = 0;
 String server_host      = "";
 String configured_server_base = "";
 String server_ca = "";
@@ -714,6 +722,43 @@ bool isConfigPlaceholder(String value) {
             value.startsWith("your-") || value.startsWith("replace-with-");
 }
 
+bool wifiProfileConfigured(uint8_t index) {
+    return index < MAX_WIFI_PROFILES && wifiProfiles[index].ssid.length() > 0 &&
+           wifiProfiles[index].ssid.length() <= 32 && !isConfigPlaceholder(wifiProfiles[index].ssid);
+}
+
+uint8_t nextWifiProfileIndex(uint8_t startIndex) {
+    for (uint8_t offset = 0; offset < MAX_WIFI_PROFILES; ++offset) {
+        const uint8_t index = (startIndex + offset) % MAX_WIFI_PROFILES;
+        if (wifiProfileConfigured(index)) return index;
+    }
+    return MAX_WIFI_PROFILES;
+}
+
+void resetWifiProfiles() {
+    for (uint8_t index = 0; index < MAX_WIFI_PROFILES; ++index) {
+        wifiProfiles[index].ssid = "";
+        wifiProfiles[index].password = "";
+    }
+    wifiProfileCount = 0;
+    wifi_ssid = ELOTO_NETWORK_SSID;
+    wifi_password = ELOTO_NETWORK_PASSWORD;
+    if (wifi_ssid.length() > 0 && wifi_ssid.length() <= 32 && !isConfigPlaceholder(wifi_ssid)) {
+        wifiProfiles[0].ssid = wifi_ssid;
+        wifiProfiles[0].password = wifi_password;
+        wifiProfileCount = 1;
+    }
+    activeWifiProfileIndex = 0;
+}
+
+bool wifiProfilesEqual(const String *leftSsids, const String *leftPasswords) {
+    for (uint8_t index = 0; index < MAX_WIFI_PROFILES; ++index) {
+        if (leftSsids[index] != wifiProfiles[index].ssid ||
+            leftPasswords[index] != wifiProfiles[index].password) return false;
+    }
+    return true;
+}
+
 bool loadServerCaFromSD() {
     server_ca = "";
     if (!sdCardMounted) return false;
@@ -760,6 +805,7 @@ void loadConfigFromSD() {
     bool wifiPasswordLoaded = false;
     bool serverLoaded = false;
     bool deviceTokenLoaded = false;
+    resetWifiProfiles();
     configured_server_valid = false;
     configured_server_base = "";
     server_host = "";
@@ -809,22 +855,43 @@ void loadConfigFromSD() {
                 deviceTokenLoaded = true;
                 Serial.println("[CONFIG] Device token loaded");
             }
-        } else if (key == "SSID" || key == "WIFI_SSID" || key == "WIFI_1_SSID") {
-            if (!isConfigPlaceholder(value) && value.length() <= 32) {
-                wifi_ssid = value;
-                wifiSsidLoaded = true;
+        } else {
+            size_t profileIndex = 0;
+            eloto::WifiConfigField field = eloto::WIFI_CONFIG_NONE;
+            const bool indexedWifiKey = eloto::parseIndexedWifiKey(
+                std::string(key.c_str()), MAX_WIFI_PROFILES, profileIndex, field);
+            if (!indexedWifiKey && (key == "SSID" || key == "WIFI_SSID")) {
+                field = eloto::WIFI_CONFIG_SSID;
+            } else if (!indexedWifiKey && (key == "PASS" || key == "WIFI_PASSWORD")) {
+                field = eloto::WIFI_CONFIG_PASSWORD;
             }
-        } else if (key == "PASS" || key == "WIFI_PASSWORD" || key == "WIFI_1_PASS") {
-            if (!isConfigPlaceholder(value) && value.length() <= 63) {
-                wifi_password = value;
-                wifiPasswordLoaded = true;
+
+            if (field != eloto::WIFI_CONFIG_NONE && profileIndex < MAX_WIFI_PROFILES) {
+                if (field == eloto::WIFI_CONFIG_SSID && !isConfigPlaceholder(value) && value.length() <= 32) {
+                    wifiProfiles[profileIndex].ssid = value;
+                    wifiSsidLoaded = true;
+                } else if (field == eloto::WIFI_CONFIG_PASSWORD && !isConfigPlaceholder(value) && value.length() <= 63) {
+                    wifiProfiles[profileIndex].password = value;
+                    wifiPasswordLoaded = true;
+                }
+                if (wifiProfiles[profileIndex].ssid.length() > 0 && profileIndex + 1 > wifiProfileCount) {
+                    wifiProfileCount = profileIndex + 1;
+                }
             }
         }
     }
     configFile.close();
+    activeWifiProfileIndex = nextWifiProfileIndex(0);
+    if (activeWifiProfileIndex < MAX_WIFI_PROFILES) {
+        wifi_ssid = wifiProfiles[activeWifiProfileIndex].ssid;
+        wifi_password = wifiProfiles[activeWifiProfileIndex].password;
+    } else {
+        wifi_ssid = "";
+        wifi_password = "";
+    }
     if (wifiSsidLoaded || wifiPasswordLoaded) {
-        Serial.printf("[CONFIG] Wi-Fi SD fields loaded: SSID=%s PASS=%s\n",
-            wifiSsidLoaded ? "yes" : "no", wifiPasswordLoaded ? "yes" : "no");
+        Serial.printf("[CONFIG] Wi-Fi profiles loaded: %u (SSID fields=%s, password fields=%s)\n",
+            wifiProfileCount, wifiSsidLoaded ? "yes" : "no", wifiPasswordLoaded ? "yes" : "no");
     } else {
         Serial.println("[CONFIG] No usable Wi-Fi fields; keeping firmware credentials");
     }
@@ -3221,7 +3288,12 @@ void processRfidLogic(String uid) {
 }
 
 bool tryConnectBestWifi() {
-    if (wifi_ssid.length() == 0 || wifi_ssid.startsWith("ISI_")) return false;
+    if (wifiProfileCount == 0 && wifi_ssid.length() > 0 && wifi_ssid.length() <= 32 && !isConfigPlaceholder(wifi_ssid)) {
+        wifiProfiles[0].ssid = wifi_ssid;
+        wifiProfiles[0].password = wifi_password;
+        wifiProfileCount = 1;
+    }
+    if (nextWifiProfileIndex(activeWifiProfileIndex) >= MAX_WIFI_PROFILES) return false;
     if (WiFi.status() == WL_CONNECTED) {
         portENTER_CRITICAL(&wifiConnectMux);
         wifiConnectInProgress = false;
@@ -3244,12 +3316,17 @@ bool tryConnectBestWifi() {
         return true;
     }
     if (attemptExpired) {
-        Serial.println("[WIFI] Previous connection attempt expired; resetting station");
+        activeWifiProfileIndex = (activeWifiProfileIndex + 1) % MAX_WIFI_PROFILES;
+        Serial.println("[WIFI] Previous connection attempt expired; trying next configured profile");
         WiFi.disconnect();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+    activeWifiProfileIndex = nextWifiProfileIndex(activeWifiProfileIndex);
+    if (activeWifiProfileIndex >= MAX_WIFI_PROFILES) return false;
+    wifi_ssid = wifiProfiles[activeWifiProfileIndex].ssid;
+    wifi_password = wifiProfiles[activeWifiProfileIndex].password;
     WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
-    Serial.println("[WIFI] Station connection started");
+    Serial.printf("[WIFI] Station connection started with profile %u\n", activeWifiProfileIndex + 1);
     return true;
 }
 
@@ -4545,12 +4622,15 @@ void loop() {
         if (sdMutex != NULL && takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
             mounted = initializeSDCard();
             if (mounted) {
-                String previousWifiSsid = wifi_ssid;
-                String previousWifiPassword = wifi_password;
+                String previousWifiSsids[MAX_WIFI_PROFILES];
+                String previousWifiPasswords[MAX_WIFI_PROFILES];
+                for (uint8_t index = 0; index < MAX_WIFI_PROFILES; ++index) {
+                    previousWifiSsids[index] = wifiProfiles[index].ssid;
+                    previousWifiPasswords[index] = wifiProfiles[index].password;
+                }
                 sdCardMounted = true;
                 loadConfigFromSD();
-                wifiConfigChanged = wifi_ssid != previousWifiSsid ||
-                                    wifi_password != previousWifiPassword;
+                wifiConfigChanged = !wifiProfilesEqual(previousWifiSsids, previousWifiPasswords);
             }
             digitalWrite(SD_CS_PIN, HIGH);
             giveSd();

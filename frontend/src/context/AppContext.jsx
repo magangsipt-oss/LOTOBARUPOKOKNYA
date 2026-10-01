@@ -97,6 +97,7 @@ export function AppProvider({ children }) {
   const [estimasiWaktu, setEstimasiWaktu] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
   const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '', device_token: '' });
+  const [deviceProvisioning, setDeviceProvisioning] = useState(null);
   const [editingBoxId, setEditingBoxId] = useState('');
   const [formAdminNewUser, setFormAdminNewUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -506,6 +507,9 @@ export function AppProvider({ children }) {
         : await boxService.createBox({ ...newUnit, idBox: cleanId });
       if (hasil.success || hasil.status === 'success') {
         const d = hasil.data || {};
+        if (!editingBoxId && typeof d.device_token === 'string' && d.device_token.length >= 32) {
+          setDeviceProvisioning({ ownerSid: sessionUser?.sid || '', token: d.device_token });
+        }
         const savedBox = {
           ...newUnit, id: cleanId,
           is_online: d.is_online ?? 0,
@@ -532,6 +536,20 @@ export function AppProvider({ children }) {
     setEditingBoxId(box.id);
     setFormAlatBerat({ id: box.id || '', unit: box.unit || '', ip: box.ip || '', lat: box.lat || '', lng: box.lng || box.lon || '', device_token: box.device_token || '' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleRegenerateBoxToken = async (idBox) => {
+    if (!window.confirm('Token lama langsung tidak berlaku. ESP32 akan offline sampai TOKEN baru dipasang di SD card. Lanjutkan?')) return;
+    try {
+      const result = await boxService.regenerateToken(idBox);
+      const token = result?.data?.device_token;
+      if (!result?.success || typeof token !== 'string' || token.length < 32) {
+        throw new Error(result?.message || 'Token baru tidak diterima dari server.');
+      }
+      setDeviceProvisioning({ ownerSid: sessionUser?.sid || '', token });
+    } catch (error) {
+      pemicuToast(`Gagal mengganti token perangkat: ${error.message || 'permintaan gagal'}`, 'fail');
+    }
   };
 
   const handleBatalEditAlatBerat = () => {
@@ -1118,6 +1136,8 @@ export function AppProvider({ children }) {
     tipeKerusakan, setTipeKerusakan, estimasiWaktu, setEstimasiWaktu,
     showAddUserForm, setShowAddUserForm,
     formAlatBerat, setFormAlatBerat, editingBoxId, setEditingBoxId,
+    deviceProvisioningToken: isLoggedIn && deviceProvisioning?.ownerSid === sessionUser?.sid ? deviceProvisioning.token : '',
+    clearDeviceProvisioningToken: () => setDeviceProvisioning(null),
     formAdminNewUser, setFormAdminNewUser,
     showEditUserModal, setShowEditUserModal,
     formEditUser, setFormEditUser,
@@ -1148,6 +1168,7 @@ export function AppProvider({ children }) {
     handleCaptureKamera,
     // Action handlers
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
+    handleRegenerateBoxToken,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     dapatkanMekanikDariAntreanLoto, dapatkanPengawasDariLoto,
     handleSaveMechanicTeam, handleIndukTambahUser, handleImportExcel,
