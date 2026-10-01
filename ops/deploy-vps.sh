@@ -30,10 +30,12 @@ node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' 
   exit 1
 }
 test -s "$archive" || { echo "Uploaded release archive is missing." >&2; exit 1; }
-test -s "$deploy_root/shared/backend.env" || {
-  echo "Create /srv/eloto/shared/backend.env before deploying." >&2
-  exit 1
-}
+if [[ "$activate" == true ]]; then
+  test -s "$deploy_root/shared/backend.env" || {
+    echo "Configure /srv/eloto/shared/backend.env before activating a release." >&2
+    exit 1
+  }
+fi
 
 mkdir -p "$deploy_root/shared/uploads" "$deploy_root/shared/legacy-uploads" "$release"
 tar -xzf "$archive" -C "$release"

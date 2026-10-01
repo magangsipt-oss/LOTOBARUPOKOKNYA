@@ -123,7 +123,7 @@ sudo chown admin123:admin123 /srv/eloto/shared/backend.env
 sudo chmod 0600 /srv/eloto/shared/backend.env
 ```
 
-Isi `/srv/eloto/shared/backend.env` di VPS dengan `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=5002`, `FRONTEND_URL=https://domain-anda`, akun MySQL non-root, password kuat, dan `MJPEG_PORTS={}` bila counting memang tidak dijalankan. Jangan commit atau mengirim file ini. Pastikan DNS domain menunjuk ke VPS, sertifikat HTTPS aktif, dan Nginx memakai konfigurasi di atas.
+Sebelum migrasi atau aktivasi, isi `/srv/eloto/shared/backend.env` di VPS dengan `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=5002`, `FRONTEND_URL=https://domain-anda`, akun MySQL non-root, password kuat, dan `MJPEG_PORTS={}` bila counting memang tidak dijalankan. Mode persiapan release (`activate` mati) tidak memerlukan file ini terisi; mode aktivasi akan menolak file kosong. Jangan commit atau mengirim file ini. Pastikan DNS domain menunjuk ke VPS, sertifikat HTTPS aktif, dan Nginx memakai konfigurasi di atas.
 
 Setelah workflow pertama selesai dengan `activate` mati, file service tersedia pada release yang tercetak di log Actions. Pasang unit itu dari VPS:
 
