@@ -151,6 +151,7 @@ String device_token     = ELOTO_DEVICE_TOKEN;
 const char* SERVER_PROJECT_PATH  = "";
 const char* API_PATH_PREFIX      = "api/";
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 45000;
+const uint32_t BACKEND_DISCOVERY_RETRY_MS = 15000;
 portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
 uint32_t wifiConnectStartedAt = 0;
@@ -205,6 +206,22 @@ public:
     void addHeader(const String &name, const String &value) { request.addHeader(name, value); }
     int GET() { return request.GET(); }
     int POST(const String &payload) { return request.POST(payload); }
+    String transportError(int status) {
+        String detail = HTTPClient::errorToString(status);
+        if (server_endpoint_secure) {
+            char error[128];
+            error[0] = '\0';
+            const int errorCode = secureClient.lastError(error, sizeof(error));
+            if (error[0] != '\0') {
+                detail += " (TLS ";
+                detail += String(errorCode);
+                detail += ": ";
+                detail += error;
+                detail += ")";
+            }
+        }
+        return detail;
+    }
     int getSize() { return request.getSize(); }
     String getString() { return request.getString(); }
     void end() { request.end(); }
@@ -2906,6 +2923,7 @@ void networkTaskCore0(void * pvParameters) {
     unsigned long lastHeartbeatTask = 0;
     unsigned long lastDbSyncTask    = 0;
     unsigned long lastBlePresenceTask = 0;
+    unsigned long lastBackendDiscoveryTask = 0;
     unsigned long lastReconnectAttempt = 0;
     unsigned long lastOfflineUploadTask = 0;
     bool wasWifiConnected = (WiFi.status() == WL_CONNECTED);
@@ -3027,6 +3045,14 @@ void networkTaskCore0(void * pvParameters) {
             }
         }
 
+        if (WiFi.status() == WL_CONNECTED && server_host.length() == 0 &&
+            millis() - lastBackendDiscoveryTask >= BACKEND_DISCOVERY_RETRY_MS &&
+            ESP.getFreeHeap() > 25000) {
+            lastBackendDiscoveryTask = millis();
+            Serial.println("[NET] Retrying authenticated backend handshake");
+            discoverServer();
+        }
+
         if (millis() - lastBlePresenceTask >= 5000) {
             lastBlePresenceTask = millis();
             reportBlePresence();
@@ -3044,12 +3070,9 @@ void networkTaskCore0(void * pvParameters) {
                 portEXIT_CRITICAL(&wifiConnectMux);
                 if (!attemptActive && millis() - lastReconnectAttempt > 30000) {
                     lastReconnectAttempt = millis();
-                    if (attemptExpired) Serial.println("[WIFI] Connect attempt timed out; restarting station");
-                    portENTER_CRITICAL(&wifiConnectMux);
-                    wifiConnectInProgress = false;
-                    portEXIT_CRITICAL(&wifiConnectMux);
-                    WiFi.disconnect();
-                    vTaskDelay(pdMS_TO_TICKS(100));
+                    if (attemptExpired) Serial.println("[WIFI] Connect attempt timed out; advancing configured profile");
+                    // Keep the expired flag so tryConnectBestWifi can advance
+                    // to the next configured profile before retrying.
                     tryConnectBestWifi();
                 }
             } else if ((!wasWifiConnected || startupSyncPending || !sdSyncOk || millis() - lastDbSyncTask > 120000) && ESP.getFreeHeap() > 30000) {
@@ -3345,10 +3368,12 @@ bool verifyConfiguredServer() {
     http.addHeader("X-Device-Token", device_token);
     http.setTimeout(5000);
     const int status = http.GET();
+    const String transportError = status < 0 ? http.transportError(status) : "";
     String payload = status == HTTP_CODE_OK ? http.getString() : "";
     http.end();
     if (status != HTTP_CODE_OK) {
-        Serial.printf("[NET] Backend handshake HTTP %d\n", status);
+        if (status < 0) Serial.printf("[NET] Backend handshake transport error: %d (%s)\n", status, transportError.c_str());
+        else Serial.printf("[NET] Backend handshake HTTP %d\n", status);
         return false;
     }
 
@@ -4561,6 +4586,7 @@ void setup() {
     pinMode(PIN_AD_KEY, INPUT);
 
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.disconnect();
     server.on("/status", HTTP_GET, handleStatus);
     server.onNotFound(handleNotFound);
@@ -4575,7 +4601,6 @@ void setup() {
         tryConnectBestWifi();
     } else {
         // Otomatis langsung mencari dan menghubungkan jaringan di latar belakang saat dinyalakan (Non-Blocking)
-        WiFi.setAutoReconnect(true);
         tryConnectBestWifi();
         currentState = STATE_WELCOME;
         selectedFooterAction = 1; // Default sorot tombol LANJUT

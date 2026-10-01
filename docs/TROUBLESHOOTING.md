@@ -18,7 +18,11 @@ Periksa role akun, header `X-CSRF-Token`, dan origin frontend. Login ulang atau 
 
 ## ESP32 tidak mencapai backend atau mendapat 401
 
-Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002`, firewall mengizinkan TCP 5002 hanya pada jaringan privat, dan `SERVER` pada SD berisi URL seperti `http://192.168.1.10:5002`. Untuk VPS BiznetGIO ini gunakan `SERVER=https://103.197.188.61` dan root CA di `/server_ca.pem`; NTP dan TCP 443 harus dapat dijangkau ESP32. Jangan membuka port 5002 ke internet. Firmware mendukung sampai lima profil Wi-Fi 2,4 GHz (`WIFI_1_*` … `WIFI_5_*`) dan mencoba profil berikutnya setelah koneksi pertama timeout. Jika handshake mendapat 401, pastikan `DEVICE_ID` sudah didaftarkan dan token SD sama dengan token boks; jika TLS gagal, periksa waktu NTP, sertifikat IP, dan CA tanpa mematikan verifikasi.
+Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002` dan firewall mengizinkan TCP 5002 hanya pada jaringan privat. Untuk VPS BiznetGIO, firmware production sudah memakai `https://103.197.188.61` dan root CA ISRG Root X1 bawaan; `config.txt` dan `/server_ca.pem` bersifat override opsional. Jangan membuka port 5002 ke internet.
+
+Firmware mencoba ulang handshake backend setiap 15 detik selama Wi-Fi tersambung, mempertahankan verifikasi TLS dan token perangkat. Jika profil Wi-Fi gagal selama 45 detik, firmware berpindah ke profil berikutnya; pastikan hotspot 2,4 GHz aktif dan memiliki internet. `HTTP -1` berarti koneksi transport tidak mendapat respons; versi firmware terbaru juga mencetak rincian TLS di Serial Monitor. Jika handshake menghasilkan 401, transport sudah mencapai server tetapi ID/token lokal tidak cocok dengan boks; jangan kirim token ke log atau chat. Jangan mengatasi kegagalan dengan `setInsecure()` atau HTTP publik.
+
+GPS memakai receiver pada ESP32 (UART RX 16/TX 17) dan hanya mengirim koordinat setelah mendapat satellite fix. Untuk memperoleh fix awal, nyalakan perangkat di area terbuka; bila `gps_fix=false` terus di luar ruangan, periksa kabel dan antena GPS.
 
 ## ESP32 tidak membaca konfigurasi SD
 

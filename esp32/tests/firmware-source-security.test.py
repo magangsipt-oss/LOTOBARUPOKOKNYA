@@ -25,6 +25,9 @@ required = (
     'if __has_include("device_secrets.override.h")',
     "automatic subnet scanning is disabled",
     'http.addHeader("X-Device-Token", device_token);',
+    "WiFi.setAutoReconnect(true);",
+    "secureClient.lastError(error, sizeof(error))",
+    "BACKEND_DISCOVERY_RETRY_MS",
 )
 for marker in required:
     assert marker in source, f"required active firmware mitigation missing: {marker}"
@@ -47,6 +50,12 @@ for forbidden in (
     assert forbidden not in source, f"unsafe or stale firmware path returned: {forbidden}"
 
 assert source.count("ServerHttpClient http;") == 6
+
+wifi_retry = source.split('if (millis() - lastWifiCheckTask > 10000)', 1)[1].split('} else if', 1)[0]
+assert "tryConnectBestWifi();" in wifi_retry, "expired Wi-Fi attempts must retry through the profile selector"
+assert "wifiConnectInProgress = false;" not in wifi_retry, (
+    "the Wi-Fi retry caller must preserve expired state so profile failover can run"
+)
 
 tracked_headers = (
     repo / "esp32/ELOTO_FIXED/device_secrets.h",
