@@ -34,6 +34,7 @@ using ElotoSecureClient = WiFiClientSecure;
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
 #include "../FirmwareSafety.h"
+#include "../ServerDefaults.h"
 #include "network_secrets.h"
 #if defined(__has_include)
 #if __has_include("network_secrets.local.h")
@@ -140,10 +141,10 @@ WifiProfile wifiProfiles[MAX_WIFI_PROFILES];
 uint8_t wifiProfileCount = 0;
 uint8_t activeWifiProfileIndex = 0;
 String server_host      = "";
-String configured_server_base = "";
-String server_ca = "";
-bool configured_server_valid = false;
-bool server_endpoint_secure = false;
+String configured_server_base = eloto::DEFAULT_SERVER_BASE;
+String server_ca = eloto::DEFAULT_SERVER_CA;
+bool configured_server_valid = true;
+bool server_endpoint_secure = true;
 bool ntp_sync_started = false;
 uint32_t last_server_probe_ms = 0;
 String device_token     = ELOTO_DEVICE_TOKEN;
@@ -751,6 +752,15 @@ void resetWifiProfiles() {
     activeWifiProfileIndex = 0;
 }
 
+void loadCompiledConfigDefaults() {
+    resetWifiProfiles();
+    configured_server_base = eloto::DEFAULT_SERVER_BASE;
+    configured_server_valid = true;
+    server_endpoint_secure = true;
+    server_host = ""; // Force a token-authenticated handshake before API traffic.
+    server_ca = eloto::DEFAULT_SERVER_CA;
+}
+
 bool wifiProfilesEqual(const String *leftSsids, const String *leftPasswords) {
     for (uint8_t index = 0; index < MAX_WIFI_PROFILES; ++index) {
         if (leftSsids[index] != wifiProfiles[index].ssid ||
@@ -760,7 +770,6 @@ bool wifiProfilesEqual(const String *leftSsids, const String *leftPasswords) {
 }
 
 bool loadServerCaFromSD() {
-    server_ca = "";
     if (!sdCardMounted) return false;
     File caFile = SD.open("/server_ca.pem", FILE_READ);
     if (!caFile) return false;
@@ -780,6 +789,7 @@ bool loadServerCaFromSD() {
 }
 
 void loadConfigFromSD() {
+    loadCompiledConfigDefaults();
     if (!sdCardMounted) return;
     File configFile;
     const char *configPaths[] = {
@@ -796,7 +806,7 @@ void loadConfigFromSD() {
         }
     }
     if (!configFile) {
-        Serial.println("[CONFIG] config.txt not found; check SD root or SD_CARD_CONFIG folder");
+        Serial.println("[CONFIG] No config.txt; using compiled Wi-Fi, device, server, and CA defaults");
         return;
     }
 
@@ -805,12 +815,7 @@ void loadConfigFromSD() {
     bool wifiPasswordLoaded = false;
     bool serverLoaded = false;
     bool deviceTokenLoaded = false;
-    resetWifiProfiles();
-    configured_server_valid = false;
-    configured_server_base = "";
     server_host = "";
-    server_endpoint_secure = false;
-    server_ca = "";
     while (configFile.available()) {
         String line = configFile.readStringUntil('\n');
         line.replace("\xef\xbb\xbf", "");
@@ -895,9 +900,9 @@ void loadConfigFromSD() {
     } else {
         Serial.println("[CONFIG] No usable Wi-Fi fields; keeping firmware credentials");
     }
-    if (!serverLoaded) Serial.println("[CONFIG] No valid SERVER endpoint; backend traffic is disabled");
-    if (serverLoaded && server_endpoint_secure && !loadServerCaFromSD()) {
-        Serial.println("[CONFIG] HTTPS selected but /server_ca.pem is missing or invalid; TLS remains disabled");
+    if (!serverLoaded) Serial.println("[CONFIG] Using compiled production SERVER endpoint");
+    if (configured_server_valid && server_endpoint_secure && !loadServerCaFromSD()) {
+        Serial.println("[CONFIG] Using embedded production CA (ISRG Root X1)");
     }
     if (!deviceTokenLoaded) {
         if (device_token.length() >= 32 && !isConfigPlaceholder(device_token)) {

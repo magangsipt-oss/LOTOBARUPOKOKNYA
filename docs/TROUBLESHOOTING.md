@@ -22,7 +22,7 @@ Untuk LAN development, pastikan backend bind ke `0.0.0.0:5002`, firewall mengizi
 
 ## ESP32 tidak membaca konfigurasi SD
 
-Pastikan layar menunjukkan `SD OK` dan Serial Monitor menampilkan `[SD] Mounted and read/write verified`, lalu `[CONFIG] Reading ...`. Letakkan file sebagai `/config.txt` di root SD atau `/SD_CARD_CONFIG/config.txt`; nama `.txt.txt` juga dideteksi untuk kasus ekstensi Windows tersembunyi. Baris konfigurasi memakai format `KEY=VALUE`. Placeholder `your-...` dan `replace-with-...` diabaikan. Log hanya menampilkan apakah kredensial dimuat, tidak mencetak password atau token.
+Pastikan layar menunjukkan `SD OK` dan Serial Monitor menampilkan `[SD] Mounted and read/write verified`. Jika memakai konfigurasi SD, letakkan file sebagai `/config.txt` di root SD atau `/SD_CARD_CONFIG/config.txt`; nama `.txt.txt` juga dideteksi untuk kasus ekstensi Windows tersembunyi. Tanpa file itu, pesan `[CONFIG] No config.txt; using compiled ... defaults` normal untuk firmware production, asalkan header rahasia lokal sudah diisi saat upload. Baris konfigurasi memakai format `KEY=VALUE`. Placeholder `your-...` dan `replace-with-...` diabaikan. Log tidak mencetak password atau token.
 
 ## Video tidak muncul atau counting stale
 

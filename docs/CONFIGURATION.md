@@ -55,15 +55,23 @@ Jika URL kamera atau token belum lengkap, launcher melewati counting dengan pesa
 
 ## ESP32
 
-Salin format [esp32/config.example.txt](../esp32/config.example.txt) ke `/config.txt` pada SD perangkat:
+`config.txt` sekarang opsional untuk firmware production BiznetGIO. Jika file itu tidak ada, firmware memakai Wi-Fi, ID boks, dan token dari header rahasia lokal saat proses upload, serta URL VPS dan root CA yang tertanam di firmware. Kartu SD tetap dipakai untuk data lokal seperti pengguna, sesi, dan log.
+
+Header lokal berikut sudah diabaikan Git; isi di komputer yang dipakai untuk meng-upload firmware:
+
+- `esp32/ELOTO_FIXED/network_secrets.local.h`: `ELOTO_NETWORK_SSID` dan `ELOTO_NETWORK_PASSWORD`.
+- `esp32/ELOTO_FIXED/device_secrets.override.h`: `ELOTO_DEVICE_ID`.
+- `esp32/ELOTO_FIXED/device_secrets.profile.h`: `ELOTO_DEVICE_TOKEN`.
+
+Pastikan nilai itu valid sebelum upload. Firmware memakai satu profil Wi-Fi dari header. Jika ingin beberapa profil Wi-Fi, mengganti server, atau mengganti CA, salin format [esp32/config.example.txt](../esp32/config.example.txt) sebagai `/config.txt` pada SD:
 
 | Kunci / file | Fungsi |
 | --- | --- |
 | `WIFI_1_SSID` … `WIFI_5_SSID` dan `WIFI_1_PASS` … `WIFI_5_PASS` | Hingga lima profil Wi-Fi; perangkat mencoba profil berurutan dan pindah setelah timeout. Format lama `SSID`/`PASS` tetap didukung; nilai contoh seperti `your-...` diabaikan. ESP32 hanya mendukung Wi-Fi 2,4 GHz |
-| `SERVER` | VPS BiznetGIO: `https://103.197.188.61`; LAN tepercaya: `http://192.168.1.10:5002` |
-| `TOKEN` | Token asli untuk boks yang telah diprovision |
-| `/server_ca.pem` | Root CA TLS dalam PEM di root SD; wajib untuk endpoint HTTPS |
+| `SERVER` | Opsional override endpoint; default production `https://103.197.188.61`. LAN tepercaya: `http://192.168.1.10:5002` |
+| `TOKEN` | Opsional override token asli untuk boks yang telah diprovision |
+| `/server_ca.pem` | Opsional override root CA TLS. Default production memakai ISRG Root X1 yang tertanam di firmware |
 
-`ELOTO_FIXED` memverifikasi hostname dan sertifikat TLS pada endpoint HTTPS, lalu memeriksa kontrak boks sebelum memakai API. Jam ESP32 harus tersinkron melalui NTP, dan root CA tepercaya harus tersedia sebagai `/server_ca.pem` di SD. Jangan mematikan verifikasi sertifikat. HTTP hanya diterima untuk host privat yang ditetapkan eksplisit. Tanpa `SERVER` valid, perangkat tetap offline; pemindaian subnet otomatis dimatikan agar token tidak dikirim ke host yang tidak dikenal. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
+`ELOTO_FIXED` memverifikasi sertifikat TLS dan handshake boks sebelum memakai API. Jam ESP32 harus tersinkron melalui NTP. Jangan mematikan verifikasi sertifikat. HTTP hanya diterima untuk host privat yang ditetapkan eksplisit. Langkah provisioning ada di [deployment](DEPLOYMENT.md).
 
-Header rahasia yang terlacak Git sekarang hanya template kosong. Simpan nilai lokal pada `/config.txt` di SD, `device_secrets.profile.h`, `device_secrets.override.h`, atau `network_secrets.local.h`; tiga header lokal terakhir diabaikan Git. Karena revisi lama pernah memuat nilai perangkat/jaringan, rotasi token boks dan password Wi-Fi sebelum production; perubahan file tidak menghapus nilai dari riwayat Git.
+Jangan commit nilai asli header lokal atau config SD. Karena revisi lama pernah memuat nilai perangkat/jaringan, rotasi token boks dan password Wi-Fi sebelum production; perubahan file tidak menghapus nilai dari riwayat Git.
