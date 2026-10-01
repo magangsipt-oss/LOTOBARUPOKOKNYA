@@ -221,6 +221,14 @@ test('all ESP32 telemetry payload shapes pass validateTelemetry', () => {
   }
 });
 
+test('validateTelemetry accepts WIFI_CONNECTED event IDs containing an IPv4 UID', () => {
+  assert.doesNotThrow(() => validateTelemetry({
+    event_id: 'WIFI_CONNECTED-192.168.137.161-123456-1234',
+    event: 'WIFI_CONNECTED',
+    uid: '192.168.137.161'
+  }));
+});
+
 // ============================================================================
 // Event type classification
 // ============================================================================

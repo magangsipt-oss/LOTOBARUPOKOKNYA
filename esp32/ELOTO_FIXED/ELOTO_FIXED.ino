@@ -2931,7 +2931,7 @@ void networkTaskCore0(void * pvParameters) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
 
                 DynamicJsonDocument doc(2048);
-                String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
+                String eventId = String(job.event) + "-" + String(millis()) + "-" + String(random(1000, 9999));
                 doc["event_id"]       = eventId;
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
                 doc["last_uid"]       = String(job.uid); doc["uid"] = String(job.uid);

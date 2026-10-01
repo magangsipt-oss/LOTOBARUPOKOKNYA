@@ -9,7 +9,7 @@ export function validateTelemetry(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid('Invalid telemetry');
 
   // Retries must retain the device's event identity for deduplication.
-  if (typeof body.event_id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.event_id)) invalid('Invalid event_id');
+  if (typeof body.event_id !== 'string' || !/^[A-Za-z0-9_.-]{1,100}$/.test(body.event_id)) invalid('Invalid event_id');
 
   for (const [key, max] of [['event',100],['uid',50],['state',50],['ip',50],['ssid',100],['lcd0',100],['lcd1',100],['supervisor_uid',50],['active_fuelman',100]]) {
     if (body[key] != null && (typeof body[key] !== 'string' || body[key].length > max)) invalid(`Invalid ${key}`);
