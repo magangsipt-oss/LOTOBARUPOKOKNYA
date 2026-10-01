@@ -58,12 +58,14 @@ Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh l
 ## Production tanpa Docker
 
 - Sajikan **hanya** `frontend/dist`. Jangan jadikan root repository, `api/`, `.git`, `.env`, atau firmware sebagai document root.
-- Jalankan backend sebagai pengguna OS terbatas dengan `NODE_ENV=production`, `FRONTEND_URL=https://domain-aktual`, dan akun database non-root dengan password kuat. Binding backend tetap loopback.
+- Jalankan backend sebagai pengguna OS terbatas dengan `NODE_ENV=production`, `FRONTEND_URL` yang sama dengan origin HTTPS publik, dan akun database non-root dengan password kuat. Binding backend tetap loopback.
 - Terminasi HTTPS pada reverse proxy. Proxy `/api/` ke `http://127.0.0.1:5002/api/`. Pertahankan `Host`, `Origin`, cookie, dan header `X-Device-Token`; backend production mempercayai proxy loopback secara default. Jangan membuka port backend `5002` ke internet.
 - Cookie production menggunakan `__Host-eloto_session`, Secure, HttpOnly, SameSite=Lax. Sajikan frontend dan API pada origin yang sama (`VITE_API_URL=/api`). Jangan memindahkan token sesi ke localStorage atau URL gambar/stream.
 - Proxy stream memerlukan buffering dimatikan. Atur timeout stream, batas request body 8 MB, dan header keamanan pada penyajian frontend.
 - Probe `/health/live` untuk proses dan `/health/ready` untuk koneksi database. Pakai process manager yang meneruskan SIGTERM; backend menutup koneksi pada shutdown.
 - Ambil backup database/media secara berkala, uji restore, dan siapkan retensi log/event. Jangan menghapus receipt deduplikasi selama perangkat masih mungkin mengirim replay yang bersangkutan.
+
+VPS `103.197.188.61` saat ini menyajikan aplikasi di `https://103.197.188.61` memakai sertifikat IP Let’s Encrypt. Sertifikat IP memakai profil `shortlived` dan berlaku sekitar 160 jam. Pertahankan Certbot minimal 5.4, timer renewal otomatis, hook reload Nginx, serta akses inbound port 80 untuk challenge HTTP-01 dan port 443 untuk aplikasi. Lihat panduan [Let’s Encrypt untuk sertifikat IP di Certbot](https://letsencrypt.org/2026/03/11/shorter-certs-certbot).
 
 Contoh lokasi Nginx di dalam virtual host HTTPS yang telah dikonfigurasi:
 
@@ -123,7 +125,7 @@ sudo chown admin123:admin123 /srv/eloto/shared/backend.env
 sudo chmod 0600 /srv/eloto/shared/backend.env
 ```
 
-Sebelum migrasi atau aktivasi, isi `/srv/eloto/shared/backend.env` di VPS dengan `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=5002`, `FRONTEND_URL=https://domain-anda`, akun MySQL non-root, password kuat, dan `MJPEG_PORTS={}` bila counting memang tidak dijalankan. Mode persiapan release (`activate` mati) tidak memerlukan file ini terisi; mode aktivasi akan menolak file kosong. Jangan commit atau mengirim file ini. Pastikan DNS domain menunjuk ke VPS, sertifikat HTTPS aktif, dan Nginx memakai konfigurasi di atas.
+Sebelum migrasi atau aktivasi, isi `/srv/eloto/shared/backend.env` di VPS dengan `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=5002`, `FRONTEND_URL` untuk origin HTTPS publik, akun MySQL non-root, password kuat, dan `MJPEG_PORTS={}` bila counting memang tidak dijalankan. Untuk deploy IP langsung, gunakan `FRONTEND_URL=https://103.197.188.61`; domain juga dapat digunakan bila DNS dan sertifikatnya disiapkan. Mode persiapan release (`activate` mati) tidak memerlukan file ini terisi; mode aktivasi akan menolak file kosong. Jangan commit atau mengirim file ini. Pastikan Nginx memakai konfigurasi HTTPS yang sesuai.
 
 Setelah workflow pertama selesai dengan `activate` mati, file service tersedia pada release yang tercetak di log Actions. Pasang unit itu dari VPS:
 
