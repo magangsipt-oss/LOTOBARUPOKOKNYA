@@ -83,10 +83,17 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$known_hosts_file"
           chmod 600 "$key_file" "$known_hosts_file"
           ssh-keygen -y -f "$key_file" >/dev/null
-          ssh-keygen -F "[$DEPLOY_HOST]:22" -f "$known_hosts_file" >/dev/null || {
-            echo 'DEPLOY_KNOWN_HOSTS must pin [103.197.188.61]:22.' >&2
-            exit 1
-          }
+          if ! ssh-keygen -F "$DEPLOY_HOST" -f "$known_hosts_file" >/dev/null; then
+            ssh-keygen -F "[$DEPLOY_HOST]:22" -f "$known_hosts_file" >/dev/null || {
+              echo 'DEPLOY_KNOWN_HOSTS must pin 103.197.188.61 on SSH port 22.' >&2
+              exit 1
+            }
+            normalized_file="$RUNNER_TEMP/eloto-known-hosts-normalized"
+            awk -v host="$DEPLOY_HOST" -v port_host="[$DEPLOY_HOST]:22" \
+              '$1 == port_host { $1 = host } { print }' \
+              "$known_hosts_file" > "$normalized_file"
+            mv "$normalized_file" "$known_hosts_file"
+          fi
 
           ssh_opts=(-i "$key_file" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts_file")
           ssh "${ssh_opts[@]}" "$target" "mkdir -p '$DEPLOY_ROOT/incoming' '$DEPLOY_ROOT/releases'"

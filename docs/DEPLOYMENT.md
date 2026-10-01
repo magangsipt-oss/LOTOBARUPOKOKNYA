@@ -104,7 +104,7 @@ Workflow [deploy-biznetgio.yml](../.github/workflows/deploy-biznetgio.yml) mengi
 Di repository, buka **Settings → Secrets and variables → Actions → New repository secret**, lalu isi:
 
 - `DEPLOY_SSH_KEY`: isi private key SSH lengkap untuk akun `admin123`. Private key tidak perlu dikirim ke chat atau disimpan di Git.
-- `DEPLOY_KNOWN_HOSTS`: baris host key SSH untuk `[103.197.188.61]:22`. Ambil public host key dari console/provider dan cocokkan fingerprint-nya sebelum dipercaya; jangan langsung percaya hasil `ssh-keyscan` yang belum diverifikasi.
+- `DEPLOY_KNOWN_HOSTS`: baris host key SSH untuk `103.197.188.61` pada port 22. Pertahankan baris mentah dari `ssh-keyscan` setelah fingerprint-nya dicocokkan lewat console/provider; jangan langsung percaya hasil scan yang belum diverifikasi. Workflow menerima format host standar untuk port 22 maupun `[103.197.188.61]:22`.
 
 Key harus cocok dengan public key yang terpasang untuk akun `admin123` pada VPS dan dapat dibaca `ssh-keygen` tanpa passphrase.
 
