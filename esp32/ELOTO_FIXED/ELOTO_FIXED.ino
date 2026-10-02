@@ -143,6 +143,8 @@ const char* SERVER_PROJECT_PATH  = "";
 const char* API_PATH_PREFIX      = "api/";
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 45000;
 const uint32_t BACKEND_DISCOVERY_RETRY_MS = 15000;
+const uint32_t HEARTBEAT_INTERVAL_MS = 10000;
+const uint32_t OFFLINE_REPLAY_STABLE_MS = 300000;
 portMUX_TYPE wifiConnectMux = portMUX_INITIALIZER_UNLOCKED;
 bool wifiConnectInProgress = false;
 uint32_t wifiConnectStartedAt = 0;
@@ -1389,10 +1391,10 @@ bool geoPending = false;
 uint32_t geoPendingSince = 0;
 uint32_t geoLastPaint = 0;
 bool geoBannerWasVisible = false;
-// NimBLE memakai heap cukup besar. Menjalankannya bersamaan dengan inisialisasi
-// TFT, SD, GPS dan Wi-Fi dapat memicu panic/WDT pada ESP32 tanpa PSRAM.
+// NimBLE memakai heap cukup besar. Sisakan ruang untuk TLS VPS agar koneksi
+// dapat pulih setelah reset pada ESP32 tanpa PSRAM.
 const uint32_t BLE_START_DELAY_MS = 12000;
-const uint32_t BLE_MIN_FREE_HEAP = 50000;
+const uint32_t BLE_MIN_FREE_HEAP = 100000;
 uint32_t bleStartLastDeferredLogMs = 0;
 
 bool geoHasConfiguredMacs() {
@@ -2430,6 +2432,7 @@ void loadUsersToRAM() {
             if (userFile) {
                 ramUserCount = 0;
                 while (userFile.available() && ramUserCount < MAX_RAM_USERS) {
+                    vTaskDelay(pdMS_TO_TICKS(1));
                     String line = userFile.readStringUntil('\n');
                     line.trim();
                     if (line.length() > 0) {
@@ -2786,6 +2789,7 @@ void uploadOfflineLogsSDCard() {
         if (writeOk) pendingFile = SD.open(temporary, FILE_WRITE);
         if (!pendingFile) writeOk = false;
         uint8_t buffer[256];
+        size_t bytesSinceYield = 0;
         while (writeOk && source.available()) {
             size_t readBytes = source.read(buffer, sizeof(buffer));
             if (readBytes == 0 || pendingFile.write(buffer, readBytes) != readBytes) {
@@ -2793,6 +2797,11 @@ void uploadOfflineLogsSDCard() {
                 break;
             }
             copiedBytes += readBytes;
+            bytesSinceYield += readBytes;
+            if (bytesSinceYield >= 4096) {
+                bytesSinceYield = 0;
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
         }
         if (pendingFile) {
             pendingFile.flush();
@@ -2903,6 +2912,7 @@ void networkTaskCore0(void * pvParameters) {
     unsigned long lastBackendDiscoveryTask = 0;
     unsigned long lastReconnectAttempt = 0;
     unsigned long lastOfflineUploadTask = 0;
+    unsigned long backendStableSince = 0;
     bool wasWifiConnected = (WiFi.status() == WL_CONNECTED);
     uint8_t heartbeatFailCount = 0;
     bool initialHeartbeatSent = false;
@@ -2997,10 +3007,12 @@ void networkTaskCore0(void * pvParameters) {
 
                 if (httpCode >= 200 && httpCode < 300) {
                     heartbeatFailCount = 0;
+                    if (backendStableSince == 0) backendStableSince = millis();
                 } else {
+                    backendStableSince = 0;
                     heartbeatFailCount++;
                     saveOfflineLogToSDCard(String(job.event), String(job.uid), eventId);
-                    if (heartbeatFailCount >= 3 && String(job.event) == "HEARTBEAT_SYNC") {
+                    if (heartbeatFailCount >= 3) {
                         heartbeatFailCount = 0;
                         if (server_host.length() > 0) {
                             String oldHost = server_host;
@@ -3014,9 +3026,11 @@ void networkTaskCore0(void * pvParameters) {
                     }
                 }
             } else if (WiFi.status() != WL_CONNECTED) {
+                backendStableSince = 0;
                 saveOfflineLogToSDCard(String(job.event), String(job.uid), String());
                 heartbeatFailCount++;
             } else {
+                backendStableSince = 0;
                 saveOfflineLogToSDCard(String(job.event), String(job.uid), String());
             }
         }
@@ -3073,23 +3087,20 @@ void networkTaskCore0(void * pvParameters) {
             }
         }
 
-        if (!initialHeartbeatSent) {
-            if (millis() > 10000) {
-                initialHeartbeatSent = true;
-                lastHeartbeatTask = millis();
-                if (WiFi.status() == WL_CONNECTED) {
-                    logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
-                }
-            }
-        } else if (millis() - lastHeartbeatTask > 30000) {
+        if (!initialHeartbeatSent && WiFi.status() == WL_CONNECTED && server_host.length() > 0) {
+            initialHeartbeatSent = true;
+            lastHeartbeatTask = millis();
+            logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
+        } else if (initialHeartbeatSent && millis() - lastHeartbeatTask >= HEARTBEAT_INTERVAL_MS) {
             lastHeartbeatTask = millis();
             if (WiFi.status() == WL_CONNECTED) {
                 logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
             }
         }
 
-        if (millis() > 60000 && millis() - lastOfflineUploadTask >= 30000 &&
-            WiFi.status() == WL_CONNECTED && sdCardMounted && sdSyncOk &&
+        if (backendStableSince > 0 && millis() - backendStableSince >= OFFLINE_REPLAY_STABLE_MS &&
+            millis() - lastOfflineUploadTask >= 30000 && WiFi.status() == WL_CONNECTED &&
+            server_host.length() > 0 && sdCardMounted && sdSyncOk &&
             !relayPulseActive && networkQueue != NULL &&
             uxQueueMessagesWaiting(networkQueue) == 0 && ESP.getFreeHeap() > 30000) {
             lastOfflineUploadTask = millis();
@@ -3348,6 +3359,7 @@ bool verifyConfiguredServer() {
     http.end();
     if (status != HTTP_CODE_OK) {
         if (status < 0) Serial.printf("[NET] Backend handshake transport error: %d (%s)\n", status, transportError.c_str());
+        else if (status == HTTP_CODE_UNAUTHORIZED) Serial.printf("[NET] Backend rejected ESP IP %s; cocokkan IP Dashboard dan reservasi DHCP\n", WiFi.localIP().toString().c_str());
         else Serial.printf("[NET] Backend handshake HTTP %d\n", status);
         return false;
     }

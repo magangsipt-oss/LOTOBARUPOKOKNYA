@@ -60,7 +60,9 @@ test('firmware retries SD event records with byte-accurate acknowledgement', () 
   assert.match(source, /source\.seek\(acknowledgedBytes\)/);
   assert.match(source, /copiedBytes == expectedBytes/);
   assert.match(source, /MAX_OFFLINE_BATCH = 1/);
-  assert.match(source, /millis\(\) > 60000[\s\S]{0,400}sdSyncOk[\s\S]{0,250}uploadOfflineLogsSDCard\(\)/);
+  assert.match(source, /backendStableSince > 0 && millis\(\) - backendStableSince >= OFFLINE_REPLAY_STABLE_MS[\s\S]{0,400}sdSyncOk[\s\S]{0,250}uploadOfflineLogsSDCard\(\)/);
+  assert.match(source, /HEARTBEAT_INTERVAL_MS = 10000/);
+  assert.match(source, /BLE_MIN_FREE_HEAP = 100000/);
 });
 
 test('firmware obtains a profile photo from the backend when the SD cache is unavailable', () => {
