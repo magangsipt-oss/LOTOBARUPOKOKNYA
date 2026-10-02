@@ -98,10 +98,6 @@ const Box = sequelize.define('Box', {
   cmd_param: {
     type: DataTypes.STRING(50),
     allowNull: true
-  },
-  device_token: {
-    type: DataTypes.STRING(64),
-    allowNull: true
   }
 }, {
   tableName: 'boxes',

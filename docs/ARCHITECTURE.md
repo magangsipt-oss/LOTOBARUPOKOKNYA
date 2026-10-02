@@ -5,21 +5,18 @@
 ```mermaid
 flowchart LR
     Browser[Dashboard React] -->|API dan cookie sesi| API[Backend Express]
-    ESP[ESP32] -->|HTTPS + token perangkat; HTTP privat hanya di LAN| API
-    Camera[Kamera RTSP] --> Counting[Worker Python]
-    Counting -->|Count dan token perangkat| API
+    ESP[ESP32] -->|HTTPS + IP Wi-Fi lokal| API
     API --> DB[(MySQL)]
-    API -->|Proxy MJPEG melalui loopback| Counting
     ESP --> SD[SD: konfigurasi, cache pengguna, antrean offline]
 ```
 
-Saat development, Vite pada port 3000 mem-proxy `/api` ke backend port 5002. Saat production, reverse proxy HTTPS menyajikan `frontend/dist` dan meneruskan `/api` ke backend yang hanya bind ke loopback. ESP32 memakai hostname HTTPS, CA tepercaya dari SD, dan token per boks. HTTP hanya diterima untuk endpoint LAN privat yang dipilih eksplisit; sketch tidak lagi mengirim token ke hasil pemindaian subnet. Worker counting dan backend menggunakan loopback untuk MJPEG sehingga harus berada pada host/jaringan loopback yang sama pada konfigurasi saat ini.
+Saat development, Vite pada port 3000 mem-proxy `/api` ke backend port 5002. Saat production, reverse proxy HTTPS menyajikan `frontend/dist` dan meneruskan `/api` ke backend yang hanya bind ke loopback. ESP32 memakai hostname HTTPS dan mengirim IP Wi-Fi lokal secara otomatis. IP pada dashboard harus sama dengan IP ESP32 dan unik untuk tiap boks; reservasi DHCP menjaga nilainya tetap. HTTP hanya diterima untuk endpoint LAN privat yang dipilih eksplisit.
 
 ## Identitas dan otorisasi
 
 Browser login memakai SID dan password bcrypt. Akun baru memerlukan password unik minimal 12 karakter. Server menyimpan hash token sesi di `web_sessions` dan memberikan cookie HttpOnly selama delapan jam. Frontend menyimpan token CSRF di memori dan mengirimkannya pada mutasi. Identitas dan role dipulihkan melalui `/api/users/me`; role terbaru dibaca dari database.
 
-ESP32 dan counting menggunakan `X-Device-Token`. Hash token dipetakan ke satu boks. Middleware membatasi perangkat pada operasi dan identitas boks yang diizinkan. Token perangkat tidak diberikan ke browser. Aturan role berada di [authorization.js](../backend/middleware/authorization.js).
+ESP32 memakai `X-Device-IP`; backend mencocokkannya dengan IP boks yang didaftarkan di dashboard lalu membatasi operasi ke boks tersebut. Counting tidak dipakai pada alur perangkat ini. Login browser tetap memakai sesi dan CSRF. Aturan role berada di [authorization.js](../backend/middleware/authorization.js).
 
 ## Telemetri dan sesi
 
@@ -31,11 +28,9 @@ Replay offline dicatat tanpa menimpa snapshot langsung. Waktu penerimaan replay 
 
 Perintah menggunakan tabel `device_commands`, terpisah dari telemetri. API hanya menerima `SYNC_USERS`. ESP32 mengambil perintah, memperbarui cache, lalu ACK ID setelah berhasil. Perintah memiliki masa berlaku sepuluh menit; antrean dibatasi 20 perintah pending yang belum kedaluwarsa per boks. Tidak ada perintah remote untuk membuka relay.
 
-## People counting dan tampilan
+## Counting
 
-Python membaca RTSP, menjalankan deteksi, lalu mengirim jumlah orang ke API dengan identitas boks. Hasil terbaru disimpan pada `people_counting_latest`; riwayat sesi membutuhkan sesi yang diketahui. Data lebih tua dari 15 detik ditandai stale oleh backend. Data belum tersedia ditampilkan sebagai tidak diketahui, bukan nol.
-
-MJPEG disajikan Python pada loopback dan diakses browser melalui endpoint backend yang memerlukan autentikasi. Pemetaan `MJPEG_PORTS` menentukan stream setiap boks secara eksplisit.
+Worker counting tidak digunakan pada konfigurasi saat ini. Endpoint dan tabel counting yang sudah ada tidak diperlukan untuk alur ESP32 dan dashboard.
 
 ## Batas sistem
 

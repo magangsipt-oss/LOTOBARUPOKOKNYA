@@ -1,18 +1,12 @@
 import { isIP } from 'node:net';
-import crypto from 'node:crypto';
 import BoxModel from '../models/boxModel.js';
 import pool from '../config/database.js';
 import { TELEMETRY_ONLINE_WINDOW_SECONDS, validateTelemetry } from '../domain/telemetry.js';
 import { recordTelemetry } from '../models/telemetryModel.js';
-import { validDeviceCredential } from '../security/deviceCredential.js';
 
 /**
  * Controller untuk mengelola alur data dan permintaan Box E-LOTO
  */
-
-function generateDeviceToken() {
-  return 'ELOTO-' + crypto.randomBytes(16).toString('hex').toUpperCase();
-}
 
 const MAX_DEVICE_STATUS_BYTES = 64 * 1024;
 
@@ -145,8 +139,9 @@ const boxController = {
   // 3. Menambahkan unit box baru
   createBox: async (req, res) => {
     try {
-      const { unit, ip, state, lat, lng, supervisorUid, rtsp_url, device_token } = req.body;
+      const { unit, ip, lat, lng, supervisorUid, rtsp_url } = req.body;
       const idBox = req.body.idBox ?? req.body.id_box;
+      const deviceIp = typeof ip === 'string' ? ip.trim() : '';
       const latitude = lat == null || (typeof lat === 'string' && !lat.trim()) ? null : Number(lat);
       const longitude = lng == null || (typeof lng === 'string' && !lng.trim()) ? null : Number(lng);
 
@@ -158,38 +153,30 @@ const boxController = {
         });
       }
 
+      if (isIP(deviceIp) !== 4 || deviceIp === '0.0.0.0') {
+        return res.status(400).json({ success: false, message: 'Masukkan IP IPv4 ESP32 yang valid.' });
+      }
+
+      const [assignedIps] = await pool.query('SELECT id_box FROM boxes WHERE ip = ? LIMIT 1', [deviceIp]);
+      if (assignedIps.length) {
+        return res.status(409).json({ success: false, message: 'IP ini sudah dipakai boks lain.' });
+      }
+
       if ([lat, lng].some(value => value != null && !['string', 'number'].includes(typeof value)) ||
           (latitude !== null && (!Number.isFinite(latitude) || Math.abs(latitude) > 90)) ||
           (longitude !== null && (!Number.isFinite(longitude) || Math.abs(longitude) > 180))) {
         return res.status(400).json({ success: false, message: 'Koordinat tidak valid.' });
       }
 
-      if (device_token !== undefined && device_token !== null &&
-          !validDeviceCredential(device_token)) {
-        return res.status(400).json({ success: false, message: 'Token perangkat tidak valid.' });
-      }
-
-      // Hash device_token jika disediakan, atau generate otomatis
-      let plainToken = null;
-      let hashedToken = null;
-      if (device_token && typeof device_token === 'string' && device_token.trim()) {
-        plainToken = device_token.trim();
-        hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
-      } else {
-        plainToken = generateDeviceToken();
-        hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
-      }
-
       const newIdBox = await BoxModel.create({
         idBox,
         unit,
-        ip: ip || '0.0.0.0',
+        ip: deviceIp,
         state: 'STATE_IDLE',
         lat: latitude,
         lng: longitude,
         supervisorUid: supervisorUid || '',
-        rtsp_url: rtsp_url || null,
-        device_token: hashedToken
+        rtsp_url: rtsp_url || null
       });
 
 
@@ -198,11 +185,11 @@ const boxController = {
         message: 'Box baru berhasil didaftarkan; menunggu telemetri perangkat.',
         data: {
           idBox: newIdBox, unit,
+          ip: deviceIp,
           state: 'STATE_IDLE',
           is_online: 0,
           lat: latitude,
           lng: longitude,
-          device_token: plainToken,
         }
       });
     } catch (error) {
@@ -220,6 +207,7 @@ const boxController = {
     try {
       const { idBox } = req.params;
       const { unit, ip, lat, lng, supervisorUid, rtsp_url } = req.body;
+      const deviceIp = typeof ip === 'string' ? ip.trim() : '';
 
       if (!unit) {
         return res.status(400).json({
@@ -228,9 +216,18 @@ const boxController = {
         });
       }
 
+      if (isIP(deviceIp) !== 4 || deviceIp === '0.0.0.0') {
+        return res.status(400).json({ success: false, message: 'Masukkan IP IPv4 ESP32 yang valid.' });
+      }
+
+      const [assignedIps] = await pool.query('SELECT id_box FROM boxes WHERE ip = ? AND id_box <> ? LIMIT 1', [deviceIp, idBox]);
+      if (assignedIps.length) {
+        return res.status(409).json({ success: false, message: 'IP ini sudah dipakai boks lain.' });
+      }
+
       const isUpdated = await BoxModel.update(idBox, {
         unit,
-        ip,
+        ip: deviceIp,
         lat,
         lng,
         supervisorUid,
@@ -384,18 +381,5 @@ const boxController = {
     } catch (error) { next(error); }
   },
 
-  regenerateToken: async (req, res, next) => {
-    try {
-      const { idBox } = req.params;
-      const plainToken = generateDeviceToken();
-      const hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
-      const pool = (await import('../config/database.js')).default;
-      const [result] = await pool.query('UPDATE boxes SET device_token = ? WHERE id_box = ?', [hashedToken, idBox]);
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ success: false, message: 'Box tidak ditemukan' });
-      }
-      return res.json({ success: true, message: 'Token baru berhasil digenerate', data: { device_token: plainToken } });
-    } catch (error) { next(error); }
-  }
 };
 export default boxController;

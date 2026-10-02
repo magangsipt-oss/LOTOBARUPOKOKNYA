@@ -21,10 +21,9 @@ required = (
     'response[\"data\"][\"id_box\"]',
     'server_host = configured_server_base;',
     'if __has_include("network_secrets.local.h")',
-    'if __has_include("device_secrets.profile.h")',
     'if __has_include("device_secrets.override.h")',
     "automatic subnet scanning is disabled",
-    'http.addHeader("X-Device-Token", device_token);',
+    'request.addHeader("X-Device-IP", WiFi.localIP().toString());',
     "WiFi.setAutoReconnect(true);",
     "secureClient.lastError(error, sizeof(error))",
     "BACKEND_DISCOVERY_RETRY_MS",
@@ -62,7 +61,7 @@ tracked_headers = (
     repo / "esp32/ELOTO_FIXED/device_secrets.local.h",
     repo / "esp32/ELOTO_FIXED/network_secrets.h",
 )
-secret_macros = {"ELOTO_DEVICE_ID", "ELOTO_DEVICE_TOKEN", "ELOTO_NETWORK_SSID", "ELOTO_NETWORK_PASSWORD"}
+secret_macros = {"ELOTO_DEVICE_ID", "ELOTO_NETWORK_SSID", "ELOTO_NETWORK_PASSWORD"}
 for header in tracked_headers:
     for line in header.read_text(encoding="utf-8").splitlines():
         match = re.match(r"\s*#\s*define\s+([A-Za-z0-9_]+)\s+(.+?)\s*$", line)

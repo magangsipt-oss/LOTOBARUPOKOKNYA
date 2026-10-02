@@ -39,13 +39,13 @@ const BoxModel = {
 
   // 3. Menambahkan box baru
   create: async (boxData) => {
-    const { idBox, unit, ip, state, lat, lng, supervisorUid, rtsp_url, device_token } = boxData;
+    const { idBox, unit, ip, state, lat, lng, supervisorUid, rtsp_url } = boxData;
     const query = `
-      INSERT INTO boxes (id_box, unit, ip, rtsp_url, device_token, state, lat, lng, supervisor_uid,
+      INSERT INTO boxes (id_box, unit, ip, rtsp_url, state, lat, lng, supervisor_uid,
                         last_event, last_uid, relay_open, uptime_ms, is_online, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 0, NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IDLE', '', 0, 0, 0, NOW())
     `;
-    await pool.query(query, [idBox, unit, ip, rtsp_url || null, device_token || null, state || 'IDLE', lat, lng, supervisorUid]);
+    await pool.query(query, [idBox, unit, ip, rtsp_url || null, state || 'IDLE', lat, lng, supervisorUid]);
     return idBox;
   },
 
@@ -57,7 +57,7 @@ const BoxModel = {
       SET unit = ?, ip = ?, lat = ?, lng = ?, supervisor_uid = COALESCE(?, supervisor_uid), rtsp_url = ?, updated_at = NOW()
       WHERE id_box = ?
     `;
-    const [result] = await pool.query(query, [unit, ip || '0.0.0.0', lat === '' || lat == null ? null : lat, lng === '' || lng == null ? null : lng, supervisorUid ?? null, rtsp_url || null, idBox]);
+    const [result] = await pool.query(query, [unit, ip, lat === '' || lat == null ? null : lat, lng === '' || lng == null ? null : lng, supervisorUid ?? null, rtsp_url || null, idBox]);
     return result.affectedRows > 0;
   },
 
@@ -93,17 +93,17 @@ const BoxModel = {
 
   // 7. Memperbarui telemetri/status hardware
   updateTelemetry: async (idBox, telemetryData) => {
-    const { state, lastEvent, lastUid, lat, lng, lcdZero, lcdOne, relayOpen, uptimeMs, hwData, isOnline, ssid, ip } = telemetryData;
+    const { state, lastEvent, lastUid, lat, lng, lcdZero, lcdOne, relayOpen, uptimeMs, hwData, isOnline, ssid } = telemetryData;
     const query = `
       UPDATE boxes
       SET state = ?, last_event = ?, last_uid = ?, lat = ?, lng = ?,
           lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?,
-          is_online = ?, ssid = ?, ip = IF(? != '0.0.0.0' AND ? IS NOT NULL, ?, ip),
+          is_online = ?, ssid = ?,
           last_ping = NOW(), updated_at = NOW()
       WHERE id_box = ?
     `;
     const [result] = await pool.query(query, [
-      state, lastEvent, lastUid, lat, lng, lcdZero, lcdOne, relayOpen, uptimeMs, hwData, isOnline, ssid, ip, ip, ip, idBox
+      state, lastEvent, lastUid, lat, lng, lcdZero, lcdOne, relayOpen, uptimeMs, hwData, isOnline, ssid, idBox
     ]);
     return result.affectedRows > 0;
   }

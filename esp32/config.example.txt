@@ -7,6 +7,5 @@ WIFI_2_PASS=your-backup-wifi-password
 
 # BiznetGIO production VPS. HTTPS requires /server_ca.pem in the SD root.
 SERVER=https://103.197.188.61
-TOKEN=replace-with-a-random-device-token-at-least-32-characters
 
 # ESP32 supports 2.4 GHz Wi-Fi. Up to five WIFI_n_SSID/WIFI_n_PASS profiles are supported.

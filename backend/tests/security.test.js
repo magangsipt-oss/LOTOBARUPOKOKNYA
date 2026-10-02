@@ -11,7 +11,7 @@ const originalQuery = pool.query;
 const originalAuthenticate = UserModel.authenticate;
 const originalCreate = UserModel.create;
 const token = 'a'.repeat(64);
-const deviceToken = 'device-test-token-'.repeat(4);
+const deviceIp = '192.168.1.50';
 const user = { sid: 'worker-1', nama: 'Test Worker', role: 'WORKER', rfid_uid: 'ABC' };
 let server, base, sessions = new Map(), statements = [];
 before(async () => {
@@ -20,7 +20,7 @@ before(async () => {
   pool.query = async (sql, params = []) => {
     statements.push([sql, params]);
     if (sql.includes('FROM web_sessions s JOIN users')) return [[sessions.get(params[0])].filter(Boolean)];
-    if (sql.includes('SELECT id_box FROM boxes WHERE device_token')) return [params[0] === hashToken(deviceToken) ? [{ id_box: 'BOX ELOTO 1' }] : []];
+    if (sql === 'SELECT id_box FROM boxes WHERE ip = ? LIMIT 2') return [params[0] === deviceIp ? [{ id_box: 'BOX ELOTO 1' }] : []];
     if (sql.startsWith('INSERT INTO web_sessions')) { sessions.set(params[0], user); return [{ affectedRows: 1 }]; }
     if (sql.startsWith('DELETE FROM web_sessions WHERE token_hash')) sessions.delete(params[0]);
     return [{ affectedRows: 1 }];
@@ -111,21 +111,21 @@ test('local frontend origins receive credentialed CORS headers in development', 
     const response = await call('/api/users/login', { method: 'OPTIONS', headers: {
       Origin: origin,
       'Access-Control-Request-Method': 'POST',
-      'Access-Control-Request-Headers': 'Content-Type'
+      'Access-Control-Request-Headers': 'Content-Type, X-Device-IP'
     } });
     assert.equal(response.status, 204);
     assert.equal(response.headers.get('access-control-allow-origin'), origin);
     assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
   }
 });
-test('device tokens are scoped to their own box and cannot administer accounts', async () => {
-  const headers = {'X-Device-Token':deviceToken,'Content-Type':'application/json'};
+test('registered device IP is scoped to its own box and cannot administer accounts', async () => {
+  const headers = {'X-Device-IP':deviceIp,'Content-Type':'application/json'};
   assert.equal((await call('/api/boxes/BOX%20ELOTO%202/telemetry',{method:'POST',headers,body:'{}'})).status,403);
   assert.equal((await call('/api/users',{method:'POST',headers,body:'{}'})).status,403);
   assert.equal((await call('/api/boxes/BOX%20ELOTO%201/telemetry',{method:'POST',headers,body:'{}'})).status,400);
 });
-test('device handshake is scoped to the token-bound box and publishes the telemetry contract', async () => {
-  const headers = { 'X-Device-Token': deviceToken };
+test('device handshake is scoped to the IP-bound box and publishes the telemetry contract', async () => {
+  const headers = { 'X-Device-IP': deviceIp };
   const response = await call('/api/boxes/BOX%20ELOTO%201/device-handshake', { headers });
   assert.equal(response.status, 200);
   const body = await response.json();
@@ -139,7 +139,7 @@ test('device handshake is scoped to the token-bound box and publishes the teleme
 test('device telemetry diagnostics log HTTP outcome and event name without card identifiers', async t => {
   const messages = [];
   t.mock.method(console, 'info', message => messages.push(message));
-  const headers = {'X-Device-Token':deviceToken,'Content-Type':'application/json'};
+  const headers = {'X-Device-IP':deviceIp,'Content-Type':'application/json'};
   const response = await call('/api/boxes/BOX%20ELOTO%201/telemetry', {
     method: 'POST', headers, body: JSON.stringify({ event: 'MECHANIC_LOG_IN', uid: 'private-card-id' })
   });
@@ -148,17 +148,17 @@ test('device telemetry diagnostics log HTTP outcome and event name without card 
   assert.ok(messages.some(message => message === '[DEVICE_TELEMETRY] HTTP 400 event=MECHANIC_LOG_IN'));
   assert.ok(messages.every(message => !message.includes('private-card-id')));
 });
-test('unknown device tokens cannot claim unconfigured boxes or register new boxes', async () => {
+test('unregistered device IPs cannot claim boxes or register new boxes', async () => {
   const query = pool.query;
   const queries = [];
   pool.query = async (sql, args) => {
     queries.push(sql);
-    if (sql.includes('device_token IS NULL')) return [[{ id_box: 'unconfigured' }]];
+    if (sql === 'SELECT id_box FROM boxes WHERE ip = ? LIMIT 2') return [[]];
     if (sql === 'SELECT id_box FROM boxes WHERE id_box = ?') return [[]];
     return query(sql, args);
   };
   try {
-    const headers = { 'X-Device-Token': 'unknown-device-token-'.repeat(4), 'Content-Type': 'application/json' };
+    const headers = { 'X-Device-IP': '192.168.1.99', 'Content-Type': 'application/json' };
     for (const id of ['unconfigured', 'new-box']) {
       const response = await call(`/api/boxes/${id}/telemetry`, { method: 'POST', headers,
         body: JSON.stringify({ id_box: id, ip: '192.168.1.20', event_id: 'untrusted-event' }) });
@@ -183,9 +183,9 @@ test('probe for an unregistered IP returns a safe offline payload instead of 404
     assert.equal(body.data.stale, true);
   } finally { pool.query = query; }
 });
-test('device identity in telemetry body must match the token and URL', async () => {
+test('device identity in telemetry body must match the registered IP and URL', async () => {
   const response = await call('/api/boxes/BOX%20ELOTO%201/telemetry', {
-    method: 'POST', headers: { 'X-Device-Token': deviceToken, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'X-Device-IP': deviceIp, 'Content-Type': 'application/json' },
     body: JSON.stringify({ id_box: 'BOX ELOTO 2', event_id: 'wrong-box' })
   });
   assert.equal(response.status, 403);

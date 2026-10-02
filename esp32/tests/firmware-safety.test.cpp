@@ -93,10 +93,6 @@ int main() {
     assert(eloto::normalizeConfigLine(utf16leWifiKey) == "WIFI_1_SSID");
     assert(eloto::normalizeConfigLine("\xef\xbb\xbfSERVER=http://192.168.137.104:5002\r") ==
            "SERVER=http://192.168.137.104:5002");
-    assert(eloto::validDeviceToken(std::string(64, 'a')));
-    assert(!eloto::validDeviceToken("short"));
-    assert(!eloto::validDeviceToken("replace-with-a-random-device-token-at-least-32-characters"));
-    assert(!eloto::validDeviceToken(std::string(32, 'a') + "\n"));
     assert(eloto::validDeviceId("BOX-ELOTO-1"));
     assert(eloto::validDeviceId("BOX ELOTO 1"));
     assert(!eloto::validDeviceId(" BOX ELOTO 1"));

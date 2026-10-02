@@ -2,6 +2,10 @@
 
 Tanggal audit awal: 7 September 2026. Mitigasi keamanan diperbarui 28 September 2026. Ruang lingkup aktif: backend Node.js, frontend React, layanan counting Python, dan firmware ESP32. `api/` serta `index.html` dikonfirmasi sebagai versi lama. Deployment hanya boleh menyajikan `frontend/dist`, bukan root repository atau folder PHP.
 
+## Follow-up 2 Oktober 2026
+
+Autentikasi perangkat diubah dari token per boks menjadi IP Wi-Fi ESP32 yang didaftarkan secara unik di dashboard. Token perangkat dihapus dari UI, firmware, dan endpoint provisioning. Migrasi `20261002-remove-device-token.cjs` menghapus kolom dan hash token lama setelah backend baru aktif. Catatan audit 1 Oktober di bawah menggambarkan versi sebelumnya dan tidak lagi menjelaskan autentikasi perangkat saat ini. Counting tidak digunakan dalam alur perangkat ini.
+
 ## Perubahan yang diterapkan
 
 - Follow-up 1 Oktober 2026: transport aktif pada sketch ESP32 kini memakai CA TLS untuk HTTPS VPS, menerima HTTP hanya untuk endpoint privat yang dikonfigurasi, memverifikasi handshake per boks, dan tidak memindai subnet atau mengirim token ke host tebakan. Token `TOKEN` pada SD dapat menggantikan fallback lokal. Backend production mempercayai proxy loopback untuk IP klien; startup backend tidak lagi membunuh proses lain yang memakai port `5002`.

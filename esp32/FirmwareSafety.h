@@ -42,14 +42,6 @@ inline bool validEventId(const std::string &id) {
     return true;
 }
 
-inline bool validDeviceToken(const std::string &token) {
-    if (token.size() < 32 || token.size() > 256 || token.compare(0, 13, "replace-with-") == 0) return false;
-    for (unsigned char c : token) {
-        if (c < 0x21 || c > 0x7e) return false;
-    }
-    return true;
-}
-
 inline bool validDeviceId(const std::string &id) {
     if (id.empty() || id.size() > 100 || id.front() == ' ' || id.back() == ' ') return false;
     for (unsigned char c : id) {

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import pool from '../config/database.js';
 import BoxModel from '../models/boxModel.js';
 import boxController from '../controllers/boxController.js';
-import { hashToken } from '../security/session.js';
 
 const originalQuery = pool.query;
 const originalCreate = BoxModel.create;
@@ -22,6 +21,7 @@ const noNetwork = () => {
 
 test('registering a box never probes user-controlled IPs or trusts their status', async () => {
   const checkNetwork = noNetwork();
+  pool.query = async () => [[]];
   let created;
   BoxModel.create = async input => { created = input; return input.idBox; };
   const res = response();
@@ -29,24 +29,30 @@ test('registering a box never probes user-controlled IPs or trusts their status'
   assert.equal(res.statusCode, 201);
   assert.equal(res.body.data.is_online, 0);
   assert.equal(res.body.data.state, 'STATE_IDLE');
-  assert.equal(created.device_token, hashToken(res.body.data.device_token));
+  assert.equal(created.ip, '127.0.0.1');
+  assert.equal('device_token' in res.body.data, false);
   checkNetwork();
 });
 
-test('box registration rejects a device token that authentication would reject', async () => {
+test('box registration requires a valid unique IPv4 address', async () => {
   BoxModel.create = async () => assert.fail('Invalid token reached storage');
-  for (const token of ['short', 'replace-with-a-random-device-token-at-least-32-characters', `token-with-newline-${'x'.repeat(32)}\n`]) {
+  for (const ip of ['', 'not-an-ip', '0.0.0.0', '2001:db8::1']) {
     const res = response();
-    await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', device_token: token } }, res);
+    await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', ip } }, res);
     assert.equal(res.statusCode, 400);
   }
+  pool.query = async () => [[{ id_box: 'another-box' }]];
+  const duplicate = response();
+  await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', ip: '192.168.1.20' } }, duplicate);
+  assert.equal(duplicate.statusCode, 409);
 });
 
 test('box registration accepts empty GPS fields as unknown and rejects invalid coordinates', async () => {
+  pool.query = async () => [[]];
   let created;
   BoxModel.create = async input => { created = input; return input.idBox; };
   const res = response();
-  await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', lat: '', lng: '' } }, res);
+  await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', ip: '192.168.1.20', lat: '', lng: '' } }, res);
   assert.equal(res.statusCode, 201);
   assert.equal(created.lat, null);
   assert.equal(created.lng, null);
@@ -54,7 +60,7 @@ test('box registration accepts empty GPS fields as unknown and rejects invalid c
   BoxModel.create = async () => assert.fail('Invalid coordinate reached storage');
   for (const [lat, lng] of [[91, 100], [0, 181], ['not-a-number', 1], [false, 0], [[], 0]]) {
     const invalid = response();
-    await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', lat, lng } }, invalid);
+    await boxController.createBox({ body: { idBox: 'box-1', unit: 'Unit 1', ip: '192.168.1.20', lat, lng } }, invalid);
     assert.equal(invalid.statusCode, 400);
   }
 });

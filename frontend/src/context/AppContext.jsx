@@ -96,8 +96,7 @@ export function AppProvider({ children }) {
   const [tipeKerusakan, setTipeKerusakan] = useState('Mekanikal');
   const [estimasiWaktu, setEstimasiWaktu] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
-  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '', device_token: '' });
-  const [deviceProvisioning, setDeviceProvisioning] = useState(null);
+  const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '' });
   const [editingBoxId, setEditingBoxId] = useState('');
   const [formAdminNewUser, setFormAdminNewUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -500,16 +499,13 @@ export function AppProvider({ children }) {
     const cleanIp = formAlatBerat.ip.replace(/[<>]/g, "").trim();
     const cleanLat = parseFloat(formAlatBerat.lat);
     const cleanUnitLng = parseFloat(formAlatBerat.lng);
-    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp || '192.168.1.100', lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng, device_token: formAlatBerat.device_token || null };
+    const newUnit = { id_box: cleanId, unit: cleanUnit, ip: cleanIp, lat: isNaN(cleanLat) ? '' : cleanLat, lng: isNaN(cleanUnitLng) ? '' : cleanUnitLng };
     try {
       const hasil = editingBoxId
         ? await boxService.updateBox(editingBoxId, { ...newUnit, idBox: cleanId })
         : await boxService.createBox({ ...newUnit, idBox: cleanId });
       if (hasil.success || hasil.status === 'success') {
         const d = hasil.data || {};
-        if (!editingBoxId && typeof d.device_token === 'string' && d.device_token.length >= 32) {
-          setDeviceProvisioning({ ownerSid: sessionUser?.sid || '', token: d.device_token });
-        }
         const savedBox = {
           ...newUnit, id: cleanId,
           is_online: d.is_online ?? 0,
@@ -526,7 +522,7 @@ export function AppProvider({ children }) {
         setLotoComplianceHistory([]);
         const wasEditing = Boolean(editingBoxId);
         setEditingBoxId('');
-        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', device_token: '' });
+        setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '' });
         pemicuToast(wasEditing ? 'Data boks berhasil diperbarui.' : (hasil.message || 'Berhasil menyimpan boks'), 'ok');
       } else { pemicuToast(hasil.message, 'fail'); }
     } catch (err) { console.error('[BOX] Save error:', err); pemicuToast("Gagal mendaftarkan unit box ke server! " + (err.message || ''), "fail"); }
@@ -534,27 +530,13 @@ export function AppProvider({ children }) {
 
   const handleEditAlatBerat = (box) => {
     setEditingBoxId(box.id);
-    setFormAlatBerat({ id: box.id || '', unit: box.unit || '', ip: box.ip || '', lat: box.lat || '', lng: box.lng || box.lon || '', device_token: box.device_token || '' });
+    setFormAlatBerat({ id: box.id || '', unit: box.unit || '', ip: box.ip || '', lat: box.lat || '', lng: box.lng || box.lon || '' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleRegenerateBoxToken = async (idBox) => {
-    if (!window.confirm('Token lama langsung tidak berlaku. ESP32 akan offline sampai TOKEN baru dipasang di SD card. Lanjutkan?')) return;
-    try {
-      const result = await boxService.regenerateToken(idBox);
-      const token = result?.data?.device_token;
-      if (!result?.success || typeof token !== 'string' || token.length < 32) {
-        throw new Error(result?.message || 'Token baru tidak diterima dari server.');
-      }
-      setDeviceProvisioning({ ownerSid: sessionUser?.sid || '', token });
-    } catch (error) {
-      pemicuToast(`Gagal mengganti token perangkat: ${error.message || 'permintaan gagal'}`, 'fail');
-    }
   };
 
   const handleBatalEditAlatBerat = () => {
     setEditingBoxId('');
-    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '', device_token: '' });
+    setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '' });
   };
 
   const handleHapusAlatBerat = async (idBox) => {
@@ -1136,8 +1118,6 @@ export function AppProvider({ children }) {
     tipeKerusakan, setTipeKerusakan, estimasiWaktu, setEstimasiWaktu,
     showAddUserForm, setShowAddUserForm,
     formAlatBerat, setFormAlatBerat, editingBoxId, setEditingBoxId,
-    deviceProvisioningToken: isLoggedIn && deviceProvisioning?.ownerSid === sessionUser?.sid ? deviceProvisioning.token : '',
-    clearDeviceProvisioningToken: () => setDeviceProvisioning(null),
     formAdminNewUser, setFormAdminNewUser,
     showEditUserModal, setShowEditUserModal,
     formEditUser, setFormEditUser,
@@ -1168,7 +1148,6 @@ export function AppProvider({ children }) {
     handleCaptureKamera,
     // Action handlers
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
-    handleRegenerateBoxToken,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     dapatkanMekanikDariAntreanLoto, dapatkanPengawasDariLoto,
     handleSaveMechanicTeam, handleIndukTambahUser, handleImportExcel,

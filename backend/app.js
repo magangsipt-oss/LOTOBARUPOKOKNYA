@@ -67,7 +67,7 @@ export function createApp() {
       cb(Object.assign(new Error('Origin tidak diizinkan.'), { status: 403 }));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Device-Token', 'User-Agent'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Device-IP', 'User-Agent'],
     credentials: true
   }));
   app.use((req, res, next) => {

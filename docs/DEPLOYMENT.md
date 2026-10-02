@@ -25,6 +25,8 @@ Seeder demo memerlukan `ELOTO_DEMO_PASSWORD` minimal 12 karakter dan tidak boleh
 
 MySQL tidak memberi rollback atomik untuk seluruh rangkaian DDL. Runner memakai koneksi terkunci dan pemeriksaan indeks/kolom agar langkah yang sudah selesai dapat dilewati ketika diulang, tetapi kegagalan DDL tetap perlu diperiksa sebelum retry. Tidak ada `sync(force)` atau penghapusan tabel otomatis pada runner baru.
 
+Migrasi `20261002-remove-device-token.cjs` menghapus kolom dan hash token perangkat lama. Deploy backend baru lebih dahulu; backend baru tidak membaca kolom itu, jadi service tetap berjalan sebelum migrasi. Setelah readiness lolos, backup database lalu jalankan `pnpm --filter backend run migrate` dari release aktif di VPS. Rollback migrasi dapat membuat ulang kolom kosong, tetapi hash yang dihapus tidak dapat dipulihkan; ambil backup sesuai langkah di atas sebelum migrasi.
+
 Akun plaintext lama tidak lagi bisa login. Reset kata sandi akun tersebut dengan password baru yang kuat; password reset tidak boleh memakai SID. Skrip tidak mencetak kata sandi:
 
 ```bash
@@ -37,21 +39,13 @@ unset ELOTO_NEW_PASSWORD
 
 Untuk database baru tanpa administrator, isi `ELOTO_USER_SID` dan `ELOTO_NEW_PASSWORD` lalu jalankan `pnpm --filter backend run bootstrap-admin`. Password minimal 12 karakter, maksimal 72 byte, dan tidak boleh sama dengan SID. `seed` adalah data demo dan ditolak pada production.
 
-## Kredensial perangkat dan counting
+## Identitas ESP32 lewat IP
 
-Buat token acak kriptografis terpisah untuk setiap boks (minimal 32 karakter). Simpan di pengelola rahasia; jangan menaruh token dalam frontend atau Git.
+Daftarkan di dashboard ID boks, nama unit, dan IP Wi-Fi lokal yang tampil pada ESP32. Gunakan IP unik untuk tiap boks dan atur reservasi DHCP agar alamatnya tetap. Firmware mengirim IP itu otomatis melalui `X-Device-IP`; token perangkat tidak perlu dibuat, disalin ke SD, atau dipasang ulang.
 
-```bash
-export ELOTO_BOX_ID='BOX ELOTO 1'
-read -rs ELOTO_DEVICE_TOKEN
-export ELOTO_DEVICE_TOKEN
-pnpm --filter backend run provision-device
-unset ELOTO_DEVICE_TOKEN
-```
+Untuk production BiznetGIO, isi SSID/password Wi-Fi pada `network_secrets.local.h` dan ID boks pada `device_secrets.override.h`, lalu upload firmware. URL `https://103.197.188.61` dan root CA ISRG Root X1 sudah menjadi default. `config.txt` tetap opsional untuk beberapa profil Wi-Fi atau override endpoint. Pastikan ESP32 memakai Wi-Fi 2,4 GHz dan jaringan dapat menjangkau NTP serta TCP 443. Jangan mengekspos backend port `5002` ke internet.
 
-Boks harus sudah terdaftar. Saat admin membuat boks melalui dashboard, token perangkat ditampilkan satu kali; database hanya menyimpan hash token. Untuk production BiznetGIO, masukkan SSID/password Wi-Fi pada `network_secrets.local.h`, ID boks `BOX-CLIENT-001` pada `device_secrets.override.h`, dan token perangkat pada `device_secrets.profile.h`, lalu upload firmware. URL `https://103.197.188.61` dan root CA ISRG Root X1 sudah menjadi default firmware, sehingga `config.txt` dan `server_ca.pem` tidak wajib di SD. Alternatifnya, gunakan `/config.txt` untuk mengatur beberapa profil Wi-Fi atau override endpoint; CA khusus dapat diletakkan di `/server_ca.pem`. Pastikan Wi-Fi ESP32 2,4 GHz dan jaringan dapat menjangkau NTP serta TCP 443. Jangan mengekspos backend port `5002` ke internet. HTTP hanya untuk IP privat di LAN tepercaya. Rotasi token mengganti token lama, jadi perbarui server dan firmware secara terkoordinasi sebelum operasi dilanjutkan.
-
-Isi `counting/.env` berdasarkan `counting/.env.example` bila menjalankan lewat `pnpm dev:counting` (atau `pnpm dev` untuk seluruh layanan development). Untuk layanan yang menjalankan Python langsung, export konfigurasi ke environment proses. Set URL RTSP dan kredensial kamera melalui environment. Gunakan port MJPEG berbeda per boks dan petakan secara eksplisit dalam `MJPEG_PORTS` backend. Server MJPEG hanya bind loopback.
+Counting tidak digunakan pada deployment ini.
 
 Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh lalu ACK ID perintah; retry tidak membuka relay. Tidak ada migrasi otomatis perintah lama, dan tidak ada fitur remote override keselamatan.
 
@@ -59,7 +53,7 @@ Antrean perintah baru hanya menerima `SYNC_USERS`. Perangkat melakukan refresh l
 
 - Sajikan **hanya** `frontend/dist`. Jangan jadikan root repository, `api/`, `.git`, `.env`, atau firmware sebagai document root.
 - Jalankan backend sebagai pengguna OS terbatas dengan `NODE_ENV=production`, `FRONTEND_URL` yang sama dengan origin HTTPS publik, dan akun database non-root dengan password kuat. Binding backend tetap loopback.
-- Terminasi HTTPS pada reverse proxy. Proxy `/api/` ke `http://127.0.0.1:5002/api/`. Pertahankan `Host`, `Origin`, cookie, dan header `X-Device-Token`; backend production mempercayai proxy loopback secara default. Jangan membuka port backend `5002` ke internet.
+- Terminasi HTTPS pada reverse proxy. Proxy `/api/` ke `http://127.0.0.1:5002/api/`. Pertahankan `Host`, `Origin`, cookie, dan header `X-Device-IP`; backend production mempercayai proxy loopback secara default. Jangan membuka port backend `5002` ke internet.
 - Cookie production menggunakan `__Host-eloto_session`, Secure, HttpOnly, SameSite=Lax. Sajikan frontend dan API pada origin yang sama (`VITE_API_URL=/api`). Jangan memindahkan token sesi ke localStorage atau URL gambar/stream.
 - Proxy stream memerlukan buffering dimatikan. Atur timeout stream, batas request body 8 MB, dan header keamanan pada penyajian frontend.
 - Probe `/health/live` untuk proses dan `/health/ready` untuk koneksi database. Pakai process manager yang meneruskan SIGTERM; backend menutup koneksi pada shutdown.
@@ -81,7 +75,7 @@ location /api/ {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Device-Token $http_x_device_token;
+    proxy_set_header X-Device-IP $http_x_device_ip;
     proxy_buffering off;
     proxy_read_timeout 60s;
 }

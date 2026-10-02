@@ -7,4 +7,3 @@ WIFI_2_PASS=your-backup-wifi-password
 
 # VPS BiznetGIO production; HTTPS wajib memakai /server_ca.pem di root SD.
 SERVER=https://103.197.188.61
-TOKEN=replace-with-a-random-device-token-at-least-32-characters

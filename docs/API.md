@@ -6,7 +6,7 @@ Base path adalah `/api`. Dokumen ini merangkum endpoint utama; definisi route be
 
 `POST /api/users/login` menerima JSON SID/password dan mengembalikan data pengguna serta `csrfToken`; token sesi dikirim sebagai cookie HttpOnly. Browser memakai cookie tersebut dan header `X-CSRF-Token` untuk mutasi. `GET /api/users/me` memulihkan data pengguna dan CSRF. Logout memakai `POST /api/users/logout`; perubahan password memakai `POST /api/users/password` dan mencabut sesi pengguna.
 
-Perangkat memakai header `X-Device-Token` berisi token asli yang diprovision untuk boksnya. Jangan menggunakan token perangkat sebagai identitas browser. Encode ID yang mengandung spasi ketika membentuk URL.
+ESP32 mengirim IP Wi-Fi lokalnya melalui header `X-Device-IP`. Backend mencocokkan IP itu dengan satu boks yang terdaftar; setiap boks harus memakai IP berbeda. Browser tetap memakai cookie sesi dan CSRF seperti biasa. Encode ID yang mengandung spasi ketika membentuk URL.
 
 ## Endpoint utama
 

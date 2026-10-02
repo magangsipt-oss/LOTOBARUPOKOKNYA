@@ -24,13 +24,14 @@ test('firmware host helpers preserve replay identity and reject corrupt restore/
   }
 });
 
-test('firmware keeps device credentials available and reloads SD config after a delayed mount', () => {
+test('firmware keeps device ID available and reloads SD config after a delayed mount', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
 
   assert.match(source, /#include "device_secrets\.h"/);
   assert.match(source, /String device_id\s*=\s*ELOTO_DEVICE_ID;/);
-  assert.match(source, /String device_token\s*=\s*ELOTO_DEVICE_TOKEN;/);
+  assert.match(source, /request\.addHeader\("X-Device-IP", WiFi\.localIP\(\)\.toString\(\)\);/);
+  assert.doesNotMatch(source, /ELOTO_DEVICE_TOKEN|device_token|X-Device-Token/);
   assert.match(source, /if \(mounted\) \{[\s\S]{0,800}sdCardMounted = true;\s*loadConfigFromSD\(\);/);
 });
 
@@ -67,7 +68,7 @@ test('firmware obtains a profile photo from the backend when the SD cache is una
   const source = readFileSync(firmware, 'utf8');
 
   assert.match(source, /getApiUrl\("users\/photo\/"\)/);
-  assert.match(source, /http\.addHeader\("X-Device-Token", device_token\)/);
+  assert.match(source, /request\.addHeader\("X-Device-IP", WiFi\.localIP\(\)\.toString\(\)\);/);
   assert.match(source, /jpegData == NULL && allowNetwork && fetchPhotoFromAPI\(uid, jpegData, jpegSize\)/);
 });
 

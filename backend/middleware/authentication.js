@@ -1,6 +1,6 @@
+import { isIP } from 'node:net';
 import pool from '../config/database.js';
 import { readSessionToken, hashToken, csrfToken, secureEqual, normalizeRole } from '../security/session.js';
-import { validDeviceCredential } from '../security/deviceCredential.js';
 
 export default async function authentication(req, res, next) {
   try {
@@ -17,15 +17,14 @@ export default async function authentication(req, res, next) {
         return next();
       }
     }
-    const deviceToken = req.headers['x-device-token'];
-    if (validDeviceCredential(deviceToken)) {
-      const tokenHash = hashToken(deviceToken);
-      const [rows] = await pool.query('SELECT id_box FROM boxes WHERE device_token = ?', [tokenHash]);
+    const deviceIp = String(req.headers['x-device-ip'] || '').trim().replace(/^::ffff:/i, '');
+    if (isIP(deviceIp) === 4) {
+      const [rows] = await pool.query('SELECT id_box FROM boxes WHERE ip = ? LIMIT 2', [deviceIp]);
       if (rows.length === 1) {
         req.auth = { type: 'device', boxId: rows[0].id_box };
         return next();
       }
     }
-    return res.status(401).json({ success: false, message: 'Silakan login atau gunakan kredensial perangkat yang valid.' });
+    return res.status(401).json({ success: false, message: 'Silakan login atau kirim IP ESP32 yang sudah didaftarkan.' });
   } catch (error) { next(error); }
 }

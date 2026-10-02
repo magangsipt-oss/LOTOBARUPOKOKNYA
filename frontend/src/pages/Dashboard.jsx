@@ -22,13 +22,11 @@ export default function Dashboard() {
     mapContainerRef, leafletMapInstanceRef, markersRef,
     geoAddressCacheRef, lastCenteredBoxIdRef,
     formAlatBerat, setFormAlatBerat, editingBoxId,
-    deviceProvisioningToken, clearDeviceProvisioningToken,
     isSyncing,
     getUserProfile, isSystemUid, isAdminUid,
     terjemahkanIdKeNamaLengkap,
     pemicuToast,
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
-    handleRegenerateBoxToken,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     bukaModalUmum, bukaModalRadar,
     handleHapusRiwayatTapping,
@@ -214,42 +212,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {deviceProvisioningToken && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="device-token-title">
-          <div className="w-full max-w-lg rounded-2xl border border-red-200 bg-white p-5 shadow-2xl">
-            <h2 id="device-token-title" className="text-lg font-black text-slate-900">Token perangkat ESP32</h2>
-            <p className="mt-2 text-sm text-slate-600">Salin token ini sekarang. Token asli hanya ditampilkan saat boks dibuat; database hanya menyimpan hash-nya.</p>
-            <textarea
-              aria-label="Token perangkat"
-              readOnly
-              rows={3}
-              value={deviceProvisioningToken}
-              onFocus={event => event.currentTarget.select()}
-              className="mt-4 w-full select-all rounded-lg border border-slate-300 bg-slate-50 p-3 font-mono text-sm text-slate-900"
-            />
-            <p className="mt-2 text-xs text-slate-600">Masukkan ke baris <code>TOKEN=...</code> pada <code>/config.txt</code> di SD card ESP32.</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(deviceProvisioningToken);
-                    pemicuToast('Token perangkat disalin.', 'ok');
-                  } catch {
-                    pemicuToast('Pilih token di kotak teks lalu salin.', 'fail');
-                  }
-                }}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700"
-              >Salin token</button>
-              <button
-                type="button"
-                onClick={clearDeviceProvisioningToken}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-              >Sudah disimpan</button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* 5 KARTU METRIK */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
@@ -520,11 +482,11 @@ export default function Dashboard() {
                     <i className={`fa-solid ${isSyncing ? 'fa-spinner animate-spin' : 'fa-satellite-dish'}`}></i> Sync
                   </button>
                 </div>
+                <p className="-mt-2 text-[10px] text-slate-500">IP harus sama dengan IP lokal yang tampil di ESP32. Gunakan reservasi DHCP agar IP boks tetap.</p>
                 <div className="grid grid-cols-2 gap-2">
                   <input type="text" placeholder="Latitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lat} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lat: e.target.value })} />
                   <input type="text" placeholder="Longitude (Otomatis)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900" value={formAlatBerat.lng} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, lng: e.target.value })} />
                 </div>
-                {editingBoxId && <button type="button" onClick={() => handleRegenerateBoxToken(editingBoxId)} className="w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-left font-bold text-amber-900 hover:bg-amber-100">Ganti token ESP32 (memutus token lama)</button>}
                 <div className="flex gap-2">
                   <button type="submit" className="flex-1 bg-red-600 text-white font-bold py-2.5 rounded-xl uppercase font-mono-tech shadow-md">{editingBoxId ? 'Simpan Perubahan' : 'Simpan Boks ke Peta'}</button>
                   {editingBoxId && <button type="button" onClick={handleBatalEditAlatBerat} className="bg-white text-slate-600 border border-gray-300 font-bold px-3 rounded-xl uppercase font-mono-tech">Batal</button>}
