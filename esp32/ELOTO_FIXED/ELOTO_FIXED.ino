@@ -4264,6 +4264,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             } else if (selectedFooterAction == 1) {
                 currentState = STATE_WORKER_DETAIL;
             } else if (selectedFooterAction == 2) {
+                menuReturnState = STATE_WORKER_LIST;
                 currentState = STATE_MENU;
             }
             forceFullRedraw = true;
