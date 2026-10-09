@@ -189,7 +189,9 @@ test('menu shows a selectable fifth Back option and restores its return screen',
   assert.doesNotMatch(menuScreen, /TEKAN OK UNTUK MEMILIH|drawTftFooterSingle\("KEMBALI"\)/);
   assert.match(firmware, /doc\["menu_return_state"\]\s*=\s*\(int\)menuReturnState/);
   assert.match(firmware, /selectedMenuIndex = constrain\(\(int\)selectedMenuIndex, 0, 4\)/);
-  assert.match(firmware, /savedMenuReturnState == STATE_WORKER_LIST[\s\S]{0,160}STATE_ALL_WORKERS_REGISTERED/);
+  assert.match(firmware, /savedMenuReturnState == STATE_WORKER_LIST \|\|[\s\S]{0,120}savedMenuReturnState == STATE_GEOFENCE/);
+  assert.doesNotMatch(firmware, /if \(savedMenuReturnState == STATE_WORKER_LIST\) \{\s*menuReturnState = STATE_ALL_WORKERS_REGISTERED;/);
+  assert.match(firmware, /menuReturnState = STATE_GEOFENCE;\s*currentState = STATE_MENU/);
 });
 
 test('firmware closes offline log files before replay and commits only successfully delivered records', () => {

@@ -1,4 +1,4 @@
-﻿// E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (NEW STABLE REVISION)
+// E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (NEW STABLE REVISION)
 // Target: original dual-core ESP32 shield. See PANDUAN_ELOTO.md before upload.
 #include <Arduino.h>
 #include <esp_system.h>
@@ -404,6 +404,7 @@ String lastScannedUID = "---";
 uint8_t targetMekanikCount = 0;
 uint8_t selectedWorkerIndex = 0;
 uint8_t selectedMenuIndex = 0;
+SystemState menuReturnState = STATE_WAIT_SPV_OUT;
 uint8_t selectedFooterAction = 0; // Default: 0 = DAFTAR KARTU
 SystemState stateBeforeNotification = STATE_IDLE;
 SystemState lastRenderedState = STATE_SYSTEM_ERROR;
@@ -2267,6 +2268,7 @@ void saveSessionToSD() {
                 doc["worker_list_from_menu"] = workerListFromMenu;
                 doc["selected_worker_idx"] = selectedWorkerIndex;
                 doc["selected_menu_idx"]   = selectedMenuIndex;
+                doc["menu_return_state"]  = (int)menuReturnState;
                 doc["selected_footer"]     = selectedFooterAction;
                 doc["mekanik_display"]     = lastMekanikDisplayCount;
                 doc["mekanik_init_out"]    = initialMekanikOutCount;
@@ -2363,6 +2365,13 @@ bool loadSessionFromSD() {
                         workerListFromMenu = doc["worker_list_from_menu"] | false;
                         selectedWorkerIndex = doc["selected_worker_idx"] | 0;
                         selectedMenuIndex  = doc["selected_menu_idx"] | 0;
+                        int savedMenuReturnState = doc["menu_return_state"] | STATE_WAIT_SPV_OUT;
+                        menuReturnState = savedMenuReturnState == STATE_MEKANIK_OUT ||
+                            savedMenuReturnState == STATE_WAIT_SPV_OUT ||
+                            savedMenuReturnState == STATE_ALL_WORKERS_REGISTERED ||
+                            savedMenuReturnState == STATE_WORKER_LIST ||
+                            savedMenuReturnState == STATE_GEOFENCE
+                            ? (SystemState)savedMenuReturnState : STATE_WAIT_SPV_OUT;
                         selectedFooterAction = doc["selected_footer"] | 0;
                         lastMekanikDisplayCount = doc["mekanik_display"] | -99;
                         initialMekanikOutCount  = doc["mekanik_init_out"] | -1;
@@ -2393,7 +2402,7 @@ bool loadSessionFromSD() {
                         rebuildCachedQueueString();
                         targetMekanikCount = constrain((int)targetMekanikCount, 0, MAX_WORKERS - countQueueSupervisors());
                         selectedWorkerIndex = constrain((int)selectedWorkerIndex, 0, max(0, (int)safetyQueue.topIndex));
-                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, 3);
+                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, 4);
                         selectedFooterAction = constrain((int)selectedFooterAction, 0, currentState == STATE_WORKER_LIST ? 2 : 1);
 
                         bool savedSessionActive = doc["is_session_active"] | false;
@@ -4056,6 +4065,7 @@ void executeFooterChoice() {
         } else if (selectedFooterAction == 1) {
             currentState = STATE_WORKER_DETAIL;
         } else if (selectedFooterAction == 2) {
+            menuReturnState = STATE_WORKER_LIST;
             currentState = STATE_MENU;
         }
     } else if (currentState == STATE_WORKER_DETAIL) {
@@ -4129,6 +4139,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
     if (activeKey == KEY_NONE) return;
     if (currentState == STATE_GEOFENCE) {
         if (!isHoldAction && (activeKey == KEY_4 || activeKey == KEY_5)) {
+            menuReturnState = STATE_GEOFENCE;
             currentState = STATE_MENU; forceFullRedraw = true; needsRedraw = true;
         }
         return;
@@ -4203,6 +4214,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
     else if (currentState == STATE_MEKANIK_OUT) {
         if (activeKey == KEY_5 || activeKey == KEY_4) {
             buzzTick();
+            menuReturnState = STATE_MEKANIK_OUT;
             currentState = STATE_MENU; 
             forceFullRedraw = true;
             needsRedraw = true;
@@ -4212,6 +4224,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
     else if (currentState == STATE_WAIT_SPV_OUT) {
         if (activeKey == KEY_5 || activeKey == KEY_4) {
             buzzTick();
+            menuReturnState = STATE_WAIT_SPV_OUT;
             currentState = STATE_MENU; 
             forceFullRedraw = true;
             needsRedraw = true;
@@ -4293,7 +4306,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             }
             return;
         } else if (activeKey == KEY_2) { 
-            if (selectedMenuIndex < 3) {
+            if (selectedMenuIndex < 4) {
                 selectedMenuIndex++; buzzTick(); needsRedraw = true;
             }
             return;
@@ -4318,6 +4331,8 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
                 currentState = STATE_WAIT_SPV_IN;
             } else if (selectedMenuIndex == 3) {
                 currentState = STATE_GEOFENCE;
+            } else if (selectedMenuIndex == 4) {
+                currentState = menuReturnState;
             }
             forceFullRedraw = true;
             needsRedraw = true;
@@ -4722,12 +4737,13 @@ void drawScreen() {
             "1. KELUAR / SELESAI MAINTENANCE",
             "2. TAMBAH MEKANIK",
             "3. TAMBAH PENGAWAS",
-            "4. KONFIRMASI GEOFENCE / BLE"
+            "4. KONFIRMASI GEOFENCE / BLE",
+            "5. KEMBALI"
         };
         tft.setTextDatum(TL_DATUM);
-        for (uint8_t i = 0; i < 4; i++) {
+        for (uint8_t i = 0; i < 5; i++) {
             bool selected = (i == selectedMenuIndex);
-            int rowY = 96 + i * 32;
+            int rowY = 88 + i * 32;
             if (selected) {
                 tft.fillRoundRect(14, rowY, 452, 28, 4, ELOTO_HEADER);
             } else {
@@ -4739,17 +4755,7 @@ void drawScreen() {
             tft.setTextColor(textColor, bgColor);
             tft.drawString(menuItems[i], 24, rowY + 6);
         }
-        const int16_t boxW = 320;
-        const int16_t boxH = 26;
-        const int16_t boxX = (480 - boxW) / 2;
-        const int16_t boxY = 220;
-        tft.fillRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_BG);
-        tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_DARK_RED);
-        setStoryFont(9);
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        tft.drawString("TEKAN OK UNTUK MEMILIH", 240, boxY + (boxH / 2));
-        drawTftFooterSingle("KEMBALI");
+        drawTftFooter("", "");
     }
     else if (currentState == STATE_MEKANIK_OUT) {
         tft.setTextDatum(MC_DATUM);
@@ -5316,7 +5322,7 @@ void getLcdText(String &lcd0, String &lcd1) {
         lcd1 = "TEKAN OK UNTUK LANJUT";
     } else if (currentState == STATE_MENU) {
         lcd0 = "PILIHAN MENU LOTO";
-        lcd1 = "TEKAN OK UNTUK MEMILIH";
+        lcd1 = "5. KEMBALI";
     } else if (currentState == STATE_MEKANIK_OUT) {
         lcd0 = "TAPPING KELUAR";
         lcd1 = isQueueSupervisor(safetyQueue.topIndex) ? "TAP PENGAWAS TERAKHIR" : "TAP MEKANIK TERAKHIR";
