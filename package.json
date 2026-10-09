@@ -1,0 +1,27 @@
+{
+  "name": "eloto-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --parallel -r run dev",
+    "dev:backend": "pnpm --filter backend run dev",
+    "dev:frontend": "pnpm --filter frontend run dev",
+    "build": "npm run build --prefix frontend",
+    "build:frontend": "pnpm --filter frontend run build",
+    "lint": "npm run lint --prefix frontend",
+    "test": "npm test --prefix backend",
+    "dev:counting": "pnpm --filter counting run dev",
+    "paralel": "pnpm --parallel -r run",
+    "db:migrate": "pnpm --filter backend run migrate",
+    "db:seed:admin": "pnpm --filter backend run seed:admin",
+    "db:seed:demo": "pnpm --filter backend run seed:demo",
+    "db:reset:demo": "pnpm --filter backend run reset:demo && pnpm db:seed:demo",
+    "db:setup:demo": "pnpm db:migrate && pnpm db:seed:demo"
+  },
+  "devDependencies": {
+    "knip": "^6.34.0",
+    "madge": "^8.0.0"
+  }
+}

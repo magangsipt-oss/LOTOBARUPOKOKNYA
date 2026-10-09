@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <title>E-LOTO Platform - Sistem Penguncian & Keselamatan Kerja</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome 6 Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  
+  <!-- Google Fonts: Barlow & Share Tech Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;600;700;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    body {
+      font-family: 'Barlow', sans-serif;
+      background-image: radial-gradient(circle at 10% 0%, rgba(255,178,56,0.03), transparent 40%),
+                        radial-gradient(circle at 90% 100%, rgba(77,169,247,0.03), transparent 40%);
+    }
+    .font-mono-tech {
+      font-family: 'Share Tech Mono', monospace;
+    }
+    .scrollbar-none::-webkit-scrollbar { display: none; }
+    .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+    
+    .custom-gps-marker {
+      background: transparent !important;
+      border: none !important;
+    }
+
+    .box-permanent-label {
+      background-color: rgba(15, 23, 42, 0.88) !important;
+      border: 1px solid #ef4444 !important;
+      color: #ffffff !important;
+      font-family: 'Share Tech Mono', monospace !important;
+      font-size: 11px !important;
+      font-weight: bold !important;
+      border-radius: 6px !important;
+      padding: 3px 8px !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+      white-space: nowrap !important;
+    }
+    .box-permanent-label::before {
+      border-top-color: #ef4444 !important;
+    }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.1); opacity: 0.4; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .animate-pulse-ring { animation: pulse-ring 2s infinite; }
+
+    @media print {
+      .print-hidden { display: none !important; }
+      .print-show { display: block !important; }
+      body { background: white !important; color: black !important; }
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased font-sans select-none min-h-screen">
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

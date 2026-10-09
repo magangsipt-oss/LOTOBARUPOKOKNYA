@@ -1,0 +1,2 @@
+# SD card is only for offline session/event data and optional personnel/photo cache.
+# Wi-Fi credentials, device ID, and dashboard endpoint are compiled into firmware.

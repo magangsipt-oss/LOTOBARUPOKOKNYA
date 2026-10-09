@@ -1,0 +1,2 @@
+# Kartu SD hanya untuk data sesi/event offline dan cache personel/foto.
+# Kredensial Wi-Fi, ID perangkat, dan alamat dashboard berasal dari firmware.

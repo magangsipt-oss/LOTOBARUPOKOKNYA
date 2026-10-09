@@ -1,0 +1,466 @@
+import React, { useState, useEffect } from 'react';
+import { useApp } from '../context/useApp';
+import logService from '../services/logService';
+
+/**
+ * Halaman Manajemen BLE Tag untuk LOTO Compliance Monitoring
+ */
+export default function BleTagManager() {
+  const { isLoggedIn, activeTab, sessionUser, userDatabase, pemicuToast, boxes } = useApp();
+  const canManageTags = sessionUser?.role === 'admin';
+
+  const [bleTags, setBleTags] = useState([]);
+  const [presenceResult, setPresenceResult] = useState({ boxId: '', status: 'loading', rows: [] });
+  const [presenceHistory, setPresenceHistory] = useState({ boxId: '', status: 'loading', rows: [] });
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [formTag, setFormTag] = useState({ mac_address: '', tag_name: '', assigned_sid: '' });
+  const [presenceAssignments, setPresenceAssignments] = useState({});
+  const [pairingMac, setPairingMac] = useState('');
+  const [chosenBoxId, setSelectedBoxId] = useState('');
+  const [tagRevision, setTagRevision] = useState(0);
+  const selectedBoxId = boxes.some(box => String(box.id) === chosenBoxId) ? chosenBoxId : String(boxes[0]?.id || '');
+  const presenceStatus = !selectedBoxId ? 'unavailable' : presenceResult.boxId === selectedBoxId ? presenceResult.status : 'loading';
+  const activePresence = presenceStatus === 'ready' ? presenceResult.rows : [];
+  const hasOtherActiveTag = (sid, exceptMac = '') => bleTags.some(tag =>
+    Number(tag.is_active) === 1 &&
+    String(tag.assigned_sid || '') === String(sid) &&
+    String(tag.mac_address || '').toUpperCase() !== String(exceptMac).toUpperCase()
+  );
+
+  // Load BLE tags
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'ble-tags') return;
+    let active = true;
+    const loadTags = async () => {
+      try {
+        const result = await logService.getAllBleTags();
+        const data = result.data ?? result;
+        if (active && Array.isArray(data)) setBleTags(data);
+      } catch {}
+    };
+    loadTags();
+    return () => { active = false; };
+  }, [isLoggedIn, activeTab, tagRevision]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'ble-tags' || !selectedBoxId) return;
+    let active = true;
+    let pending = false;
+    const loadPresence = async () => {
+      if (pending) return;
+      pending = true;
+      setPresenceResult(current => current.boxId === selectedBoxId
+        ? current : { boxId: selectedBoxId, status: 'loading', rows: [] });
+      try {
+        const result = await logService.getActivePresence(selectedBoxId);
+        const data = result.data ?? result;
+        if (!Array.isArray(data)) throw new Error('Data presence tidak valid.');
+        if (active) setPresenceResult({ boxId: selectedBoxId, status: 'ready', rows: data });
+      } catch {
+        if (active) setPresenceResult({ boxId: selectedBoxId, status: 'error', rows: [] });
+      } finally { pending = false; }
+    };
+    loadPresence();
+    const interval = setInterval(loadPresence, 3000);
+    return () => { active = false; clearInterval(interval); };
+  }, [isLoggedIn, activeTab, selectedBoxId]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'ble-tags' || !selectedBoxId) return;
+    let active = true;
+    let pending = false;
+    const loadHistory = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await logService.getPresenceHistory(selectedBoxId, 100);
+        const data = result.data ?? result;
+        if (!Array.isArray(data)) throw new Error('Data riwayat BLE tidak valid.');
+        if (active) setPresenceHistory({ boxId: selectedBoxId, status: 'ready', rows: data });
+      } catch {
+        if (active) setPresenceHistory({ boxId: selectedBoxId, status: 'error', rows: [] });
+      } finally { pending = false; }
+    };
+    setPresenceHistory({ boxId: selectedBoxId, status: 'loading', rows: [] });
+    loadHistory();
+    const interval = setInterval(loadHistory, 5000);
+    return () => { active = false; clearInterval(interval); };
+  }, [isLoggedIn, activeTab, selectedBoxId]);
+
+  // Register new BLE tag
+  const handleRegisterTag = async (e) => {
+    e.preventDefault();
+    if (!canManageTags || loading) return;
+    if (!formTag.mac_address.trim()) {
+      pemicuToast('MAC Address wajib diisi!', 'fail');
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await logService.registerBleTag({
+        mac_address: formTag.mac_address.trim(),
+        tag_name: formTag.tag_name.trim() || null,
+        assigned_sid: formTag.assigned_sid || null
+      });
+      if (result.success || result.status === 'success') {
+        pemicuToast('BLE Tag berhasil didaftarkan!', 'ok');
+        setFormTag({ mac_address: '', tag_name: '', assigned_sid: '' });
+        setShowForm(false);
+        setTagRevision(revision => revision + 1);
+      } else {
+        pemicuToast(result.message || 'Gagal mendaftarkan tag', 'fail');
+      }
+    } catch (err) {
+      pemicuToast('Gagal mendaftarkan BLE tag: ' + (err.message || ''), 'fail');
+    }
+    setLoading(false);
+  };
+
+  const handlePairPresence = async (presence) => {
+    if (!canManageTags || pairingMac) return;
+    const mac = String(presence.ble_mac || '').trim().toUpperCase();
+    const assignedSid = presenceAssignments[mac] || presence.assigned_sid || '';
+    const assignedUser = userDatabase.find(user => String(user.sid) === String(assignedSid));
+    if (!mac || !assignedSid || !assignedUser) {
+      pemicuToast('Pilih mekanik sebelum memasangkan tag.', 'fail');
+      return;
+    }
+
+    setPairingMac(mac);
+    try {
+      const existingTag = bleTags.find(tag => String(tag.mac_address).toUpperCase() === mac);
+      const result = existingTag
+        ? await logService.updateBleTag(existingTag.id, { assigned_sid: assignedSid })
+        : await logService.registerBleTag({ mac_address: mac, assigned_sid: assignedSid });
+      if (!result?.success && result?.status !== 'success') {
+        throw new Error(result?.message || 'Gagal memasangkan BLE tag.');
+      }
+
+      const savedTag = {
+        ...(existingTag || {}),
+        id: existingTag?.id,
+        mac_address: mac,
+        tag_name: existingTag?.tag_name || presence.tag_name || null,
+        assigned_sid: assignedSid,
+        assigned_name: assignedUser.nama,
+        assigned_role: assignedUser.role,
+        is_active: existingTag?.is_active ?? 1,
+      };
+      if (existingTag) {
+        setBleTags(current => current.map(tag => tag.id === existingTag.id ? savedTag : tag));
+      }
+      setPresenceResult(current => current.boxId !== selectedBoxId ? current : {
+        ...current,
+        rows: current.rows.map(row => String(row.ble_mac).toUpperCase() === mac
+          ? { ...row, assigned_sid: assignedSid, nama: assignedUser.nama, role: assignedUser.role, is_registered: true }
+          : row)
+      });
+      setPresenceAssignments(current => ({ ...current, [mac]: assignedSid }));
+      pemicuToast(`BLE tag ${mac} langsung dipasangkan ke ${assignedUser.nama}.`, 'ok');
+      setTagRevision(revision => revision + 1);
+    } catch (error) {
+      pemicuToast(error.message || 'Gagal memasangkan BLE tag.', 'fail');
+    } finally {
+      setPairingMac('');
+    }
+  };
+
+  // Delete BLE tag
+  const handleDeleteTag = async (id) => {
+    if (!canManageTags) return;
+    if (!window.confirm('Hapus BLE tag ini secara permanen?')) return;
+    try {
+      const result = await logService.deleteBleTag(id);
+      if (result.success || result.status === 'success') {
+        pemicuToast('BLE Tag dihapus', 'ok');
+        setTagRevision(revision => revision + 1);
+      } else {
+        pemicuToast(result.message || 'Gagal menghapus tag', 'fail');
+      }
+    } catch { pemicuToast('Gagal menghapus BLE tag', 'fail'); }
+  };
+
+  // Toggle tag active status
+  const handleToggleTag = async (id, currentActive) => {
+    if (!canManageTags) return;
+    try {
+      await logService.updateBleTag(id, { is_active: !currentActive });
+      setTagRevision(revision => revision + 1);
+    } catch { pemicuToast('Gagal update status tag', 'fail'); }
+  };
+
+  if (activeTab !== 'ble-tags' || !(sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas')) return null;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-black font-mono-tech text-red-700 flex items-center gap-2">
+            <i className="fa-solid fa-tag"></i> Manajemen BLE Tag
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">Daftar & kelola BLE Smart Tag untuk LOTO Compliance Monitoring</p>
+        </div>
+        {canManageTags && <button onClick={() => setShowForm(!showForm)} className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
+          <i className={`fa-solid ${showForm ? 'fa-times' : 'fa-plus'}`}></i> {showForm ? 'Batal' : 'Tambah Tag Baru'}
+        </button>}
+      </div>
+
+      {/* Register Form */}
+      {canManageTags && showForm && (
+        <div className="bg-white border border-red-200 rounded-xl p-4 shadow-sm">
+          <h3 className="text-sm font-bold text-red-700 mb-3">Registrasi BLE Tag Baru</h3>
+          <form onSubmit={handleRegisterTag} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">MAC Address *</label>
+              <input
+                type="text"
+                placeholder="AA:BB:CC:DD:EE:FF"
+                value={formTag.mac_address}
+                onChange={e => setFormTag({ ...formTag, mac_address: e.target.value })}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono-tech mt-1 focus:outline-none focus:border-red-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Nama Tag</label>
+              <input
+                type="text"
+                placeholder="Misal: Tag Mekanik 1"
+                value={formTag.tag_name}
+                onChange={e => setFormTag({ ...formTag, tag_name: e.target.value })}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono-tech mt-1 focus:outline-none focus:border-red-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Assign ke Mekanik (SID)</label>
+              <select
+                value={formTag.assigned_sid}
+                onChange={e => setFormTag({ ...formTag, assigned_sid: e.target.value })}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono-tech mt-1 focus:outline-none focus:border-red-500"
+              >
+                <option value="">— Belum Di-assign —</option>
+                {userDatabase.filter(u =>
+                  ['teknisi', 'mekanik', 'worker'].includes(u.role) &&
+                  !hasOtherActiveTag(u.sid)
+                ).map(user => (
+                  <option key={user.sid} value={user.sid}>{user.nama} ({user.sid})</option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-3">
+              <button type="submit" disabled={loading} className="bg-red-600 hover:bg-red-700 disabled:bg-slate-400 text-white px-4 py-2 rounded-lg text-xs font-bold transition-colors">
+                {loading ? 'Menyimpan...' : 'Simpan Tag'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Active Presence */}
+      <div className="bg-white border border-green-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-green-50 px-4 py-3 border-b border-green-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-broadcast-tower text-green-600"></i>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-wider text-green-700 font-mono-tech">BLE Presence Aktif</h3>
+              <p className="text-[10px] text-slate-600">Tag yang terdeteksi dalam 60 detik terakhir</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedBoxId}
+              onChange={e => setSelectedBoxId(e.target.value)}
+              className="border border-green-300 rounded-lg px-2 py-1 text-[10px] font-mono-tech"
+            >
+              {boxes.map(b => <option key={b.id} value={b.id}>{b.id} - {b.unit}</option>)}
+            </select>
+            <span className="text-[10px] font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded">{activePresence.length} Aktif</span>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
+            <thead className="bg-gray-100 border-b border-gray-200">
+              <tr>
+                <th className="p-3">Status</th>
+                <th className="p-3">BLE MAC</th>
+                <th className="p-3">Tag Name</th>
+                <th className="p-3">Mekanik (SID)</th>
+                <th className="p-3">Role</th>
+                <th className="p-3">Last Seen</th>
+                {canManageTags && <th className="p-3">Pairing</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {activePresence.length > 0 ? activePresence.map((presence, i) => (
+                <tr key={i} className="hover:bg-green-50/50">
+                  <td className="p-3">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      <span className="text-green-700 font-bold text-[9px]">ACTIVE</span>
+                    </span>
+                  </td>
+                  <td className="p-3 text-blue-700 font-bold">{presence.ble_mac}</td>
+                  <td className="p-3 text-slate-700">
+                    {presence.tag_id
+                      ? `BLE TAG ${presence.tag_id}${presence.tag_name ? ` — ${presence.tag_name}` : ''}`
+                      : presence.tag_name || '—'}
+                  </td>
+                  <td className="p-3 font-bold text-slate-900">
+                    {presence.is_registered ? presence.nama : <span className="text-red-500">UNREGISTERED</span>}
+                    <span className="block text-[9px] text-slate-400">{presence.assigned_sid || '—'}</span>
+                  </td>
+                  <td className="p-3 text-slate-600">{presence.role || '—'}</td>
+                  <td className="p-3 text-slate-500">{presence.last_seen ? new Date(presence.last_seen).toLocaleTimeString('id-ID') : '—'}</td>
+                  {canManageTags && <td className="p-3">
+                    <div className="flex min-w-56 items-center gap-1.5">
+                      <select
+                        aria-label={`Pilih mekanik untuk BLE tag ${presence.ble_mac}`}
+                        value={presenceAssignments[presence.ble_mac] ?? presence.assigned_sid ?? ''}
+                        onChange={event => setPresenceAssignments(current => ({ ...current, [presence.ble_mac]: event.target.value }))}
+                        className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1.5 text-[10px]"
+                      >
+                        <option value="">Pilih mekanik</option>
+                        {userDatabase.filter(user =>
+                          ['teknisi', 'mekanik', 'worker'].includes(user.role) &&
+                          !hasOtherActiveTag(user.sid, presence.ble_mac)
+                        ).map(user => (
+                          <option key={user.sid} value={user.sid}>{user.nama} ({user.sid})</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={Boolean(pairingMac) || !(presenceAssignments[presence.ble_mac] || presence.assigned_sid)}
+                        onClick={() => handlePairPresence(presence)}
+                        className="shrink-0 rounded bg-red-600 px-2 py-1.5 text-[10px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {pairingMac === String(presence.ble_mac).toUpperCase() ? 'Menyimpan…' : presence.is_registered ? 'Simpan' : 'Pair'}
+                      </button>
+                    </div>
+                  </td>}
+                </tr>
+              )) : (
+                <tr><td colSpan={canManageTags ? 7 : 6} className="p-8 text-center text-slate-400 italic">Tidak ada BLE tag yang terdeteksi aktif</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* BLE Detection History */}
+      <div className="bg-white border border-blue-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-blue-50 px-4 py-3 border-b border-blue-200 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-clock-rotate-left text-blue-600"></i>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-wider text-blue-700 font-mono-tech">Riwayat Deteksi BLE</h3>
+              <p className="text-[10px] text-slate-600">100 deteksi terbaru untuk boks terpilih</p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+            {presenceHistory.boxId === selectedBoxId && presenceHistory.status === 'ready' ? presenceHistory.rows.length : '—'} Riwayat
+          </span>
+        </div>
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
+            <thead className="sticky top-0 bg-gray-100 border-b border-gray-200">
+              <tr>
+                <th className="p-3">Waktu Deteksi</th>
+                <th className="p-3">BLE Tag</th>
+                <th className="p-3">Karyawan (SID)</th>
+                <th className="p-3">Role</th>
+                <th className="p-3">MAC Address</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {presenceHistory.boxId !== selectedBoxId || presenceHistory.status === 'loading' ? (
+                <tr><td colSpan={5} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
+              ) : presenceHistory.status === 'error' ? (
+                <tr><td colSpan={5} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
+              ) : presenceHistory.rows.length === 0 ? (
+                <tr><td colSpan={5} className="p-6 text-center text-slate-400 italic">Belum ada riwayat deteksi BLE untuk boks ini.</td></tr>
+              ) : presenceHistory.rows.map(row => (
+                <tr key={row.id} className="hover:bg-blue-50/50">
+                  <td className="p-3 text-slate-600">{row.detected_at ? new Date(String(row.detected_at).replace(' ', 'T')).toLocaleString('id-ID') : '—'}</td>
+                  <td className="p-3 font-bold text-blue-700">{row.tag_id ? `BLE TAG ${row.tag_id}` : row.tag_name || 'Tidak terdaftar'}</td>
+                  <td className="p-3 text-slate-800">{row.nama || 'Belum dipasangkan'}<span className="block text-[9px] text-slate-400">{row.assigned_sid || '—'}</span></td>
+                  <td className="p-3 text-slate-600">{row.role || '—'}</td>
+                  <td className="p-3 text-slate-500">{row.ble_mac}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* BLE Tag Registry */}
+      <div className="bg-white border border-red-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-red-50 px-4 py-3 border-b border-red-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-list text-red-600"></i>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-wider text-red-700 font-mono-tech">Daftar BLE Tag Terdaftar</h3>
+              <p className="text-[10px] text-slate-600">Semua BLE Smart Tag yang terdaftar di sistem</p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold text-red-700 font-mono-tech">{bleTags.length} Tag</span>
+        </div>
+        <div className="overflow-x-auto max-h-96 overflow-y-auto">
+          <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
+            <thead className="sticky top-0 bg-gray-100 border-b border-gray-200">
+              <tr>
+                <th className="p-3">ID</th>
+                <th className="p-3">MAC Address</th>
+                <th className="p-3">Tag Name</th>
+                <th className="p-3">Assigned To</th>
+                <th className="p-3 text-center">Status</th>
+                <th className="p-3 text-center">Aksi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {bleTags.length > 0 ? bleTags.map((tag) => (
+                <tr key={tag.id} className={`hover:bg-red-50/50 ${!tag.is_active ? 'opacity-50' : ''}`}>
+                  <td className="p-3 font-bold text-slate-700">#{tag.id}</td>
+                  <td className="p-3 text-blue-700 font-bold font-mono-tech">{tag.mac_address}</td>
+                  <td className="p-3 text-slate-700">
+                    {`BLE TAG ${tag.id}${tag.tag_name ? ` — ${tag.tag_name}` : ''}`}
+                  </td>
+                  <td className="p-3">
+                    <span className="font-bold text-slate-900">{tag.assigned_name || 'Belum di-assign'}</span>
+                    <span className="block text-[9px] text-slate-400">{tag.assigned_sid || ''}</span>
+                  </td>
+                  <td className="p-3 text-center">
+                    <button onClick={() => handleToggleTag(tag.id, tag.is_active)} className={`px-2 py-0.5 rounded text-[9px] font-bold border cursor-pointer transition-colors ${tag.is_active ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'}`}>
+                      {tag.is_active ? 'AKTIF' : 'NONAKTIF'}
+                    </button>
+                  </td>
+                  <td className="p-3 text-center">
+                    <button onClick={() => handleDeleteTag(tag.id)} className="text-red-500 hover:text-red-700 text-[10px] font-bold" title="Hapus tag">
+                      <i className="fa-solid fa-trash-can"></i>
+                    </button>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="6" className="p-8 text-center text-slate-400 italic">Belum ada BLE tag yang terdaftar. Klik "Tambah Tag Baru" untuk memulai.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Help Section */}
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+        <h3 className="text-xs font-bold text-blue-700 mb-2 flex items-center gap-2">
+          <i className="fa-solid fa-circle-info"></i> Cara Kerja BLE LOTO Compliance
+        </h3>
+        <ol className="text-[11px] text-blue-800 space-y-1 list-decimal list-inside">
+          <li><strong>ESP32 scan BLE</strong> → Mendeteksi Smart Tag yang ada di area kerja</li>
+          <li><strong>Backend resolve</strong> → BLE MAC dikonversi ke SID mekanik berdasarkan registrasi</li>
+          <li><strong>Mekanik tap SID</strong> → Kartu RFID HID 6300 di-tap di LOTO station</li>
+          <li><strong>Backend compare</strong> → BLE presence vs RFID tap → selisih = mekanik belum LOTO</li>
+          <li><strong>Dashboard alert</strong> → Tampilkan peringatan untuk mekanik yang belum comply</li>
+        </ol>
+      </div>
+    </div>
+  );
+}

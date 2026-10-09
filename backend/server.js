@@ -1,0 +1,35 @@
+import { createApp } from './app.js';
+import pool, { testConnection } from './config/database.js';
+
+async function start() {
+  const app = createApp();
+  if (!await testConnection()) throw new Error('Database unavailable; refusing to start');
+  // Fail startup when required migrations have not been applied.
+  await pool.query('SELECT token_hash FROM web_sessions LIMIT 0');
+  await pool.query('SELECT id FROM device_commands LIMIT 0');
+  const [migrations] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260908-production-hardening.cjs']);
+  if (!migrations.length) throw new Error('Production hardening migration is incomplete');
+  // Check BLE LOTO compliance migration
+  const [bleMigration] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260915-ble-loto-compliance.cjs']);
+  if (!bleMigration.length) throw new Error('BLE LOTO compliance migration is incomplete');
+  const [tappingMigration] = await pool.query('SELECT name FROM eloto_migrations WHERE name = ?', ['20260930-rebuild-tapping-history.cjs']);
+  if (!tappingMigration.length) throw new Error('Tapping-history repair migration is incomplete');
+  // ESP32, dashboard, dan alat lain di jaringan lokal harus dapat menembus backend.
+  // Bind ke 0.0.0.0 kecuali ada override eksplisit dari HOST.
+  const host = process.env.HOST || '0.0.0.0';
+  const port = Number(process.env.PORT) || 5002;
+  const server = app.listen(port, host, () => {
+    console.log(`E-LOTO backend ready on ${host}:${port}`);
+  });
+  let closing = false;
+  const shutdown = () => {
+    if (closing) return;
+    closing = true;
+    const timer = setTimeout(() => process.exit(1), 10000).unref();
+    server.close(async () => { await pool.end(); clearTimeout(timer); process.exit(0); });
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  server.on('error', error => { console.error(error.code); shutdown(); });
+}
+start().catch(async error => { console.error(error.message); await pool.end(); process.exitCode = 1; });

@@ -1,0 +1,41 @@
+# Dependensi Package Node.js
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Variabel Lingkungan Sensitif (Rahasia & Kredensial DB)
+.env
+.env.local
+.env.*.local
+
+# Hasil Build & Bundle
+dist/
+build/
+out/
+
+# File Sistem Operasi & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Folder Log & Upload File Media
+*.log
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+graphify-out/
+
+# Local Python artifacts and device credentials
+__pycache__/
+*.pyc
+esp32/config.txt
+esp32/config.json
+esp32/ELOTO_FIXED/device_secrets.h
+esp32/ELOTO_FIXED/device_secrets.local.h
+esp32/ELOTO_FIXED/device_secrets.profile.h
+esp32/ELOTO_FIXED/device_secrets.override.h
+esp32/ELOTO_FIXED/network_secrets.h
+esp32/ELOTO_FIXED/network_secrets.local.h
