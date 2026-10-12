@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DOP Plant Monitoring - F-HSE-201</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Google Fonts Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  
+  <style>
+    body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+    
+    /* Scrollbar untuk Horizontal Excel-like Table */
+    ::-webkit-scrollbar { height: 10px; width: 8px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    
+    input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.6; }
+  </style>
+</head>
+<body class="text-slate-800 antialiased min-h-screen flex flex-col">
+
+  <header class="bg-gradient-to-r from-red-800 via-red-600 to-red-500 shadow-md sticky top-0 z-30">
+    <div class="max-w-[1800px] mx-auto px-4 py-3 flex justify-between items-center text-white">
+      <div class="flex items-center gap-3">
+        <div class="bg-white/20 p-2 rounded-lg backdrop-blur-sm border border-white/30 shadow-inner">
+          <i data-lucide="clipboard-list" class="w-6 h-6 text-white"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-black tracking-wide shadow-black/10 drop-shadow-sm leading-tight">DAILY OPERATION PLAN</h1>
+          <p class="text-[11px] text-red-100 font-medium tracking-wider uppercase">Support Department - LOTO Integration</p>
+        </div>
+      </div>
+      
+      <!-- Dokumen Metadata F-HSE-201 -->
+      <div class="hidden md:flex flex-col bg-red-900/40 rounded-xl p-3 text-xs border border-red-400/30 shadow-inner gap-1">
+        <div class="flex gap-6 border-b border-red-400/30 pb-1.5 mb-0.5">
+          <span><span class="text-red-200">No Dokumen:</span> <span class="font-bold tracking-wide">F-HSE-201</span></span>
+          <span><span class="text-red-200">Tgl Efektif:</span> <span class="font-bold">28-May-26</span></span>
+        </div>
+        <div class="flex gap-6">
+          <span><span class="text-red-200">Revisi:</span> <span class="font-bold">3</span></span>
+          <span><span class="text-red-200">Halaman:</span> <span class="font-bold">1 dari 1</span></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 w-full mx-auto px-4 py-6 flex flex-col gap-6" style="max-width: 1800px;">
+    
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col md:flex-row justify-between items-center gap-4">
+      <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+        <div class="relative">
+          <i data-lucide="calendar" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+          <input type="date" value="2026-09-16" class="border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none shadow-sm bg-slate-50 text-slate-700 font-medium cursor-pointer">
+        </div>
+        <div class="relative">
+          <i data-lucide="clock" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+          <select class="border border-slate-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none shadow-sm bg-slate-50 text-slate-700 font-medium cursor-pointer appearance-none">
+            <option>Semua Shift (1 & 2)</option>
+            <option>Shift 1</option>
+            <option>Shift 2</option>
+          </select>
+        </div>
+      </div>
+      
+      <button onclick="openModal()" class="w-full md:w-auto bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white text-sm font-bold px-5 py-2.5 rounded-lg shadow-md hover:shadow-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 border border-red-800">
+        <i data-lucide="plus-circle" class="w-5 h-5"></i>
+        Input DOP Baru
+      </button>
+    </div>
+    <p id="dop-status" role="status" aria-live="polite" class="text-xs font-semibold text-slate-600"></p>
+
+    <div class="bg-white rounded-xl shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
+      
+      <div class="bg-gradient-to-r from-red-700 to-red-600 border-b-4 border-red-800 px-5 py-3 flex flex-col items-center justify-center text-center text-white">
+         <h2 class="font-black text-sm tracking-wide">MUTIARA TANJUNG LESTARI MANAGEMENT SYSTEM</h2>
+         <h3 class="font-bold text-red-100 text-xs">FORMULIR DAILY OPERATION PLAN (SUPPORT DEPARTEMENT)</h3>
+      </div>
+      
+      <div class="overflow-x-auto flex-1 pb-4 bg-slate-50">
+        <table class="text-left text-[11px] min-w-max border-collapse" style="min-width: 3200px;">
+          <!-- 100% Replikasi Header Dokumen Asli -->
+          <thead class="text-red-900 font-bold border-b-2 border-red-300 align-middle text-center">
+            <!-- Row 1: Main Categories -->
+            <tr>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-10">No</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-24">Tanggal</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-16">Shift</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-64">Aktivitas</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-40">Departemen</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-48">Lokasi</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-48">Alat Bantu/ Peralatan</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-64">Hazard</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-24">Golden<br>Rules</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-20">SIB</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-28">Aktivitas<br>Kritis/non<br>Kritis</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-48">IBPR</th>
+              <th rowspan="3" class="p-2 border border-red-200 bg-red-50 w-48">Dokumen Kerja</th>
+              
+              <!-- PJA Colspan 15 (5 Layer x 3 Data) -->
+              <th colspan="15" class="p-2 border border-red-200 bg-white tracking-widest text-red-800">Pengawas/PJA</th>
+              
+              <th rowspan="3" class="p-2 border border-red-200 bg-white text-red-800 w-48">Pemantauan<br>Pengawasan Berjarak</th>
+            </tr>
+            
+            <!-- Row 2: PJA Layers -->
+            <tr>
+              <th colspan="3" class="p-1 border border-red-200 bg-white text-red-800">Layer 1 Shift 1</th>
+              <th colspan="3" class="p-1 border border-red-200 bg-white text-red-800">Layer 1 Shift 2</th>
+              <th colspan="3" class="p-1 border border-red-200 bg-white text-red-800">Layer 2</th>
+              <th colspan="3" class="p-1 border border-red-200 bg-white text-red-800">Layer 3</th>
+              <th colspan="3" class="p-1 border border-red-200 bg-white text-red-800">Layer 4</th>
+            </tr>
+
+            <!-- Row 3: PJA Details (Nama, Jabatan, HP) -->
+            <tr>
+              <!-- L1S1 -->
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-36">Nama</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-24">Jabatan</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-32">No HP</th>
+              <!-- L1S2 -->
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-36">Nama</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-24">Jabatan</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-32">No HP</th>
+              <!-- L2 -->
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-36">Nama</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-24">Jabatan</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-32">No HP</th>
+              <!-- L3 -->
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-36">Nama</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-24">Jabatan</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-32">No HP</th>
+              <!-- L4 -->
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-36">Nama</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-24">Jabatan</th>
+              <th class="p-1 border border-red-200 bg-white text-slate-700 font-medium w-32">No HP</th>
+            </tr>
+          </thead>
+          
+          <tbody id="table-body" class="bg-white align-top">
+            <!-- Table rows injected via JS with exact 30 columns per row -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <div id="modal-dop" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm p-4 hidden items-center justify-center transition-opacity opacity-0 overflow-y-auto">
+    <div class="bg-slate-50 rounded-2xl shadow-2xl max-w-6xl w-full flex flex-col border border-slate-300 transform transition-all scale-95 origin-center my-auto" id="modal-content">
+      
+      <!-- Modal Header -->
+      <div class="bg-gradient-to-r from-red-700 via-red-600 to-red-500 px-6 py-4 text-white flex justify-between items-center shadow-md rounded-t-2xl relative z-10 border-b border-red-800">
+        <div class="flex items-center gap-3">
+          <div class="p-2 bg-white/20 rounded-xl shadow-inner backdrop-blur-sm">
+            <i data-lucide="file-signature" class="w-6 h-6 text-white"></i>
+          </div>
+          <div>
+            <h3 class="text-lg font-black tracking-wide shadow-black/10 drop-shadow-sm">Formulir Input DOP</h3>
+            <p class="text-xs text-red-100 font-medium">Pengisian Urut (Kolom 1 - 14) Sesuai Dokumen F-HSE-201</p>
+          </div>
+        </div>
+        <button onclick="closeModal()" class="text-white/80 hover:text-white bg-black/10 p-1.5 rounded-lg hover:bg-black/20 transition-colors">
+          <i data-lucide="x" class="w-6 h-6"></i>
+        </button>
+      </div>
+
+      <form id="form-dop" onsubmit="handleFormSubmit(event)" class="p-5 sm:p-7 space-y-8 max-h-[80vh] overflow-y-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            
+            <!-- BLOK KIRI: KOLOM 1 S/D 6 (Informasi Dasar & Lokasi) -->
+            <div class="bg-white rounded-2xl p-6 shadow-md border border-slate-200 relative pt-7 group hover:shadow-lg transition-shadow">
+                <div class="absolute -top-3 left-5 bg-gradient-to-r from-slate-800 to-slate-700 text-white text-[10px] font-bold px-3 py-1 rounded-md shadow-sm border border-slate-600 flex items-center gap-2">
+                    <span class="bg-slate-900 px-1.5 rounded text-[9px]">1 - 6</span> Info Operasional
+                </div>
+
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <!-- 1. Tanggal -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">1. Tanggal <span class="text-red-500">*</span></label>
+                            <div class="relative">
+                                <i data-lucide="calendar" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                                <input type="date" id="in-tanggal" required class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                            </div>
+                        </div>
+                        <!-- 2. Shift -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">2. Shift <span class="text-red-500">*</span></label>
+                            <div class="relative">
+                                <i data-lucide="clock" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                                <select id="in-shift" class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner cursor-pointer appearance-none">
+                                    <option value="1&2">Shift 1 & 2</option>
+                                    <option value="1">Shift 1</option>
+                                    <option value="2">Shift 2</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. Aktivitas & Unit -->
+                    <div class="bg-slate-50 rounded-xl p-3 border border-slate-200 shadow-inner space-y-3">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">3. Aktivitas <span class="text-red-500">*</span></label>
+                            <input type="text" id="in-pekerjaan" placeholder="Cth: Pengecekan Suspensi ALL PM" required class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white focus:ring-2 focus:ring-red-500 outline-none shadow-sm mb-2">
+                            <input type="text" id="in-keluhan" placeholder="Keluhan (Opsional, Cth: Goncangan cabin keras)" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white focus:ring-2 focus:ring-red-500 outline-none shadow-sm mb-2">
+                        </div>
+                        <div>
+                            <span class="block text-[10px] font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Pilih Unit (Centang):</span>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="cb-unit-container">
+                                <!-- Generate by JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. Departemen -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">4. Departemen <span class="text-red-500">*</span></label>
+                        <div class="relative">
+                            <i data-lucide="building-2" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                            <input type="text" id="in-dept" value="Support Departement" required class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                        </div>
+                    </div>
+
+                    <!-- 5. Lokasi -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">5. Lokasi <span class="text-red-500">*</span></label>
+                        <div class="relative">
+                            <i data-lucide="map-pin" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                            <input type="text" id="in-lokasi" value="Plant Base Service & Ruang Alat Support MTL" required class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                        </div>
+                    </div>
+
+                    <!-- 6. Alat Bantu -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">6. Alat Bantu / Peralatan <span class="text-red-500">*</span></label>
+                        <div class="relative">
+                            <i data-lucide="wrench" class="w-4 h-4 absolute left-3 top-3 text-slate-400"></i>
+                            <textarea id="in-tools" rows="2" placeholder="Cth: Common tool, Tangga portable" class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner resize-none leading-relaxed">Common tool, Tangga portable</textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BLOK KANAN: KOLOM 7 S/D 12 (Keselamatan & Dokumen) -->
+            <div class="bg-white rounded-2xl p-6 shadow-md border border-slate-200 relative pt-7 group hover:shadow-lg transition-shadow">
+                <div class="absolute -top-3 left-5 bg-gradient-to-r from-red-800 to-red-700 text-white text-[10px] font-bold px-3 py-1 rounded-md shadow-sm border border-red-900 flex items-center gap-2">
+                    <span class="bg-red-950 px-1.5 rounded text-[9px]">7 - 12</span> K3 & Dokumen Kerja
+                </div>
+
+                <div class="space-y-4">
+                    <!-- 7. Hazard -->
+                    <div>
+                        <div class="flex justify-between items-end mb-1">
+                            <label class="block text-xs font-bold text-slate-700">7. Hazard <span class="text-red-500">*</span></label>
+                            <span class="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">Gunakan Enter / Baris</span>
+                        </div>
+                        <textarea id="in-hazard" rows="3" placeholder="1. Kurang Pengetahuan&#10;2. Bekerja tidak fit&#10;3. Tidak melakukan isolasi energi dengan baik" required class="w-full border border-slate-300 rounded-xl p-3 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner resize-none leading-relaxed"></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <!-- 8. Golden Rules -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">8. Golden Rules</label>
+                            <input type="text" id="in-gr" value="GR 3 (Isolasi Energi)" class="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                        </div>
+                        <!-- 9. SIB -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">9. SIB <span class="text-red-500">*</span></label>
+                            <select id="in-sib" class="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner cursor-pointer appearance-none">
+                                <option value="Ada (Aktif)">Ada (Aktif)</option>
+                                <option value="Proses">Proses</option>
+                                <option value="Tidak Perlu">Tidak Perlu</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 10. Kritis & Integrasi LOTO -->
+                    <div class="bg-red-50/50 rounded-xl p-3 border border-red-100 space-y-3">
+                        <div>
+                            <label class="block text-[11px] font-bold text-slate-700 mb-1">10. Aktivitas Kritis / Non Kritis <span class="text-red-500">*</span></label>
+                            <div class="relative">
+                                <i data-lucide="alert-triangle" class="w-4 h-4 absolute left-3 top-2.5 text-red-400"></i>
+                                <input type="text" id="in-kritis" value="Aktivitas Kritis" placeholder="Ketik deskripsi aktivitas kritis..." class="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-xs bg-white text-red-700 font-bold focus:ring-2 focus:ring-red-500 outline-none shadow-sm">
+                            </div>
+                        </div>
+                        
+                        <!-- Extra: Integrasi LOTO -->
+                        <div class="flex items-center gap-2 pt-1 border-t border-red-100">
+                            <i data-lucide="lock" class="w-4 h-4 text-red-600"></i>
+                            <label class="text-[10px] font-bold text-red-800 uppercase flex-1">Integrasi Sistem LOTO:</label>
+                            <select id="in-loto" class="w-32 border border-red-200 rounded text-xs px-2 py-1 bg-white text-red-700 font-bold outline-none focus:ring-2 focus:ring-red-500 shadow-sm cursor-pointer">
+                                <option value="Wajib LOTO">Wajib LOTO</option>
+                                <option value="Terisolasi">Terisolasi</option>
+                                <option value="Tidak Perlu">Tidak Perlu</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 11. IBPR -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">11. IBPR <span class="text-red-500">*</span></label>
+                        <div class="relative">
+                            <i data-lucide="file-text" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                            <input type="text" id="in-ibpr" value="PLANT/BMO/A-7/IBPR" required class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs font-mono font-bold text-slate-700 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                        </div>
+                    </div>
+
+                    <!-- 12. Dokumen Kerja -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">12. Dokumen Kerja <span class="text-red-500">*</span></label>
+                        <div class="relative">
+                            <i data-lucide="files" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i>
+                            <input type="text" id="in-jsa" placeholder="Cth: JSA R & I shock cabin" required class="w-full border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-red-500 outline-none transition-all shadow-inner">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BLOK BAWAH FULL WIDTH: KOLOM 13 S/D 14 -->
+            <div class="lg:col-span-2 bg-white rounded-2xl p-6 shadow-md border border-slate-200 relative pt-8 group hover:shadow-lg transition-shadow">
+                <div class="absolute -top-3 left-5 bg-gradient-to-r from-blue-800 to-blue-600 text-white text-[10px] font-bold px-3 py-1 rounded-md shadow-sm border border-blue-900 flex items-center gap-2">
+                    <span class="bg-blue-950 px-1.5 rounded text-[9px]">13 - 14</span> Pengawas & Pemantauan
+                </div>
+
+                <!-- 13. PENGAWAS / PJA (4 LAYER) -->
+                <div class="mb-6">
+                    <label class="block text-sm font-black text-slate-800 border-b border-slate-200 pb-2 mb-4">13. PENGAWAS / PJA <span class="text-red-500">*</span></label>
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        
+                        <!-- Layer 1 S1 -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-inner">
+                            <div class="flex justify-between items-center mb-3">
+                                <span class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-500"></span> Layer 1 (Shift 1)</span>
+                                <button type="button" onclick="addPjaRow('pja-layer1s1', 'Foreman')" class="text-[9px] bg-white border border-slate-300 px-2 py-1 rounded text-slate-600 hover:text-blue-600 hover:bg-slate-100 font-bold shadow-sm transition-all">+ Tambah Orang</button>
+                            </div>
+                            <div id="pja-layer1s1" class="space-y-2"></div>
+                        </div>
+
+                        <!-- Layer 1 S2 -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-inner">
+                            <div class="flex justify-between items-center mb-3">
+                                <span class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-700"></span> Layer 1 (Shift 2)</span>
+                                <button type="button" onclick="addPjaRow('pja-layer1s2', 'Foreman')" class="text-[9px] bg-white border border-slate-300 px-2 py-1 rounded text-slate-600 hover:text-blue-600 hover:bg-slate-100 font-bold shadow-sm transition-all">+ Tambah Orang</button>
+                            </div>
+                            <div id="pja-layer1s2" class="space-y-2"></div>
+                        </div>
+
+                        <!-- Layer 2 -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-inner">
+                            <div class="flex justify-between items-center mb-3">
+                                <span class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-amber-500"></span> Layer 2 (SPV)</span>
+                                <button type="button" onclick="addPjaRow('pja-layer2', 'Spv/Act Spv')" class="text-[9px] bg-white border border-slate-300 px-2 py-1 rounded text-slate-600 hover:text-amber-600 hover:bg-slate-100 font-bold shadow-sm transition-all">+ Tambah Orang</button>
+                            </div>
+                            <div id="pja-layer2" class="space-y-2"></div>
+                        </div>
+
+                        <!-- Layer 3 -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-inner">
+                            <div class="flex justify-between items-center mb-3">
+                                <span class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-purple-500"></span> Layer 3 (MCR)</span>
+                                <button type="button" onclick="addPjaRow('pja-layer3', 'Mcr')" class="text-[9px] bg-white border border-slate-300 px-2 py-1 rounded text-slate-600 hover:text-purple-600 hover:bg-slate-100 font-bold shadow-sm transition-all">+ Tambah Orang</button>
+                            </div>
+                            <div id="pja-layer3" class="space-y-2"></div>
+                        </div>
+
+                        <!-- Layer 4 -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-inner md:col-span-2 xl:col-span-1">
+                            <div class="flex justify-between items-center mb-3">
+                                <span class="text-[11px] font-bold text-slate-700 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-red-600"></span> Layer 4 (Manager)</span>
+                                <button type="button" onclick="addPjaRow('pja-layer4', 'Manager')" class="text-[9px] bg-white border border-slate-300 px-2 py-1 rounded text-slate-600 hover:text-red-600 hover:bg-slate-100 font-bold shadow-sm transition-all">+ Tambah Orang</button>
+                            </div>
+                            <div id="pja-layer4" class="space-y-2"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 14. Pemantauan -->
+                <div>
+                    <label class="block text-sm font-black text-slate-800 border-b border-slate-200 pb-2 mb-4">14. Pemantauan Pengawasan Berjarak <span class="text-red-500">*</span></label>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-slate-50 p-3 border border-slate-200 rounded-xl shadow-inner">
+                            <label class="block text-xs font-bold text-slate-600 mb-1.5 flex items-center gap-1.5"><i data-lucide="video" class="w-3 h-3"></i> Metode Pemantauan</label>
+                            <input type="text" id="in-jarak" value="CCTV Base Plant & HT Channel 2" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm">
+                        </div>
+                        <div class="bg-slate-50 p-3 border border-slate-200 rounded-xl shadow-inner">
+                            <label class="block text-xs font-bold text-slate-600 mb-1.5 flex items-center gap-1.5"><i data-lucide="image-plus" class="w-3 h-3"></i> Lampiran Foto (Opsional)</label>
+                            <input type="file" id="in-foto" accept="image/*" class="w-full border border-slate-300 rounded-lg bg-white text-xs file:mr-3 file:py-2 file:px-3 file:border-0 file:border-r file:border-slate-200 file:text-xs file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer shadow-sm">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tombol Aksi Modal -->
+        <div class="pt-4 border-t border-slate-200 flex justify-end gap-3 sticky bottom-0 bg-slate-50 py-4 z-20 shadow-[0_-10px_15px_-3px_rgba(248,250,252,1)]">
+            <button type="button" onclick="closeModal()" class="px-6 py-2.5 rounded-xl text-xs font-bold text-slate-600 bg-white border border-slate-300 hover:bg-slate-100 hover:text-slate-900 transition-colors shadow-sm outline-none">
+                Batal
+            </button>
+            <button type="submit" class="px-8 py-2.5 rounded-xl text-xs font-black text-white bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 shadow-md shadow-red-500/30 transform active:scale-95 transition-all flex items-center gap-2 outline-none">
+                <i data-lucide="save" class="w-4 h-4"></i>
+                Simpan Data DOP
+            </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const DEFAULT_FLEET = [
+      "BMO1-MTL-0009", "BMO1-MTL-0008", "BMO1-MTL-0007", "BMO1-MTL-0006",
+      "BMO1-MTL-0005", "BMO1-MTL-0004", "BMO1-MTL-0003", "BMO1-MTL-0035"
+    ];
+
+    let dopData = [];
+
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+    const nl2br = (str) => str ? escapeHtml(str).replace(/(?:\r\n|\r|\n)/g, '<br>') : '-';
+
+    const pendingRequests = new Map();
+    let nextRequestId = 0;
+    function requestParent(action, values = {}) {
+        const id = String(++nextRequestId);
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                pendingRequests.delete(id);
+                reject(new Error('Server tidak merespons. Coba muat ulang halaman DOP.'));
+            }, 20000);
+            pendingRequests.set(id, { resolve, reject, timeout });
+            window.parent.postMessage({ type: 'eloto-dop-request', id, action, ...values }, '*');
+        });
+    }
+
+    window.addEventListener('message', event => {
+        if (event.source !== window.parent) return;
+        if (event.data?.type === 'eloto-dop-start') {
+            loadDOPPlans();
+            return;
+        }
+        if (event.data?.type !== 'eloto-dop-response') return;
+        const pending = pendingRequests.get(event.data.id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        pendingRequests.delete(event.data.id);
+        if (event.data.success) pending.resolve(event.data.data);
+        else pending.reject(new Error(event.data.message || 'Permintaan DOP gagal.'));
+    });
+
+    function setDOPStatus(message, isError = false) {
+        const status = document.getElementById('dop-status');
+        status.textContent = message;
+        status.className = `text-xs font-semibold ${isError ? 'text-red-700' : 'text-slate-600'}`;
+    }
+
+    async function loadDOPPlans() {
+        setDOPStatus('Memuat data DOP dari server...');
+        try {
+            const result = await requestParent('list');
+            if (!Array.isArray(result)) throw new Error('Format data DOP dari server tidak valid.');
+            dopData = result;
+            renderTable();
+            setDOPStatus(`${dopData.length} data DOP tersinkron dengan server.`);
+        } catch (error) {
+            setDOPStatus(error.message, true);
+        }
+    }
+
+    // Helper untuk merender isi tiap kolom PJA (Nama, Jabatan, atau HP) terpisah baris per baris
+    const renderPjaCol = (arr, prop) => {
+        if (!arr || arr.length === 0) return '<div class="p-2 text-center text-slate-300">-</div>';
+        return arr.map(p => `<div class="p-1.5 border-b border-slate-300 last:border-0 whitespace-nowrap overflow-hidden text-ellipsis min-h-[30px] flex items-center">${escapeHtml(p[prop] || '-')}</div>`).join('');
+    };
+
+    function renderTable() {
+        const tbody = document.getElementById('table-body');
+        tbody.innerHTML = '';
+        
+        if (dopData.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="30" class="p-8 text-center text-slate-500 font-medium border border-slate-300">
+                        <div class="flex flex-col items-center justify-center gap-2">
+                            <i data-lucide="clipboard-x" class="w-10 h-10 text-slate-300"></i>
+                            <p>Belum ada data Rencana Operasi Harian (DOP).</p>
+                            <p class="text-xs text-slate-400">Silakan klik tombol <b class="text-red-500">+ Input DOP Baru</b> untuk menambahkan data.</p>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            if (window.lucide && typeof window.lucide.createIcons === 'function') {
+                lucide.createIcons();
+            }
+            return;
+        }
+        
+        dopData.forEach((item) => {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-amber-50/30 transition-colors border-b border-slate-400 group';
+            
+            const unitsText = item.fleetUnits && item.fleetUnits.length > 0 ? escapeHtml(item.fleetUnits.join(', ')) : '-';
+            const fotoBadge = item.foto ? `<br><span class="inline-flex mt-1 items-center gap-1 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[9px] border border-blue-200"><i data-lucide="image" class="w-3 h-3"></i> Ada Foto</span>` : '';
+            
+            let lotoBadge = '';
+            if(item.loto === 'Wajib LOTO') lotoBadge = `<div class="inline-block bg-red-100 border border-red-300 text-red-800 px-1.5 py-0.5 rounded text-[9px] font-black uppercase mt-1"><i data-lucide="lock" class="w-2.5 h-2.5 inline mb-0.5"></i> LOTO</div>`;
+            else if(item.loto === 'Terisolasi') lotoBadge = `<div class="inline-block bg-emerald-100 border border-emerald-300 text-emerald-800 px-1.5 py-0.5 rounded text-[9px] font-black uppercase mt-1"><i data-lucide="shield-check" class="w-2.5 h-2.5 inline mb-0.5"></i> Aman</div>`;
+
+            // Struktur HTML harus mencakup TEPAT 30 elemen <td> sesuai dokumen asli
+            tr.innerHTML = `
+                <!-- 1-13 Standard Cols -->
+                <td class="border border-slate-300 p-2 text-center font-bold align-top">
+                    ${escapeHtml(item.id)}
+                    <div class="mt-2"><button onclick="hapusItem(${item.id})" class="text-[9px] bg-red-50 text-red-500 border border-red-200 hover:bg-red-500 hover:text-white rounded px-1.5 py-0.5 w-full transition-colors shadow-sm">Hapus</button></div>
+                </td>
+                <td class="border border-slate-300 p-2 whitespace-nowrap">${escapeHtml(item.tanggal)}</td>
+                <td class="border border-slate-300 p-2 text-center">${escapeHtml(item.shift)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal"><b>${escapeHtml(item.aktivitas)}</b> ${lotoBadge}<br><span class="text-slate-500 italic text-[10px]">${item.keluhan ? `-${escapeHtml(item.keluhan)}` : ''}</span><br><span class="text-[9px] text-blue-600 block mt-1">${unitsText}</span></td>
+                <td class="border border-slate-300 p-2 text-center whitespace-normal">${escapeHtml(item.departemen)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal">${escapeHtml(item.lokasi)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal">${nl2br(item.tools)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal">${nl2br(item.hazard)}</td>
+                <td class="border border-slate-300 p-2 text-center whitespace-normal">${escapeHtml(item.goldenRules || '-')}</td>
+                <td class="border border-slate-300 p-2 text-center">${escapeHtml(item.sib)}</td>
+                <td class="border border-slate-300 p-2 text-center whitespace-normal">${escapeHtml(item.kritis)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal">${nl2br(item.ibpr)}</td>
+                <td class="border border-slate-300 p-2 whitespace-normal">${nl2br(item.jsa)}</td>
+                
+                <!-- 14. 15 Kolom PJA terpisah (5 Layer x 3 Props) -->
+                <!-- Layer 1 S1 -->
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer1s1, 'nama')}</td>
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer1s1, 'jabatan')}</td>
+                <td class="border border-slate-300 p-0 align-top font-mono text-[9px]">${renderPjaCol(item.pja.layer1s1, 'hp')}</td>
+                <!-- Layer 1 S2 -->
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer1s2, 'nama')}</td>
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer1s2, 'jabatan')}</td>
+                <td class="border border-slate-300 p-0 align-top font-mono text-[9px]">${renderPjaCol(item.pja.layer1s2, 'hp')}</td>
+                <!-- Layer 2 -->
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer2, 'nama')}</td>
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer2, 'jabatan')}</td>
+                <td class="border border-slate-300 p-0 align-top font-mono text-[9px]">${renderPjaCol(item.pja.layer2, 'hp')}</td>
+                <!-- Layer 3 -->
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer3, 'nama')}</td>
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer3, 'jabatan')}</td>
+                <td class="border border-slate-300 p-0 align-top font-mono text-[9px]">${renderPjaCol(item.pja.layer3, 'hp')}</td>
+                <!-- Layer 4 -->
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer4, 'nama')}</td>
+                <td class="border border-slate-300 p-0 align-top">${renderPjaCol(item.pja.layer4, 'jabatan')}</td>
+                <td class="border border-slate-300 p-0 align-top font-mono text-[9px]">${renderPjaCol(item.pja.layer4, 'hp')}</td>
+                
+                <!-- 15. Pemantauan & Status -->
+                <td class="border border-slate-300 p-2 whitespace-normal align-top">${nl2br(item.pemantauan)}${fotoBadge}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            lucide.createIcons();
+        }
+    }
+
+    function addPjaRow(containerId, defaultJabatan) {
+        const container = document.getElementById(containerId);
+        const div = document.createElement('div');
+        div.className = "flex items-start sm:items-center gap-1.5 bg-white p-2 rounded-md border border-slate-200 shadow-sm relative group pja-row animate-in fade-in zoom-in-95 duration-200";
+        div.innerHTML = `
+            <div class="flex-1 space-y-1.5 w-full">
+                <div class="relative">
+                    <i data-lucide="user" class="w-3.5 h-3.5 absolute left-2 top-2 text-slate-400"></i>
+                    <input type="text" placeholder="Nama Lengkap..." class="input-nama w-full pl-7 pr-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded focus:bg-white focus:ring-1 focus:ring-blue-400 outline-none transition-colors">
+                </div>
+                <div class="flex flex-col sm:flex-row gap-1.5">
+                    <div class="relative flex-1">
+                        <i data-lucide="briefcase" class="w-3.5 h-3.5 absolute left-2 top-2 text-slate-400"></i>
+                        <input type="text" value="${defaultJabatan}" class="input-jabatan w-full pl-7 pr-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded focus:bg-white focus:ring-1 focus:ring-blue-400 outline-none transition-colors">
+                    </div>
+                    <div class="relative flex-1">
+                        <i data-lucide="phone" class="w-3.5 h-3.5 absolute left-2 top-2 text-slate-400"></i>
+                        <input type="text" placeholder="No HP/WA..." class="input-hp w-full pl-7 pr-2 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded focus:bg-white focus:ring-1 focus:ring-blue-400 outline-none transition-colors">
+                    </div>
+                </div>
+            </div>
+            <button type="button" onclick="this.parentElement.remove()" class="mt-1 sm:mt-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors self-stretch sm:self-auto flex items-center justify-center border border-transparent hover:border-red-200">
+                <i data-lucide="trash" class="w-4 h-4"></i>
+            </button>
+        `;
+        container.appendChild(div);
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            lucide.createIcons({ root: div });
+        }
+    }
+
+    function extractPja(containerId) {
+        const container = document.getElementById(containerId);
+        const rows = container.querySelectorAll('.pja-row');
+        const data = [];
+        rows.forEach(row => {
+            const nama = row.querySelector('.input-nama').value.trim();
+            const jabatan = row.querySelector('.input-jabatan').value.trim();
+            const hp = row.querySelector('.input-hp').value.trim();
+            if(nama) data.push({ nama, jabatan, hp });
+        });
+        return data;
+    }
+
+    const modal = document.getElementById('modal-dop');
+    const modalContent = document.getElementById('modal-content');
+
+    function openModal() {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        
+        const cbContainer = document.getElementById("cb-unit-container");
+        if(cbContainer.innerHTML.trim() === "") {
+            DEFAULT_FLEET.forEach(unit => {
+                cbContainer.innerHTML += `
+                    <label class="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm group">
+                        <input type="checkbox" value="${unit}" class="cb-fleet w-4 h-4 text-red-600 rounded focus:ring-red-500 cursor-pointer accent-red-600 border-slate-300">
+                        <span class="text-[10px] font-bold font-mono text-slate-700 group-hover:text-red-700 transition-colors">${unit}</span>
+                    </label>
+                `;
+            });
+        }
+        
+        ['pja-layer1s1', 'pja-layer1s2', 'pja-layer2', 'pja-layer3', 'pja-layer4'].forEach(id => {
+            if(document.getElementById(id).innerHTML.trim() === "") {
+                const jabatans = {'pja-layer1s1':'Foreman', 'pja-layer1s2':'Foreman', 'pja-layer2':'Spv/Act Spv', 'pja-layer3':'Mcr', 'pja-layer4':'Manager'};
+                addPjaRow(id, jabatans[id]);
+            }
+        });
+
+        setTimeout(() => {
+            modal.classList.remove('opacity-0');
+            modalContent.classList.remove('scale-95');
+        }, 10);
+    }
+
+    function closeModal() {
+        modal.classList.add('opacity-0');
+        modalContent.classList.add('scale-95');
+        setTimeout(() => {
+            modal.classList.remove('flex');
+            modal.classList.add('hidden');
+            document.getElementById('form-dop').reset();
+            ['pja-layer1s1', 'pja-layer1s2', 'pja-layer2', 'pja-layer3', 'pja-layer4'].forEach(id => {
+                document.getElementById(id).innerHTML = "";
+            });
+        }, 200);
+    }
+
+    async function handleFormSubmit(e) {
+        e.preventDefault();
+        
+        let rawDate = document.getElementById('in-tanggal').value; // format YYYY-MM-DD
+        let formattedDate = rawDate;
+        if(rawDate) {
+            const dateObj = new Date(rawDate);
+            const formatter = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+            formattedDate = formatter.format(dateObj).replace(/ /g, '-');
+        }
+
+        const checkedFleets = Array.from(document.querySelectorAll('.cb-fleet:checked')).map(cb => cb.value);
+        const hasFoto = document.getElementById('in-foto').files.length > 0;
+
+        const newData = {
+            tanggal: formattedDate,
+            tanggalISO: rawDate,
+            shift: document.getElementById('in-shift').value,
+            aktivitas: document.getElementById('in-pekerjaan').value,
+            keluhan: document.getElementById('in-keluhan').value,
+            fleetUnits: checkedFleets,
+            departemen: document.getElementById('in-dept').value,
+            lokasi: document.getElementById('in-lokasi').value,
+            tools: document.getElementById('in-tools').value,
+            hazard: document.getElementById('in-hazard').value,
+            goldenRules: document.getElementById('in-gr').value,
+            sib: document.getElementById('in-sib').value,
+            kritis: document.getElementById('in-kritis').value, 
+            ibpr: document.getElementById('in-ibpr').value,
+            jsa: document.getElementById('in-jsa').value,
+            loto: document.getElementById('in-loto').value,
+            pemantauan: document.getElementById('in-jarak').value,
+            foto: hasFoto,
+            pja: {
+                layer1s1: extractPja('pja-layer1s1'),
+                layer1s2: extractPja('pja-layer1s2'),
+                layer2: extractPja('pja-layer2'),
+                layer3: extractPja('pja-layer3'),
+                layer4: extractPja('pja-layer4'),
+            }
+        };
+
+        setDOPStatus('Menyimpan DOP ke database...');
+        try {
+            const savedData = await requestParent('create', { data: newData });
+            dopData.unshift(savedData);
+            renderTable();
+            closeModal();
+            setDOPStatus('DOP berhasil disimpan dan tersinkron dengan server.');
+        } catch (error) {
+            setDOPStatus(error.message, true);
+        }
+    }
+
+    async function hapusItem(id) {
+        if(confirm(`Apakah Anda yakin ingin menghapus data DOP No.${id}?`)) {
+            setDOPStatus('Menghapus data DOP dari database...');
+            try {
+                await requestParent('delete', { idValue: id });
+                dopData = dopData.filter(d => d.id !== id);
+                renderTable();
+                setDOPStatus(`DOP No.${id} berhasil dihapus dari server.`);
+            } catch (error) {
+                setDOPStatus(error.message, true);
+            }
+        }
+    }
+
+  </script>
+</body>
+</html>

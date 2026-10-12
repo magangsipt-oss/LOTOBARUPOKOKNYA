@@ -21,12 +21,15 @@ export default function authorization(req, res, next) {
     if (req.method === 'PATCH' && route === `/commands/${box}/clear`) return next();
     return deny(res);
   }
+  if (route === '/dop-plans' && read && !['admin', 'pengawas'].includes(req.auth.role)) return deny(res);
   if (read) return next();
   const { role, user } = req.auth;
   if (route === '/users/logout' || route === '/users/password') return next();
   // Telemetry and counting are device-originated, even for administrators.
   if (/^\/boxes\/[^/]+\/(telemetry|state)$/.test(route) || route === '/logs/people-counting' || route === '/loto/presence') return deny(res);
   if (role === 'admin') return next();
+  if (role === 'pengawas' && /^\/dop-plans(?:\/[1-9]\d*)?$/.test(route) &&
+      ['POST', 'DELETE'].includes(req.method)) return next();
   if (req.method === 'PUT' && route === `/users/${user.sid}`) {
     // Profile edits cannot assign roles, badges or fingerprints.
     const keys = Object.keys(req.body || {});

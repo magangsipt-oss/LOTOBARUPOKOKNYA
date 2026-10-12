@@ -18,6 +18,7 @@ export default function Sidebar() {
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
+    navItems.push({ id: 'dop-plan', icon: 'fa-clipboard-list', label: 'DOP Plan' });
   }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') {
     navItems.push({ id: 'teknisi-tab', icon: 'fa-screwdriver-wrench', label: 'Laporan Servis' });
@@ -70,6 +71,9 @@ export default function Sidebar() {
               key={item.id}
               type="button"
               onClick={() => {
+                if (item.id === 'dop-plan') {
+                  window.dispatchEvent(new Event('eloto-open-dop-plan'));
+                }
                 if (item.subTab) {
                   window.dispatchEvent(new CustomEvent('eloto-set-subtab', { detail: { subTab: item.subTab } }));
                 }

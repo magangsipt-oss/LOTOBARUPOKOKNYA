@@ -11,6 +11,7 @@ ESP32 dan counting memakai header `X-Device-Id` dengan ID boks yang sudah terdaf
 ## Endpoint utama
 
 Semua path di tabel relatif terhadap `/api`. Pembacaan oleh pengguna web yang terautentikasi diizinkan oleh middleware; mutasi mengikuti role dan validasi controller.
+Sebelum menggunakan endpoint DOP pada deployment baru, jalankan `pnpm --dir backend migrate` untuk membuat tabel `dop_plans`.
 
 | Metode dan path | Fungsi / akses mutasi |
 | --- | --- |
@@ -31,6 +32,8 @@ Semua path di tabel relatif terhadap `/api`. Pembacaan oleh pengguna web yang te
 | `GET /supervisor/team` | Baca tim melalui query `supervisor_sid` dan `id_box` |
 | `POST /supervisor/team` | Simpan tim; admin atau pengawas dengan `supervisor_sid` sendiri |
 | `GET /maintenance`, `POST /maintenance` | Baca maintenance; tambah oleh admin, pengawas, atau teknisi |
+| `GET /dop-plans` | Daftar DOP tersimpan; pengguna web terautentikasi |
+| `POST /dop-plans`, `DELETE /dop-plans/:id` | Simpan/hapus DOP; admin atau pengawas |
 | `GET /refueling`, `POST /refueling/start` | Baca refueling; mulai melalui API oleh admin |
 | `PATCH /refueling/:id` | Akhiri refueling; admin |
 | `GET /stream` | Daftar stream dan status konfigurasi |

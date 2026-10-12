@@ -1,4 +1,4 @@
-import React, { useState, lazy, Suspense } from 'react';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
 import 'cropperjs/dist/cropper.css';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
@@ -13,6 +13,7 @@ const Supervisors = lazy(() => import('./pages/Supervisors'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Users = lazy(() => import('./pages/Users'));
 const BleTagManager = lazy(() => import('./pages/BleTagManager'));
+const DOPPlan = lazy(() => import('./pages/DOPPlan'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -146,6 +147,7 @@ function LoginForm() {
 /* ------------------------------------------------------------------ */
 function AppContent() {
   const { isLoggedIn, activeTab, sessionUser } = useAuth();
+  const [dopPlanVisited, setDopPlanVisited] = useState(false);
   const {
     toast, modalInfo, setModalInfo,
     showRadarModal, setShowRadarModal,
@@ -157,6 +159,12 @@ function AppContent() {
     hwData, handleProfilePhotoUpload, handleSelectBox,
     filteredBoxes, printActiveLog
   } = useApp();
+
+  useEffect(() => {
+    const markDOPPlanVisited = () => setDopPlanVisited(true);
+    window.addEventListener('eloto-open-dop-plan', markDOPPlanVisited);
+    return () => window.removeEventListener('eloto-open-dop-plan', markDOPPlanVisited);
+  }, []);
 
   if (!isLoggedIn) return <LoginForm />;
 
@@ -202,6 +210,13 @@ function AppContent() {
 
           {/* TAB: DASHBOARD (admin / pengawas) */}
           {activeTab === 'dashboard' && (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && <Dashboard />}
+
+          {/* TAB: DOP PLAN (admin / pengawas) */}
+          {dopPlanVisited && (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && (
+            <div className={activeTab === 'dop-plan' ? '' : 'hidden'}>
+              <DOPPlan />
+            </div>
+          )}
 
           {/* TAB: FORM LAPORAN SERVIS (teknisi) */}
           {activeTab === 'teknisi-tab' && (sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') && <Logs />}
