@@ -64,9 +64,10 @@ Ke SD Card: `/config.txt`
 
 ### Step 2: Upload Firmware ESP32
 1. Buka sketch aktif `esp32/ELOTO_FIXED/ELOTO_FIXED.ino` di Arduino IDE
-2. Pilih board: ESP32
-3. Klik **Upload**
-4. Tunggu sampai selesai
+2. Pilih board **ESP32 Dev Module**
+3. Buka **Tools → Partition Scheme** dan pilih **Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)**. Firmware melebihi ukuran partisi default 1.2MB; opsi ini menyediakan partisi aplikasi lebih besar dan tetap mempertahankan OTA. Foto/personel disimpan di SD card, bukan SPIFFS.
+4. Klik **Upload**
+5. Tunggu sampai selesai
 
 ### Step 3: Restart ESP32
 Setelah upload, restart ESP32.
@@ -74,17 +75,11 @@ Setelah upload, restart ESP32.
 ### Step 4: Verifikasi firmware dan sinkronisasi SD di Serial Monitor
 Pastikan firmware yang baru di-upload mencetak penanda berikut:
 ```
-[BUILD] ELOTO_FIXED AUTH=SD_PHOTO_FAT83_SID_CACHE_V15
+[BUILD] ELOTO_FIXED AUTH=GPS_EARLY_ACQUISITION_V27 SD_STARTUP_RETRY_V31 SD_HANDSHAKE_DIAG_V32 SD_RELAY_QUIESCE_V37 COUNTDOWN_DISPLAY_V37 LCD_PHOTO_COVER_V1
 ```
-Saat Wi-Fi tersambung, backend menjadi sumber verifikasi tap dan foto; data SD tidak boleh mengesahkan tap atau menggantikan foto backend. Cache SD tetap diperbarui agar dapat dipakai saat Wi-Fi terputus.
-Jika Wi-Fi benar-benar terputus, cache RAM/SD dapat dipakai sebagai mode offline. Jika Wi-Fi tersambung tetapi backend gagal, respons tidak valid, atau heap rendah, tap tidak dialihkan ke cache lokal.
-Kondisi low-heap tidak lagi memicu skip foto hanya karena nilai ambang 30k terlalu ketat; ambang sinkron foto kini dibuat lebih realistis agar foto tetap cache saat perangkat online dan tetap berfungsi di heap yang masih layak. SD hanya digunakan sebagai cache/backup dan tidak mengubah status online yang sudah valid.
+Saat online, backend memverifikasi kartu; cache lokal dipakai ketika Wi-Fi/backend tidak dapat dijangkau, tetapi kartu yang dinyatakan tidak terdaftar oleh backend tetap ditolak. Setelah personel dibuat/diubah dari dashboard, perintah `SYNC_USERS` meminta box menyinkronkan daftar dan foto secara langsung (poll hingga 3 detik); sinkronisasi berkala menjadi cadangan. Foto diunduh di task latar dan disimpan ke `/foto/<SID>.jpg` (atau nama berbasis UID), sehingga tapping tidak menunggu unduhan. Foto yang tersimpan dapat ditampilkan dan digunakan saat offline.
 Mount SD mencoba SPI 1 MHz, 400 kHz, lalu 100 kHz dan mencatat hasil setiap percobaan. Firmware tidak memformat kartu.
-Saat backend dan SD siap, alat memperbarui `users.csv` beserta foto personel berkartu dari backend.
-Cache foto dicoba terpisah dari penulisan `users.csv`; kegagalan staging daftar personel tidak lagi menghentikan permintaan foto. Foto disimpan memakai SID 5 karakter sebagai nama FAT 8.3 (`/foto/<SID>.jpg`) dengan file staging/cadangan pendek (`.TMP`/`.BAK`), sedangkan UID tetap digunakan untuk meminta foto dari backend. Backend juga mendukung berkas profil legacy `.jpeg` di `backend/legacy-uploads/user_profiles` selain `.jpg`, lalu mengirim hasil JPEG untuk setiap UID RFID. Periksa `[PHOTO_SYNC] Complete cached=... without_photo=... failed=...` dan folder `foto` untuk memastikan hasilnya.
-Sinkronisasi daftar diperiksa setiap 30 detik ketika online; foto yang tidak tersedia di backend
-dilaporkan sebagai `without_photo`, bukan dianggap foto berhasil disimpan. Serial Monitor harus
-menampilkan `[SD_SYNC] Cached ... registered cards to /users.csv` dan `[PHOTO_SYNC] Complete ...`.
+Saat backend dan SD siap, alat memperbarui `users.csv` dan menjadwalkan cache foto personel. Foto disimpan transaksional memakai SID valid sebagai nama FAT 8.3 (`/foto/<SID>.jpg`) dengan file staging/cadangan (`.TMP`/`.BAK`), sedangkan UID dipakai untuk meminta foto dari backend. LCD mengulang percobaan tampil tiap 10 detik selama foto belum berhasil dirender; file JPEG hingga 60 KB diterima. Periksa log `[PHOTO_SYNC] ... saved=1` dan folder `foto` untuk memastikan file berhasil disimpan. Tanpa SD yang terpasang dan dapat ditulis, cache foto offline tidak tersedia.
 Pesan `[SD] Read/write test passed` hanya memastikan tes dasar SD lulus; itu sendiri tidak
 membuktikan data dan foto berhasil tersinkron.
 Jangan membuat `users.csv` atau file `.TMP` secara manual. Jika sinkronisasi gagal,
@@ -92,6 +87,14 @@ simpan seluruh baris `[SD_SYNC]`, `[PHOTO_SYNC]`, `[SD_LOCK]`, dan pesan `[SD]` 
 Timeout `[SD_LOCK]` kini juga mencatat operasi pemegang lock dan durasi lock (`holder_operation`
 dan `held_ms`), termasuk nama operasi seperti `session-load`, `session-save`, `users-sync`,
 `offline-log-upload`, atau `photo-cache`, agar sumber kontensi SD dapat diidentifikasi tanpa menebak.
+Selama solenoid aktif, akses SD dihentikan sedangkan TFT tetap aktif menampilkan hitung mundur;
+layar juga tetap aktif selama jeda pemulihan SD 750 ms setelah relay mati. Relay hanya boleh aktif
+setelah mutex SD dan SPI berhasil diamankan. Setelah jeda, firmware membaca sektor SD sebelum
+membuka kembali akses SD. Periksa
+`[RELAY] Pulse started sd_quiesced=1` dan
+`[SD] Health check passed after relay pulse`; `[RELAY] Pulse cancelled` berarti relay sengaja
+tidak dijalankan karena bus belum aman. Jika perangkat reboot, simpan nilai `[BOOT] reset_reason`;
+reset brownout menandakan suplai daya perlu diperiksa, bukan diperbaiki hanya dengan perubahan kode.
 Penyimpanan sesi tidak lagi dipicu hanya oleh GPS mendapatkan fix (karena itu bukan perubahan sesi).
 Sinkronisasi personel mencoba file staging `/USERS.TMP`, `/U.TMP`, lalu `/foto/CACHE.TMP`;
 semua jalur staging punya pemulihan transaksi saat boot. Jika ketiganya gagal dibuka, log

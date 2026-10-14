@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 import userService from '../services/userService';
 import boxService from '../services/boxService';
+import commandService from '../services/commandService';
 import logService from '../services/logService';
 import api from '../services/api';
 import { useAuth } from './useAuth';
@@ -695,6 +696,21 @@ export function AppProvider({ children }) {
     finally { teamSavePendingRef.current = false; }
   };
 
+  const queuePersonnelSync = async (savedMessage) => {
+    const boxIds = [...new Set(boxes.map(box => String(box.id_box || box.id || '').trim()).filter(Boolean))];
+    if (boxIds.length === 0) {
+      pemicuToast(`${savedMessage} Belum ada boks untuk sinkronisasi SD.`, "ok");
+      return;
+    }
+    const results = await Promise.allSettled(boxIds.map(idBox => commandService.syncUsers(idBox)));
+    const failedCount = results.filter(result => result.status === 'rejected').length;
+    if (failedCount > 0) {
+      pemicuToast(`${savedMessage} Perintah sinkronisasi gagal untuk ${failedCount} dari ${boxIds.length} boks.`, "fail");
+    } else {
+      pemicuToast(`${savedMessage} Sinkronisasi kartu dan foto dikirim ke ${boxIds.length} boks.`, "ok");
+    }
+  };
+
   const handleIndukTambahUser = async (e) => {
     e.preventDefault();
     const cleanSid = formAdminNewUser.sid.replace(/[<>]/g, "").trim();
@@ -711,7 +727,7 @@ export function AppProvider({ children }) {
         setUserDatabase([...userDatabase, { ...hasil.data, role: normalizeUserRole(hasil.data.role) }]);
         setFormAdminNewUser({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
         setShowAddUserForm(false);
-        pemicuToast(` ✓ ${hasil.message || 'Karyawan didaftarkan'}`, "ok");
+        await queuePersonnelSync(`✓ ${hasil.message || 'Karyawan didaftarkan'}`);
       } else { pemicuToast(hasil.message, "fail"); }
     } catch { pemicuToast("Gagal mendaftarkan personel ke database!", "fail"); }
   };
@@ -761,7 +777,9 @@ export function AppProvider({ children }) {
         const dataUsers = resultUsers.data || resultUsers;
         const dataSteril = Array.isArray(dataUsers) ? dataUsers.map(u => ({ ...u, role: normalizeUserRole(u.role), rfidUid: u.rfid_uid || u.rfidUid || '', foto: u.foto || 'assets/default-avatar.png' })) : [];
         setUserDatabase(dataSteril);
-        pemicuToast(`Berhasil: ${suksesCount}; gagal/dilewati: ${jsonRows.length - suksesCount}. Impor wajib memiliki kolom password minimal 12 karakter.`, "ok");
+        const importMessage = `Berhasil: ${suksesCount}; gagal/dilewati: ${jsonRows.length - suksesCount}.`;
+        if (suksesCount > 0) await queuePersonnelSync(importMessage);
+        else pemicuToast(`${importMessage} Impor wajib memiliki kolom password minimal 12 karakter.`, "ok");
         e.target.value = '';
       } catch { pemicuToast("Gagal memproses berkas Excel!", "fail"); }
     };
@@ -786,7 +804,7 @@ export function AppProvider({ children }) {
         const fotoTerbaru = hasil.data?.profile_photo || hasil.foto || payloadUser.foto;
         setUserDatabase(prev => prev.map(u => u.sid === cleanSid ? { ...u, ...payloadUser, foto: fotoTerbaru } : u));
         setShowEditUserModal(false);
-        pemicuToast(` ✓ Data ${cleanNama} berhasil diperbarui!`, "ok");
+        await queuePersonnelSync(`✓ Data ${cleanNama} berhasil diperbarui!`);
       } else { pemicuToast(hasil.message || "Gagal memperbarui data personel!", "fail"); }
     } catch { pemicuToast("Gagal terhubung ke database!", "fail"); }
   };
@@ -929,7 +947,7 @@ export function AppProvider({ children }) {
 
   const isLiveTapPhotoVisible = isHwOnline &&
     !isSystemUidLocal(hwData.last_uid) &&
-    ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_WORKER_DETAIL'].includes(hwData.state);
+    ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_MEKANIK_IN', 'STATE_ALL_WORKERS_REGISTERED', 'STATE_WORKER_DETAIL'].includes(hwData.state);
 
   const filteredUsers = Array.isArray(userDatabase)
     ? userDatabase.filter(user => user.nama.toLowerCase().includes(adminSearchTerm.toLowerCase()) || user.sid.toLowerCase().includes(adminSearchTerm.toLowerCase()))

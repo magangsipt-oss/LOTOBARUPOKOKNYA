@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import sharp from 'sharp';
 import { rfidLookupCandidates, selectUniqueRfidMatch } from '../domain/rfid.js';
 import userController from '../controllers/userController.js';
 import pool from '../config/database.js';
@@ -61,7 +62,7 @@ test('card lookup prefers an exact 10-digit UID and never accepts a suffix colli
   }
 });
 
-test('photo endpoint serves legacy JPEG profile photos resolved by RFID UID', async () => {
+test('photo endpoint crops LCD JPEG photos to a square without changing the stored profile photo', async () => {
   const originalQuery = pool.query;
   pool.query = async (_sql, params) => params[0] === '3E0027D5B2'
     ? [[{
@@ -81,7 +82,7 @@ test('photo endpoint serves legacy JPEG profile photos resolved by RFID UID', as
   try {
     await userController.getPhoto({
       params: { uid: '3E0027D5B2' },
-      query: { size: '160', quality: '78' },
+      query: { size: '160', quality: '78', fit: 'cover' },
     }, response);
 
     assert.equal(response.statusCode, 200);
@@ -89,6 +90,9 @@ test('photo endpoint serves legacy JPEG profile photos resolved by RFID UID', as
     assert.ok(Buffer.isBuffer(response.body));
     assert.equal(response.body[0], 0xFF);
     assert.equal(response.body[1], 0xD8);
+    const dimensions = await sharp(response.body).metadata();
+    assert.equal(dimensions.width, 160);
+    assert.equal(dimensions.height, 160);
   } finally {
     pool.query = originalQuery;
   }

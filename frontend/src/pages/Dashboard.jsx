@@ -35,7 +35,7 @@ export default function Dashboard() {
 
   const isLiveTapPhotoVisible = isHwOnline &&
     !isSystemUid(hwData.last_uid) &&
-    ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_WORKER_DETAIL'].includes(hwData.state);
+    ['STATE_SUPERVISOR_VALID', 'STATE_SPV_OUT_CONFIRM', 'STATE_MECHANIC_VALID', 'STATE_MEKANIK_IN', 'STATE_ALL_WORKERS_REGISTERED', 'STATE_WORKER_DETAIL'].includes(hwData.state);
   const tapEventLabels = {
     SUPERVISOR_LOCK_IN: 'Pengawas masuk',
     SUPERVISOR_EXTRA_LOCK_IN: 'Pengawas tambahan masuk',

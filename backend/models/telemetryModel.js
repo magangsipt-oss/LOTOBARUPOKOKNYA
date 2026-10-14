@@ -41,10 +41,11 @@ export async function recordTelemetry(idBox, body) {
         supervisor_uid: body.supervisor_uid ?? box.supervisor_uid,
         active_fuelman: body.active_fuelman ?? box.active_fuelman
       };
-      await c.query(`UPDATE boxes SET state = ?, last_event = ?, last_uid = ?, lat = COALESCE(?, lat), lng = COALESCE(?, lng),
+      await c.query(`UPDATE boxes SET state = ?, last_event = IF(? = 'HEARTBEAT_SYNC', last_event, ?),
+        last_uid = IF(? = 'HEARTBEAT_SYNC', last_uid, ?), lat = COALESCE(?, lat), lng = COALESCE(?, lng),
         lcd0 = ?, lcd1 = ?, relay_open = ?, uptime_ms = ?, hw_data = ?, is_online = 1, ssid = ?, ip = ?,
         supervisor_uid = ?, active_fuelman = ?, last_ping = NOW(), updated_at = NOW() WHERE id_box = ?`,
-      [state, event, uid, lat, lng, body.lcd0 ?? box.lcd0, body.lcd1 ?? box.lcd1, body.relay_open == null ? box.relay_open : Number(Boolean(body.relay_open)),
+      [state, event, event, event, uid, lat, lng, body.lcd0 ?? box.lcd0, body.lcd1 ?? box.lcd1, body.relay_open == null ? box.relay_open : Number(Boolean(body.relay_open)),
         body.uptime_ms ?? box.uptime_ms, JSON.stringify(snapshot), body.ssid ?? box.ssid, body.ip ?? box.ip, snapshot.supervisor_uid, snapshot.active_fuelman, idBox]);
       if (body.queue) {
         await c.query('DELETE FROM queue WHERE id_box = ?', [idBox]);

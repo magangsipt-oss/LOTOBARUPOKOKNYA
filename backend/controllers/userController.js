@@ -186,9 +186,10 @@ const userController = {
       const uid = String(req.params.uid || '').trim();
       if (!uid) return res.status(400).send('UID wajib diisi');
 
-      // Parse ESP32 query params: ?size=150&quality=82
+      // Parse ESP32 query params: ?size=160&quality=78&fit=cover
       const size = Math.min(Math.max(parseInt(req.query.size, 10) || 512, 16), 2048);
       const quality = Math.min(Math.max(parseInt(req.query.quality, 10) || 82, 10), 100);
+      const fit = req.query.fit === 'cover' ? 'cover' : 'inside';
 
       const user = await findUserByRfid(uid) ||
         await UserModel.getBySid(uid);
@@ -238,9 +239,9 @@ const userController = {
         }
       }
 
-      // Resize with sharp using the requested size and quality, then send
+      // LCD requests use a square crop; other clients retain the original fit-inside behavior.
       const image = await sharp(resolvedPath, { limitInputPixels: 16000000 })
-        .resize(size, size, { fit: 'inside', withoutEnlargement: true })
+        .resize(size, size, { fit, withoutEnlargement: fit !== 'cover' })
         .jpeg({ quality })
         .toBuffer();
 

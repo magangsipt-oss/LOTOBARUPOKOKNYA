@@ -37,57 +37,122 @@ test('firmware keeps its device identity available and reloads SD config after a
   assert.match(source, /sdConfigReloadPending && sdCardMounted[\s\S]{0,500}loadConfigFromSD\(\)/);
 });
 
-test('firmware paints its boot screen before loading a saved SD session', () => {
+test('firmware renders the boot UI before starting SD maintenance and session recovery', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
   const setup = source.split('void setup() {', 2)[1].split('\nvoid loop()', 1)[0];
   const clearIndex = setup.indexOf('clearMainScreenArea();');
   const firstRenderIndex = setup.indexOf('drawScreen();');
   const renderIndex = setup.indexOf('drawScreen();', clearIndex);
-  const restoreTaskIndex = setup.indexOf('xTaskCreatePinnedToCore(bootSessionRestoreTask', renderIndex);
+  const maintenanceTaskIndex = setup.indexOf('xTaskCreatePinnedToCore(sdMaintenanceTask', renderIndex);
   const displayInitIndex = setup.indexOf('tft.init();');
-  const sdMountIndex = setup.indexOf('if (initializeSDCard())');
 
   assert.ok(clearIndex >= 0);
-  assert.ok(renderIndex > clearIndex && restoreTaskIndex > renderIndex);
-  assert.ok(displayInitIndex >= 0 && displayInitIndex < sdMountIndex);
-  assert.ok(firstRenderIndex >= displayInitIndex && firstRenderIndex < sdMountIndex);
-  assert.match(setup.slice(displayInitIndex, sdMountIndex), /currentState = STATE_WELCOME;[\s\S]*drawScreen\(\)/);
-  assert.doesNotMatch(setup, /loadSessionFromSD\(/);
+  assert.ok(renderIndex > clearIndex && maintenanceTaskIndex > renderIndex);
+  assert.ok(displayInitIndex >= 0 && displayInitIndex < firstRenderIndex);
+  assert.ok(firstRenderIndex >= displayInitIndex && firstRenderIndex < maintenanceTaskIndex);
+  assert.match(setup, /currentState = STATE_WELCOME;[\s\S]*drawScreen\(\)/);
+  assert.doesNotMatch(setup, /initializeSDCard\(\)|loadSessionFromSD\(/);
+  assert.ok(setup.indexOf('if (initializeSDCardAtStartup())') < setup.indexOf('tft.init();'));
   assert.match(source, /bool restored = loadSessionFromSD\(true\)/);
+  assert.match(setup, /bootRestoreDeadlineAt = millis\(\) \+ BOOT_SESSION_RESTORE_TIMEOUT_MS/);
   assert.match(setup.slice(clearIndex, renderIndex), /forceFullRedraw = true;[\s\S]*needsRedraw = true;/);
+});
+
+test('shared SPI pins and chip selects are initialized before the SD card is mounted', () => {
+  const source = readFileSync(fileURLToPath(
+    new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url)
+  ), 'utf8');
+  const setup = source.split('void setup() {', 2)[1].split('\nvoid loop()', 1)[0];
+  const init = source.split('bool initializeSDCard(uint32_t clockHz) {', 2)[1]
+    .split('\n// Confirm that the mounted filesystem', 1)[0];
+  const spiInit = source.split('bool beginSharedSPI() {', 2)[1]
+    .split('\n// Pasang SD', 1)[0];
+
+  assert.match(source, /#define SPI_SCK_PIN\s+18/);
+  assert.match(source, /#define SPI_MISO_PIN\s+19/);
+  assert.match(source, /#define SPI_MOSI_PIN\s+23/);
+  assert.match(source, /#define SD_CS_PIN\s+5/);
+  assert.match(setup, /releaseSpiChipSelects\(\);/);
+  assert.match(source, /void releaseSpiChipSelects\(\) \{[\s\S]*digitalWrite\(TFT_CS_PIN, HIGH\);[\s\S]*digitalWrite\(SD_CS_PIN, HIGH\);[\s\S]*digitalWrite\(TOUCH_CS_PIN, HIGH\);/);
+  assert.match(setup, /if \(initializeSDCardAtStartup\(\)\)[\s\S]{0,220}loadUsersToRAM\(\)[\s\S]{0,120}tft\.init\(\)/);
+  assert.ok(setup.indexOf('if (initializeSDCardAtStartup())') < setup.indexOf('tft.init();'));
+  assert.match(spiInit, /TFT_eSPI::getSPIinstance\(\)\.begin\(\s*SPI_SCK_PIN, SPI_MISO_PIN, SPI_MOSI_PIN, SD_CS_PIN/);
+  assert.match(spiInit, /if \(!TFT_eSPI::getSPIinstance\(\)\.begin/);
+  assert.match(init, /if \(!beginSharedSPI\(\)\)[\s\S]{0,100}return false/);
+  assert.match(init, /diagnoseSdSpiHandshake\(\);[\s\S]*SD\.begin\(/);
+  assert.match(source, /CMD0=0x%02X CMD8=0x%02X/);
+  assert.match(init, /SD\.begin\(\s*SD_CS_PIN, TFT_eSPI::getSPIinstance\(\), clockHz/);
+  assert.match(init, /MAX_MOUNT_ROUNDS = 3/);
+  assert.doesNotMatch(init, /for \(uint8_t speed/);
+});
+
+test('firmware restores one-time SD startup settling without slowing mount retries', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const init = source.split('bool initializeSDCard(uint32_t clockHz) {', 2)[1]
+    .split('\n// Confirm that the mounted filesystem', 1)[0];
+
+  assert.match(init, /static bool startupSettlingDone = false/);
+  assert.match(init, /if \(!startupSettlingDone\) \{\s*delay\(600\);\s*startupSettlingDone = true;\s*\}/);
+  assert.match(init, /SD\.end\(\);[\s\S]*clockSdBusIdle\(\);[\s\S]*delay\(round == 0 \? 100 : 300\);/);
+  assert.match(source, /SD_STARTUP_RETRY_V31/);
+});
+
+test('firmware retries all known SD clocks before initializing the display', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const startup = source.split('bool initializeSDCardAtStartup() {', 2)[1]
+    .split('\n// Confirm that the mounted filesystem', 1)[0];
+  const setup = source.split('void setup() {', 2)[1].split('\nvoid loop()', 1)[0];
+
+  assert.match(startup, /const uint32_t mountSpeeds\[\] = \{ 1000000, 400000, 100000 \}/);
+  assert.match(startup, /for \(uint32_t clockHz : mountSpeeds\)[\s\S]*initializeSDCard\(clockHz\)/);
+  assert.ok(setup.indexOf('initializeSDCardAtStartup()') < setup.indexOf('tft.init();'));
+});
+
+test('mounted SD health checks use raw sector reads instead of heap-allocating root opens', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const probe = source.split('bool probeMountedSDCard() {', 2)[1]
+    .split('\nvoid sdMaintenanceTask', 1)[0];
+
+  assert.match(probe, /static uint8_t sectorZero\[512\]/);
+  assert.match(probe, /SD\.readRAW\(sectorZero, 0\)/);
+  assert.doesNotMatch(probe, /SD\.open\("\/"\)/);
+  assert.match(probe, /Presence read failed card_type=%u free_heap=%u largest_block=%u/);
 });
 
 test('firmware abandons a stalled boot SD session restore and enters the UI', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
   const restore = source.split('bool loadSessionFromSD(bool bootRestore) {', 2)[1]
-    .split('\nvoid bootSessionRestoreTask', 1)[0];
+    .split('\nvoid loadUsersToRAM', 1)[0];
   const loop = source.split('void loop() {', 2)[1].split('\n// Susun dua baris status', 1)[0];
 
   assert.match(source, /BOOT_SESSION_RESTORE_TIMEOUT_MS\s*=\s*5000/);
-  assert.match(restore, /mayApply = bootRestoreStage == BOOT_RESTORE_READING/);
+  assert.match(restore, /mayApply = !bootRestore \|\|[\s\S]{0,100}bootRestoreStage == BOOT_RESTORE_READING/);
   assert.match(loop, /BOOT_RESTORE_READING[\s\S]*BOOT_SESSION_RESTORE_TIMEOUT_MS[\s\S]*BOOT_RESTORE_ABANDONED/);
-  assert.match(loop, /const bool bootRestoreBusy = bootRestoreStage == BOOT_RESTORE_READING/);
-  assert.match(loop, /if \(needsRedraw && bootRestoreStage != BOOT_RESTORE_APPLYING\)/);
-  assert.match(loop, /if \(bootRestoreBusy\) \{\s*activeKeyRegistered = KEY_NONE/);
-  assert.match(loop, /if \(bootRestoreBusy\) clearRfidBuffer\(\)/);
-  assert.doesNotMatch(loop, /bootRestoreBusy[\s\S]{0,120}delay\(1\);\s*return/);
+  assert.match(loop, /currentDebouncedKey != KEY_NONE[\s\S]{0,150}bootSessionUserInput = true/);
+  assert.match(loop, /bootRestoreStage = BOOT_RESTORE_ABANDONED/);
+  assert.match(restore, /bootRestoreStage = BOOT_RESTORE_APPLYING/);
 });
 
-test('failed boot-time SD mount retries without blocking the main loop for 30 seconds', () => {
+test('unavailable SD retries in the maintenance task with capped backoff', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
-  const retryTask = source.split('void sdMountRetryTask(void *pvParameters) {', 2)[1].split('\n// PEMUATAN KONFIGURASI', 1)[0];
-  assert.match(retryTask, /uint32_t retryDelayMs = 250/);
-  assert.match(retryTask, /vTaskDelay\(pdMS_TO_TICKS\(retryDelayMs\)\)/);
-  assert.match(retryTask, /initializeSDCard\(\)/);
-  assert.match(retryTask, /sdConfigReloadPending = true/);
-  assert.match(retryTask, /retryDelayMs = 5000/);
-  assert.match(retryTask, /vTaskDelete\(NULL\)/);
-  assert.match(retryTask, /const bool mounted = initializeSDCard\(\);\s*xSemaphoreGive\(sdMutex\);\s*if \(mounted\)[\s\S]{0,220}vTaskDelete\(NULL\)/);
+  const maintenanceTask = source.split('void sdMaintenanceTask(void *unused) {', 2)[1]
+    .split('\n// Pilih font TFT', 1)[0];
+  const loop = source.split('void loop() {', 2)[1].split('\n// Susun dua baris status', 1)[0];
+  assert.match(maintenanceTask, /uint32_t retryDelayMs = 250/);
+  assert.match(maintenanceTask, /vTaskDelay\(pdMS_TO_TICKS\(50\)\)/);
+  assert.match(maintenanceTask, /initializeSDCard\(mountSpeeds\[mountSpeedIndex\]\)/);
+  assert.match(maintenanceTask, /mountSpeedIndex = \(mountSpeedIndex \+ 1\)/);
+  assert.match(maintenanceTask, /retryDelayMs = min\(retryDelayMs \* 2, 30000UL\)/);
+  assert.match(maintenanceTask, /sdMaintenanceBusy = true/);
+  assert.match(maintenanceTask, /sdMaintenanceBusy = false/);
+  assert.doesNotMatch(loop, /initializeSDCard\(\)|probeMountedSDCard\(\)/);
   assert.doesNotMatch(source, /lastSdRecheck/);
-  assert.match(source, /millis\(\) - lastWifiCheckTask > 1000/);
 });
 
 test('firmware loads indexed Wi-Fi profiles and rotates after a connection timeout', () => {
@@ -187,22 +252,28 @@ test('firmware screen redraw preserves updates that arrive while the TFT is bein
 test('firmware countdown is timer-driven and keeps the main loop responsive', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
-  const countdown = source.split('void serviceCountdown() {', 2)[1].split('\nvoid clearMainScreenArea', 1)[0];
+  const countdown = source.split('void serviceCountdown() {', 2)[1].split('\n// Jalankan pilihan tombol footer', 1)[0];
   const footerActions = source.split('void executeFooterChoice() {', 2)[1].split('\nvoid executeSystemAction', 1)[0];
+  const loop = source.split('void loop() {', 2)[1].split('\n// Susun dua baris status', 1)[0];
 
-  assert.match(source, /void startCountdown\(bool closingSession\)/);
+  assert.match(source, /void beginCountdown\(bool closingSession, uint32_t initialDelayMs = 0\)/);
   assert.match(source, /void serviceCountdown\(\)/);
   assert.match(countdown, /countdownNextAt/);
-  assert.match(countdown, /elapsedTicks >= countdownValue/);
-  assert.match(countdown, /saveSessionToSD\(\)/);
-  assert.match(countdown, /maintenanceCleanupPending = true/);
+  assert.match(countdown, /notificationMessage = "0";\s*needsRedraw = true;/);
+  assert.match(countdown, /countdownPhase = COUNTDOWN_ZERO_HOLD;\s*countdownNextAt = millis\(\) \+ 500;/);
+  assert.ok(countdown.indexOf('countdownPhase = COUNTDOWN_ZERO_HOLD;') <
+    countdown.indexOf('currentState = STATE_WAIT_SPV_IN;'));
+  assert.ok(countdown.indexOf('countdownPhase = COUNTDOWN_ZERO_HOLD;') <
+    countdown.indexOf('currentState = STATE_MAINTENANCE_DONE;'));
+  assert.match(countdown, /COUNTDOWN_EXIT_SCREEN_HOLD/);
+  assert.doesNotMatch(countdown, /\b(for|while)\s*\(/);
   assert.doesNotMatch(footerActions, /for \(int detik = 10/);
   assert.doesNotMatch(footerActions, /saveSessionToSDNow\(\)/);
   assert.doesNotMatch(footerActions, /serviceDelay\(/);
-  assert.match(source, /NOTIFICATION_SUCCESS_DURATION = 250/);
-  assert.match(source, /NOTIFICATION_ERROR_DURATION\s+= 300/);
-  assert.match(source, /serviceCountdown\(\);/);
-  assert.match(source, /if \(countdownActive\) \{\s*deferredKeyAction = KEY_NONE;\s*currentDebouncedKey = KEY_NONE;/);
+  assert.match(loop, /getDebouncedKey\(\)/);
+  assert.ok(loop.indexOf('getDebouncedKey()') < loop.indexOf('serviceCountdown();'));
+  assert.match(loop, /serviceCountdown\(\);/);
+  assert.match(loop, /if \(countdownPhase != COUNTDOWN_IDLE(?: \|\| sdMaintenanceBusy)?\) \{\s*clearRfidBuffer\(\);/);
 });
 
 test('tap notices redraw the active screen without first clearing the full LCD', () => {
@@ -246,13 +317,17 @@ test('firmware only offers card registration on welcome and returns from other s
   const supervisorValid = drawScreen
     .split('else if (currentState == STATE_SUPERVISOR_VALID) {', 2)[1]
     .split('\n    else if (currentState == STATE_SET_MEKANIK_COUNT)', 1)[0];
+  const supervisorIdentity = source
+    .slice(source.lastIndexOf('void drawSupervisorIdentityScreen('))
+    .split('\n}', 1)[0];
   const showIpAction = source
     .split('} else if (currentState == STATE_SHOW_IP) {', 2)[1]
     .split('} else if (currentState == STATE_SYSTEM_READY)', 1)[0];
 
   assert.equal((drawScreen.match(/drawTftFooter\("DAFTAR KARTU"/g) || []).length, 1);
   assert.match(drawScreen, /if \(currentState == STATE_WELCOME\)[\s\S]*drawTftFooter\("DAFTAR KARTU", "LANJUT"\)/);
-  assert.match(supervisorValid, /drawTftFooter\("KEMBALI", "LANJUT"\)/);
+  assert.match(supervisorValid, /drawSupervisorIdentityScreen\(spvNameDisp, spvSidDisp, spvUidDisp, false\)/);
+  assert.match(supervisorIdentity, /drawTftFooter\("KEMBALI", "LANJUT"\)/);
   const workerDetailScreen = drawScreen
     .split('else if (currentState == STATE_WORKER_DETAIL && safetyQueue.topIndex >= 0) {', 2)[1]
     .split('\n    else if (currentState == STATE_GEOFENCE)', 1)[0];
@@ -342,6 +417,50 @@ test('firmware sync keeps the registered-card cache intact when the server respo
   assert.doesNotMatch(loadUsers, /vTaskDelay/);
 });
 
+test('personnel and photo SD sync remains pending until both caches are written', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const sync = source.split('bool syncDatabaseToSDCard() {', 2)[1]
+    .split('\nbool syncPersonnelPhotosToSDCard', 1)[0];
+  const photoSync = source.slice(source.lastIndexOf('bool syncPersonnelPhotosToSDCard('))
+    .split('\n// Cari personel berdasarkan UID di berkas SD', 1)[0];
+  const worker = source.split('void sdStorageWorkerTask(void *unused) {', 2)[1]
+    .split('\n// Pembacaan kartu instan', 1)[0];
+
+  assert.match(sync, /sdSyncOk = synced && photosSynced/);
+  assert.doesNotMatch(sync, /sdSyncOk = synced;\s*return sdSyncOk/);
+  assert.match(worker, /if \(!synced\) startupSyncPending = true/);
+  assert.match(source, /MIN_HEAP_TO_QUEUE_PERSONNEL_SYNC = 14000/);
+  assert.match(photoSync, /MIN_PHOTO_SYNC_HEAP = 12000/);
+});
+
+test('relay pulses block SD traffic while preserving countdown display and delaying recovery', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const beginPulse = source.split('bool beginRelayPulse() {', 2)[1]
+    .split('\nvoid endRelayPulse()', 1)[0];
+  const endPulse = source.split('void endRelayPulse() {', 2)[1]
+    .split('\nvoid clockSdBusIdle()', 1)[0];
+  const maintenance = source.split('void sdMaintenanceTask(void *unused) {', 2)[1]
+    .split('\n// Pilih font TFT', 1)[0];
+
+  assert.match(beginPulse, /xSemaphoreTake\(sdMutex, pdMS_TO_TICKS\(1000\)\)/);
+  assert.match(beginPulse, /xSemaphoreTakeRecursive\(spiBusMutex, pdMS_TO_TICKS\(1000\)\)/);
+  assert.ok(beginPulse.indexOf('relayPulseActive = true') < beginPulse.indexOf('digitalWrite(PIN_RELAY, HIGH)'));
+  assert.ok(beginPulse.indexOf('Pulse cancelled; SD lock timeout') < beginPulse.indexOf('digitalWrite(PIN_RELAY, HIGH)'));
+  assert.match(source, /if \(sdMaintenanceBusy\).*SpiBusGuard guard; if \(sdMaintenanceBusy\)/);
+  assert.doesNotMatch(source, /if \(sdMaintenanceBusy \|\| (?:relayPulseActive|sdRecoveryRequested)/);
+  const drawScreen = source.split('void drawScreen() {', 2)[1];
+  assert.match(drawScreen, /else if \(currentState == STATE_COUNTDOWN\)[\s\S]{0,1200}tft\.drawString\(notificationMessage/);
+  assert.match(source, /relayPulseActive \|\| \(sdRecoveryRequested && !isPresenceProbe\)/);
+  assert.match(endPulse, /digitalWrite\(PIN_RELAY, LOW\);[\s\S]*relayPulseActive = false;[\s\S]*sdRecoveryNotBefore = millis\(\) \+ 750;[\s\S]*sdRecoveryRequested = true/);
+  assert.match(maintenance, /requestedRecovery && int32_t\(now - sdRecoveryNotBefore\) < 0/);
+  assert.match(maintenance, /sdCardMounted && !relayPulseActive &&\s*\(requestedRecovery \|\| int32_t\(now - nextProbeAt\) >= 0\)/);
+  assert.match(maintenance, /!relayPulseActive && !sdCardMounted &&\s*int32_t\(now - nextMountAt\) >= 0/);
+  assert.match(maintenance, /requestedRecovery \|\| int32_t\(now - nextProbeAt\) >= 0/);
+  assert.match(source, /if \(!beginRelayPulse\(\)\) \{[\s\S]{0,180}buzzFailed\(\);/);
+});
+
 test('supervisor confirmation keeps the continue prompt without mentioning mechanic count', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
@@ -353,16 +472,22 @@ test('supervisor confirmation keeps the continue prompt without mentioning mecha
   const supervisorScreen = drawScreen
     .split('else if (currentState == STATE_SUPERVISOR_VALID) {', 2)[1]
     .split('\n    else if', 1)[0];
+  const supervisorIdentity = source
+    .slice(source.lastIndexOf('void drawSupervisorIdentityScreen('))
+    .split('\n}', 1)[0];
   const mechanicCompletionScreen = drawScreen
     .split('else if (currentState == STATE_ALL_WORKERS_REGISTERED) {', 2)[1]
     .split('\n    else if', 1)[0];
 
-  assert.match(supervisorScreen, /drawString\("TEKAN LANJUT"/);
+  assert.match(supervisorScreen, /drawSupervisorIdentityScreen\(spvNameDisp, spvSidDisp, spvUidDisp, false\)/);
+  assert.match(supervisorIdentity, /drawTftFooter\("KEMBALI", "LANJUT"\)/);
   assert.doesNotMatch(supervisorScreen, /LALU PILIH JUMLAH MEKANIK/);
   assert.match(disabledTapGate, /buzzFailed\(\);/);
   assert.doesNotMatch(disabledTapGate, /displayTapGateNotice/);
-  assert.match(mechanicCompletionScreen, /drawPhotoFromAPI\(lastWorker\.uid, 20, 92, 150, 150, false\)/);
-  assert.match(mechanicCompletionScreen, /drawPhotoFromAPI\(lastWorker\.sid, 20, 92, 150, 150, false\)/);
+  assert.match(mechanicCompletionScreen, /lastMechanicIndex = i/);
+  assert.match(mechanicCompletionScreen, /drawPhotoWithNoPhotoFallback\(\s*lastMechanic\.uid, 20, 94, 160, 160, lastMechanic\.sid/);
+  assert.match(mechanicCompletionScreen, /drawTextFit\("TOTAL: " \+ String\(totalMekanik\) \+ " MEKANIK", 190, 204, 260/);
+  assert.doesNotMatch(mechanicCompletionScreen, /drawString\("TOTAL:/);
   assert.match(mechanicCompletionScreen, /JABATAN  : MEKANIK/);
 });
 
@@ -452,4 +577,17 @@ test('firmware keypad ADC classification covers the noisy gaps between key volta
   assert.match(source, /analogReadResolution\(12\)/);
   assert.match(source, /analogSetPinAttenuation\(PIN_AD_KEY, ADC_11db\)/);
   assert.match(classifier, /\[KEYPAD\] adc=%d key=%u/);
+});
+
+test('firmware services keypad input before potentially blocking loop work and logs loop gaps', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const setup = source.split('void setup() {', 2)[1].split('\nvoid loop()', 1)[0];
+  const loop = source.split('void loop() {', 2)[1].split('\nvoid getLcdText', 1)[0];
+
+  assert.match(setup, /analogReadResolution\(12\)/);
+  assert.match(setup, /analogSetPinAttenuation\(PIN_AD_KEY, ADC_11db\)/);
+  assert.ok(loop.indexOf('uint8_t currentDebouncedKey = getDebouncedKey();') <
+    loop.indexOf('server.handleClient();'));
+  assert.match(loop, /\[INPUT\] loop_gap_ms=%u state=%s/);
 });

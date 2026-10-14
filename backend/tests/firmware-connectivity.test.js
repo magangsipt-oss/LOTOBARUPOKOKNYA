@@ -20,8 +20,9 @@ test('firmware separates Wi-Fi IP display from backend availability and retries 
   assert.doesNotMatch(firmware, /loadConfigFromSD/);
   const setup = firmware.split('void setup() {', 2)[1].split('\n// Jalankan layanan input', 1)[0];
   assert.doesNotMatch(setup, /loadConfigFromSD/);
-  assert.match(setup, /xTaskCreatePinnedToCore\(sdMountTask, "SDMount", 8192, NULL, 1,\s*&sdMountTaskHandle, 0\)/);
+  assert.match(setup, /xTaskCreatePinnedToCore\(sdMaintenanceTask, "SDMaintenance", 8192,\s*NULL, 1, &sdMaintenanceTaskHandle, 1\)/);
   assert.doesNotMatch(setup, /initializeSDCard\(\)/);
+  assert.ok(setup.indexOf('if (initializeSDCardAtStartup())') < setup.indexOf('tft.init();'));
   const wifiConnect = firmware.split('bool tryConnectBestWifi() {', 2)[1].split('\n// Pastikan host merespons', 1)[0];
   assert.match(wifiConnect, /WiFi\.begin\(wifi_ssid\.c_str\(\), wifi_password\.c_str\(\)\)/);
   assert.match(wifiConnect, /WiFi\.status\(\) == WL_CONNECTED && WiFi\.localIP\(\)\.toString\(\) != "0\.0\.0\.0"/);
@@ -50,7 +51,7 @@ test('GPS receiver starts before SD work and retries only when its AT/GNSS respo
   const setup = firmware.split('void setup() {', 2)[1].split('\n// Jalankan layanan input', 1)[0];
   const serialStart = setup.indexOf('gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX)');
   const taskStart = setup.indexOf('xTaskCreatePinnedToCore(gpsInitTask, "GPSInit"');
-  const sdStart = setup.indexOf('if (initializeSDCard())');
+  const sdStart = setup.indexOf('xTaskCreatePinnedToCore(sdMaintenanceTask, "SDMaintenance"');
   const atCommand = firmware.split('bool kirimPerintahAT(const char* perintah, unsigned long tunggu) {', 2)[1]
     .split('\n// Inisialisasi modem GPS', 1)[0];
   const init = firmware.split('void initGpsModule() {', 2)[1].split('\n// Pulihkan koneksi GPS', 1)[0];
@@ -121,27 +122,27 @@ test('dashboard refreshes the timer from the live device even while telemetry sa
   assert.match(boxController, /session_elapsed_ms: Number\.isSafeInteger\(status\.session_elapsed_ms\)/);
 });
 
-test('SD mount and session restore run outside the input loop and stay retryable', () => {
+test('SD mount and health probes run outside the responsive input loop', () => {
   const loop = firmware.split('void loop() {', 2)[1].split('\nvoid getLcdText', 1)[0];
   const setup = firmware.split('void setup() {', 2)[1].split('\nvoid loop()', 1)[0];
-  const mountTask = firmware.split('void sdMountTask(void *unused) {', 2)[1]
-    .split('\n// Muat daftar personel SD ke cache RAM', 1)[0];
+  const mountTask = firmware.split('void sdMaintenanceTask(void *unused) {', 2)[1]
+    .split('\n// Pilih font TFT', 1)[0];
   const keypad = loop.split('uint8_t currentDebouncedKey = getDebouncedKey();', 2)[1]
     .split('// Auto-Online Recovery', 1)[0];
 
-  assert.match(setup, /xTaskCreatePinnedToCore\(sdMountTask, "SDMount"/);
+  assert.match(setup, /xTaskCreatePinnedToCore\(sdMaintenanceTask, "SDMaintenance"/);
   assert.doesNotMatch(setup, /initializeSDCard\(\)/);
-  assert.match(mountTask, /bool mounted = false;[\s\S]{0,180}mounted = initializeSDCard\(\)/);
-  assert.match(mountTask, /if \(mounted\) \{\s*sdCardMounted = true;\s*sdCardStatusOk = true;\s*sdProbeLockMisses = 0;\s*loadUsersToRAM\(\)/);
-  assert.match(mountTask, /bootRestoreStage == BOOT_RESTORE_READING && !bootSessionUserInput/);
-  assert.match(loop, /if \(!sdCardMounted && !sdMountInProgress/);
-  assert.match(loop, /xTaskCreatePinnedToCore\(sdMountTask, "SDMount"/);
+  assert.match(mountTask, /mounted = initializeSDCard\(mountSpeeds\[mountSpeedIndex\]\)/);
+  assert.match(mountTask, /probeMountedSDCard\(\)/);
+  assert.match(mountTask, /loadUsersToRAM\(\)/);
+  assert.match(mountTask, /bootRestoreStage == BOOT_RESTORE_WAITING/);
+  assert.match(mountTask, /retryDelayMs = min\(retryDelayMs \* 2, 30000UL\)/);
+  assert.match(setup, /drawScreen\(\);[\s\S]{0,250}xTaskCreatePinnedToCore\(sdMaintenanceTask/);
+  assert.doesNotMatch(loop, /initializeSDCard\(\)|probeMountedSDCard\(\)/);
   assert.doesNotMatch(loop, /initializeSDCard\(\)/);
   assert.match(keypad, /bootSessionUserInput = true/);
   assert.match(keypad, /bootRestoreStage = BOOT_RESTORE_ABANDONED/);
-  assert.doesNotMatch(keypad, /if \(bootRestoreBusy\)/);
-  assert.ok(loop.indexOf('uint8_t currentDebouncedKey = getDebouncedKey();') <
-    loop.indexOf('if (needsRedraw && bootRestoreStage'));
+  assert.ok(loop.indexOf('getDebouncedKey()') < loop.indexOf('serviceCountdown();'));
 });
 
 test('BLE snapshots report backend delivery and boot diagnostics without allocating under the scan lock', () => {

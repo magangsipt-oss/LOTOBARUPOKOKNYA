@@ -79,7 +79,24 @@ test('GPS without fix preserves coordinates and session start is serialized on t
   assert.match(state.queries[0][0],/FOR UPDATE/);
   const update=state.queries.find(([s])=>s.startsWith('UPDATE boxes SET state'));
   assert.equal(update[1][0],'STATE_SET_MEKANIK_COUNT');
-  assert.equal(update[1][3],null);assert.match(update[0],/COALESCE\(\?, lat\)/);
+  assert.equal(update[1][5],null);assert.match(update[0],/COALESCE\(\?, lat\)/);
+});
+test('heartbeat refreshes device status without replacing the last card tap', async () => {
+  const state = telemetryFixture();
+  await recordTelemetry('box-1', {
+    event_id: 'heartbeat-after-tap',
+    event: 'HEARTBEAT_SYNC',
+    uid: '---',
+    state: 'STATE_SUPERVISOR_VALID',
+    gps_fix: false
+  });
+  const update = state.queries.find(([sql]) => sql.startsWith('UPDATE boxes SET state'));
+  assert.match(update[0], /last_event = IF\(\? = 'HEARTBEAT_SYNC', last_event, \?\)/);
+  assert.match(update[0], /last_uid = IF\(\? = 'HEARTBEAT_SYNC', last_uid, \?\)/);
+  assert.deepEqual(update[1].slice(1, 5), [
+    'HEARTBEAT_SYNC', 'HEARTBEAT_SYNC', 'HEARTBEAT_SYNC', '---'
+  ]);
+  assert.equal(state.queries.some(([sql]) => sql.startsWith('INSERT INTO tapping_history')), false);
 });
 test('repeated supervisor lock-in stays in the active session instead of creating another history session',async()=>{
   const activeBox={...box,active_session_id:4,session_counter:4};
@@ -107,7 +124,7 @@ test('device health snapshot persists SD sync and BLE scanner status', async () 
     session_elapsed_ms: 90000
   });
   const update = state.queries.find(([sql]) => sql.startsWith('UPDATE boxes SET state'));
-  const snapshot = JSON.parse(update[1][9]);
+  const snapshot = JSON.parse(update[1][11]);
   assert.deepEqual({
     gps_fix: snapshot.gps_fix,
     sd_card_ok: snapshot.sd_card_ok,
