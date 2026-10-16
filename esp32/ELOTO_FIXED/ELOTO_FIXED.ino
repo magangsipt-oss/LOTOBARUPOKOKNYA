@@ -14,6 +14,7 @@
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
+#include <time.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <FS.h>
@@ -86,6 +87,54 @@ String wifi_ssid        = "vivoV29";
 String wifi_password    = "112233445566";
 String server_host      = eloto::DEFAULT_SERVER_BASE;
 const char* SERVER_PROJECT_PATH  = "";
+const char *server_ca = eloto::DEFAULT_SERVER_CA;
+
+bool systemClockReady() {
+    return time(nullptr) >= 1760000000;
+}
+
+using ElotoSecureClient = WiFiClientSecure;
+
+class ServerHttpClient {
+    ElotoSecureClient secureClient;
+    HTTPClient request;
+
+public:
+    ServerHttpClient() {
+        secureClient.setCACert(server_ca);
+    }
+
+    bool begin(const String &url) {
+        request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+        if (!url.startsWith("https://") || !systemClockReady()) return false;
+        return request.begin(secureClient, url);
+    }
+
+    template <typename Name, typename Value>
+    void addHeader(const Name &name, const Value &value) {
+        request.addHeader(name, value);
+    }
+
+    void collectHeaders(const char *headerKeys[], size_t headerKeysCount) {
+        request.collectHeaders(headerKeys, headerKeysCount);
+    }
+
+    void setTimeout(uint16_t timeout) {
+        secureClient.setTimeout(timeout);
+        request.setTimeout(timeout);
+    }
+
+    int GET() { return request.GET(); }
+    int POST(const String &payload) { return request.POST(payload); }
+    int PATCH(const String &payload) { return request.PATCH(payload); }
+    int getSize() { return request.getSize(); }
+    String getString() { return request.getString(); }
+    String header(const char *name) { return request.header(name); }
+    int lastSecureError(char *buffer, size_t size) { return secureClient.lastError(buffer, size); }
+    Stream &getStream() { return request.getStream(); }
+    NetworkClient *getStreamPtr() { return request.getStreamPtr(); }
+    void end() { request.end(); }
+};
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 2000;
@@ -101,11 +150,11 @@ String getServerBaseUrl() {
     String host = server_host;
     host.trim();
     while (host.endsWith("/")) host.remove(host.length() - 1);
-    if (host.length() == 0) host = WiFi.gatewayIP().toString() + ":5002";
-    if (host.startsWith("http://") || host.startsWith("https://")) {
+    if (host.length() == 0) host = eloto::DEFAULT_SERVER_BASE;
+    if (host.startsWith("https://")) {
         return host + SERVER_PROJECT_PATH + "/";
     }
-    return "http://" + host + SERVER_PROJECT_PATH + "/";
+    return "https://" + host + SERVER_PROJECT_PATH + "/";
 }
 
 // Gabungkan alamat server dan endpoint API.
@@ -1032,12 +1081,10 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
         if (lookupId.length() == 0 || lookupId == "-----" ||
             (attempt > 0 && lookupId.equalsIgnoreCase(lookupIds[0]))) continue;
 
-        WiFiClient client;
-        client.setTimeout(2500);
-        HTTPClient http;
         String photoUrl = getApiUrl("users/photo/") + lookupId + "?size=" +
             String(PHOTO_DISPLAY_SIZE) + "&quality=78&fit=cover";
-        if (!http.begin(client, photoUrl)) {
+        ServerHttpClient http;
+        if (!http.begin(photoUrl)) {
             Serial.printf("[PHOTO_SYNC] HTTP begin failed uid=%s lookup=%s\n", uid.c_str(), lookupId.c_str());
             return false;
         }
@@ -1065,7 +1112,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             } else {
                 uint8_t *jpegData = static_cast<uint8_t *>(malloc((size_t)length));
                 if (jpegData != NULL) {
-                    WiFiClient *stream = http.getStreamPtr();
+                    NetworkClient *stream = http.getStreamPtr();
                     size_t received = stream->readBytes(jpegData, (size_t)length);
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
                         saved = cachePhotoToSD(uid, sid, jpegData, received);
@@ -1356,40 +1403,70 @@ uint32_t geoLastPaint = 0;
 bool geoBannerWasVisible = false;
 
 // Batasi alamat BLE ke format MAC yang valid.
-bool geoAllowedMac(const String &mac) {
+bool geoAllowedMac(const char *mac) {
     bool configured = false;
     for (const char *allowed : GEO_MECHANIC_MACS) {
         if (!allowed[0]) continue;
         configured = true;
-        if (mac.equalsIgnoreCase(allowed)) return true;
+        if (strcasecmp(mac, allowed) == 0) return true;
     }
     return !configured;
+}
+
+bool advertisedNameContains(const NimBLEAdvertisedDevice *device, const char *needle) {
+    const auto &payload = device->getPayload();
+    const size_t needleLength = strlen(needle);
+    if (needleLength == 0) return false;
+
+    for (size_t offset = 0; offset < payload.size();) {
+        const uint8_t fieldLength = payload[offset];
+        if (fieldLength == 0) break;
+        if (static_cast<size_t>(fieldLength) + 1 > payload.size() - offset) break;
+
+        const uint8_t fieldType = payload[offset + 1];
+        if ((fieldType == 0x08 || fieldType == 0x09) && fieldLength > 1) {
+            const size_t nameStart = offset + 2;
+            const size_t nameLength = fieldLength - 1;
+            for (size_t start = 0; start + needleLength <= nameLength; ++start) {
+                size_t index = 0;
+                while (index < needleLength &&
+                    toupper(payload[nameStart + start + index]) == toupper(needle[index])) {
+                    ++index;
+                }
+                if (index == needleLength) return true;
+            }
+        }
+        offset += static_cast<size_t>(fieldLength) + 1;
+    }
+    return false;
 }
 
 class GeoAdvertCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice *device) override {
         if (!device) return;
-        String mac = device->getAddress().toString().c_str();
+        const uint8_t *address = device->getAddress().getVal();
+        char mac[18];
+        snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+            address[5], address[4], address[3], address[2], address[1], address[0]);
         if (!geoAllowedMac(mac)) return;
-        String name = device->haveName() ? device->getName().c_str() : "";
-        name.toUpperCase();
-        if (name.indexOf("WATCH") >= 0 || name.indexOf("HAYLOU") >= 0 ||
-            name.indexOf("BAND") >= 0 || name.indexOf("BUDS") >= 0 || name.indexOf("PHONE") >= 0) return;
+        if (advertisedNameContains(device, "WATCH") || advertisedNameContains(device, "HAYLOU") ||
+            advertisedNameContains(device, "BAND") || advertisedNameContains(device, "BUDS") ||
+            advertisedNameContains(device, "PHONE")) return;
         bool itag = (device->haveServiceUUID() &&
             device->isAdvertisingService(NimBLEUUID((uint16_t)0x1802))) ||
-            name.indexOf("ITAG") >= 0 || name.indexOf("ISEARCH") >= 0;
+            advertisedNameContains(device, "ITAG") || advertisedNameContains(device, "ISEARCH");
             
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
         for (uint8_t i = 0; i < geoTagCount; ++i) {
-            if (strcasecmp(mac.c_str(), geoTags[i].mac) == 0) {
+            if (strcasecmp(mac, geoTags[i].mac) == 0) {
                 geoTags[i].seen = now; geoTags[i].rssi = device->getRSSI();
                 portEXIT_CRITICAL(&geoMux); return;
             }
         }
         if (itag) {
             if (geoTagCount < GEO_MAX_TAGS) {
-                mac.toCharArray(geoTags[geoTagCount].mac, 18);
+                memcpy(geoTags[geoTagCount].mac, mac, sizeof(mac));
                 geoTags[geoTagCount].rssi = device->getRSSI();
                 geoTags[geoTagCount++].seen = now;
             } else { geoOverflow = true; geoOverflowSeen = now; }
@@ -1480,10 +1557,8 @@ void reportBlePresence() {
     for (uint8_t i = 0; i < geoTagCount; ++i) tags.add(geoTags[i].mac);
     portEXIT_CRITICAL(&geoMux);
 
-    WiFiClient client;
-    client.setTimeout(1500);
-    HTTPClient http;
-    http.begin(client, getApiUrl("loto/presence"));
+    ServerHttpClient http;
+    http.begin(getApiUrl("loto/presence"));
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Id", getDeviceId());
     http.setTimeout(2500);
@@ -2407,9 +2482,8 @@ bool syncDatabaseToSDCard() {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
 
-    WiFiClient client; client.setTimeout(1500);
-    HTTPClient http;
-    http.begin(client, getApiUrl("users"));
+    ServerHttpClient http;
+    http.begin(getApiUrl("users"));
     http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
     http.addHeader("X-Device-Id", getDeviceId());
     http.setTimeout(2000);
@@ -2516,10 +2590,9 @@ bool syncDatabaseToSDCard() {
 bool pollSyncUsersCommand() {
     if (WiFi.status() != WL_CONNECTED || server_host.length() == 0) return false;
     String base = getApiUrl("commands/") + getDeviceIdPath();
-    WiFiClient client;
-    HTTPClient http;
+    ServerHttpClient http;
     http.setTimeout(2500);
-    http.begin(client, base + "/pending");
+    http.begin(base + "/pending");
     http.addHeader("X-Device-Id", getDeviceId());
     int code = http.GET();
     DynamicJsonDocument response(512);
@@ -2540,7 +2613,7 @@ bool pollSyncUsersCommand() {
     body["commandId"] = commandId;
     String payload;
     serializeJson(body, payload);
-    http.begin(client, base + "/clear");
+    http.begin(base + "/clear");
     http.addHeader("X-Device-Id", getDeviceId());
     http.addHeader("Content-Type", "application/json");
     code = http.PATCH(payload);
@@ -2696,9 +2769,8 @@ void uploadOfflineLogsSDCard() {
                                 String payload; serializeJson(doc, payload);
                                 // Lepas SD mutex selama request HTTP
                                 giveSd();
-                                WiFiClient client; client.setTimeout(2000);
-                                HTTPClient http;
-                                http.begin(client, getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
+                                ServerHttpClient http;
+                                http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
                                 http.addHeader("Content-Type", "application/json");
                                 http.addHeader("X-Device-Id", getDeviceId());
                                 http.setTimeout(3000);
@@ -2786,9 +2858,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
             Serial.printf("[RFID] Backend lookup skipped due to low heap=%lu\n",
                 (unsigned long)ESP.getFreeHeap());
         } else {
-            WiFiClient client;
-            client.setTimeout(2000);
-            HTTPClient http;
+            ServerHttpClient http;
             http.setTimeout(3000);
             DynamicJsonDocument requestDoc(256);
             requestDoc["rfid_uid"] = card.uid;
@@ -2798,7 +2868,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
             String responseBody;
             int httpCode = -1;
             for (uint8_t attempt = 0; attempt < 2; ++attempt) {
-                if (!http.begin(client, getApiUrl("users/check-card"))) {
+                if (!http.begin(getApiUrl("users/check-card"))) {
                     lookupUnavailable = true;
                     offlineFallbackAllowed = true;
                     break;
@@ -2922,8 +2992,24 @@ void networkTaskCore0(void * pvParameters) {
     bool wasWifiConnected = (WiFi.status() == WL_CONNECTED);
     uint8_t heartbeatFailCount = 0;         
     bool initialHeartbeatSent = false;      
+    uint32_t lastNtpRequestAt = 0;
+    bool ntpRequestStarted = false;
+    bool ntpReadyLogged = false;
 
     for (;;) {
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!systemClockReady() && (!ntpRequestStarted ||
+                uint32_t(millis() - lastNtpRequestAt) >= 60000)) {
+                configTime(0, 0, "pool.ntp.org", "time.google.com");
+                lastNtpRequestAt = millis();
+                ntpRequestStarted = true;
+                Serial.println("[TIME] NTP synchronization requested");
+            } else if (systemClockReady() && !ntpReadyLogged) {
+                ntpReadyLogged = true;
+                Serial.printf("[TIME] Clock synchronized epoch=%ld\n", (long)time(nullptr));
+            }
+        }
+
         NetworkJob job;
         if (xQueueReceive(networkQueue, &job, pdMS_TO_TICKS(50)) == pdTRUE) {
             
@@ -2935,9 +3021,8 @@ void networkTaskCore0(void * pvParameters) {
             if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 &&
                 ESP.getFreeHeap() >= MIN_HEAP_TO_POST_TELEMETRY) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
-                WiFiClient client; client.setTimeout(2000);
-                HTTPClient http;
-                http.begin(client, url);
+                ServerHttpClient http;
+                http.begin(url);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
                 http.addHeader("X-Device-Id", getDeviceId());
@@ -2991,6 +3076,12 @@ void networkTaskCore0(void * pvParameters) {
                 String jsonPayload; serializeJson(doc, jsonPayload);
                 int httpCode = http.POST(jsonPayload);
                 Serial.printf("[TELEMETRY] POST %s event=%s uid=%s => HTTP %d\n", url.c_str(), job.event, job.uid, httpCode);
+                if (httpCode < 0) {
+                    char secureError[160] = {};
+                    int secureErrorCode = http.lastSecureError(secureError, sizeof(secureError));
+                    Serial.printf("[TELEMETRY] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u\n",
+                        secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(), (unsigned int)ESP.getFreeHeap());
+                }
                 http.end();
 
                 if (httpCode >= 200 && httpCode < 300) {
@@ -3363,11 +3454,9 @@ bool tryConnectBestWifi() {
 // Pastikan host merespons sebagai backend box ini.
 bool verifyServerEndpoint() {
     if (WiFi.status() != WL_CONNECTED || server_host.length() == 0) return false;
-    WiFiClient client;
-    client.setTimeout(2000);
-    HTTPClient http;
+    ServerHttpClient http;
     String url = getApiUrl("boxes/") + getDeviceIdPath() + "/device-handshake";
-    http.begin(client, url);
+    http.begin(url);
     http.addHeader("X-Device-Id", getDeviceId());
     http.setTimeout(2500);
     int code = http.GET();
@@ -3380,6 +3469,12 @@ bool verifyServerEndpoint() {
     }
     Serial.printf("[SERVER] Handshake %s => HTTP %d verified=%s\n",
         url.c_str(), code, verified ? "yes" : "no");
+    if (code < 0) {
+        char secureError[160] = {};
+        int secureErrorCode = http.lastSecureError(secureError, sizeof(secureError));
+        Serial.printf("[SERVER] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u\n",
+            secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(), (unsigned int)ESP.getFreeHeap());
+    }
     http.end();
     return verified;
 }
@@ -3391,47 +3486,9 @@ bool discoverServer() {
     if (server_host.length() == 0 && lastDiscoveryAttempt != 0 &&
         millis() - lastDiscoveryAttempt < 15000) return false;
     lastDiscoveryAttempt = millis();
+    if (server_host.length() == 0) server_host = eloto::DEFAULT_SERVER_BASE;
     if (server_host.length() > 0 && verifyServerEndpoint()) return true;
-    server_host = "";
-    String gateway = WiFi.gatewayIP().toString();
-    if (gateway != "0.0.0.0") {
-        server_host = gateway + ":5002";
-        if (verifyServerEndpoint()) return true;
-        server_host = "";
-    }
-    WiFiUDP udp;
-    if (!udp.begin(5003)) return false;
-
-    IPAddress broadcastIP = WiFi.localIP();
-    broadcastIP[3] = 255;
-    byte pkt[] = { 'E','L','O','T','O','_','D','I','S','C','O','V','E','R' };
-    udp.beginPacket(broadcastIP, 5003);
-    udp.write(pkt, sizeof(pkt));
-    udp.endPacket();
-
-    unsigned long start = millis();
-    while (millis() - start < 3000) {
-        int cb = udp.parsePacket();
-        if (cb > 0) {
-            char buf[256];
-            int len = udp.read(buf, sizeof(buf) - 1);
-            if (len <= 0 || len >= (int)sizeof(buf)) continue;
-            buf[len] = 0;
-            String response = String(buf);
-            response.trim();
-            if (response.startsWith("ELOTO_SERVER|")) {
-                server_host = response.substring(13);
-                server_host.trim();
-                udp.stop();
-                if (verifyServerEndpoint()) return true;
-                server_host = "";
-                return false;
-            }
-        }
-        delay(10);
-    }
-
-    udp.stop();
+    Serial.println("[SERVER] VPS handshake failed; local discovery is disabled");
     return false;
 }
 
