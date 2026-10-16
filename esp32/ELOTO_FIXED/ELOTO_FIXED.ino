@@ -1,3 +1,22 @@
+volatile bool registeredUserSyncPending = false;
+bool syncDatabaseToSDCard(bool syncPhotos = true);
+bool syncDatabaseToSDCard(bool syncPhotos) {
+    if (syncPhotos) {
+    bool offlineFallbackAllowed = !wifiConnected;
+    offlineFallbackAllowed = !deviceHasNetwork();
+                        if (!sdCardMounted) {
+                            registeredUserSyncPending = true;
+                            WorkerInfo cachedCard = searchUserFromSDCard(card.uid);
+                            if (!cachedCard.isRegistered ||
+                                registeredUserSyncPending = true;
+                    offlineFallbackAllowed = !deviceHasNetwork();
+                    offlineFallbackAllowed = !deviceHasNetwork();
+    if (registeredUserSyncPending && WiFi.status() == WL_CONNECTED &&
+            lastDbSyncTask = millis();
+            if (syncDatabaseToSDCard(false)) {
+                registeredUserSyncPending = false;
+    rd6300Serial.end();
+    rd6300Serial.setRxBufferSize(1024);
 // E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (NEW STABLE REVISION)
 // Target: original dual-core ESP32 shield. See PANDUAN_ELOTO.md before upload.
 #include <Arduino.h>
@@ -87,7 +106,11 @@ String wifi_ssid        = "vivoV29";
 String wifi_password    = "112233445566";
 String server_host      = eloto::DEFAULT_SERVER_BASE;
 const char* SERVER_PROJECT_PATH  = "";
-const char *server_ca = eloto::DEFAULT_SERVER_CA;
+const char *server_ca = eloto::VPS_SERVER_CA;
+SemaphoreHandle_t networkIoMutex = NULL;
+volatile bool bleStackInitialized = false;
+
+void deinitBleForTls();
 
 bool systemClockReady() {
     return time(nullptr) >= 1760000000;
@@ -98,6 +121,15 @@ using ElotoSecureClient = WiFiClientSecure;
 class ServerHttpClient {
     ElotoSecureClient secureClient;
     HTTPClient request;
+    bool networkIoHeld = false;
+    bool requestReady = false;
+
+    void releaseNetworkIo() {
+        if (networkIoHeld) {
+            networkIoHeld = false;
+            xSemaphoreGive(networkIoMutex);
+        }
+    }
 
 public:
     ServerHttpClient() {
@@ -106,8 +138,25 @@ public:
 
     bool begin(const String &url) {
         request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-        if (!url.startsWith("https://") || !systemClockReady()) return false;
-        return request.begin(secureClient, url);
+        if (!url.startsWith("https://")) return false;
+        if (!systemClockReady()) {
+            Serial.printf("[TLS] Request deferred until NTP is ready epoch=%ld\n", (long)time(nullptr));
+            return false;
+        }
+        if (!networkIoMutex || xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+            Serial.println("[TLS] Request deferred because BLE/network mutex is busy");
+            return false;
+        }
+        networkIoHeld = true;
+        deinitBleForTls();
+        requestReady = request.begin(secureClient, url);
+        if (!requestReady) {
+            request.end();
+            releaseNetworkIo();
+            Serial.printf("[TLS] HTTPClient begin failed url=%s\n", url.c_str());
+            return false;
+        }
+        return true;
     }
 
     template <typename Name, typename Value>
@@ -124,16 +173,25 @@ public:
         request.setTimeout(timeout);
     }
 
-    int GET() { return request.GET(); }
-    int POST(const String &payload) { return request.POST(payload); }
-    int PATCH(const String &payload) { return request.PATCH(payload); }
+    int GET() { return requestReady ? request.GET() : -1; }
+    int POST(const String &payload) { return requestReady ? request.POST(payload) : -1; }
+    int PATCH(const String &payload) { return requestReady ? request.PATCH(payload) : -1; }
     int getSize() { return request.getSize(); }
     String getString() { return request.getString(); }
     String header(const char *name) { return request.header(name); }
     int lastSecureError(char *buffer, size_t size) { return secureClient.lastError(buffer, size); }
     Stream &getStream() { return request.getStream(); }
     NetworkClient *getStreamPtr() { return request.getStreamPtr(); }
-    void end() { request.end(); }
+    void end() {
+        if (requestReady) request.end();
+        requestReady = false;
+        releaseNetworkIo();
+    }
+
+    ~ServerHttpClient() {
+        if (requestReady) request.end();
+        releaseNetworkIo();
+    }
 };
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
@@ -620,9 +678,11 @@ bool initializeSDCard() {
 
         bool mounted = SD.begin(SD_CS_PIN, TFT_eSPI::getSPIinstance(), sckSpeeds[attempt], "/sd", 5, false);
         if (mounted) {
+            Serial.printf("[SD] Mounted at SCK=%lu Hz\n", (unsigned long)sckSpeeds[attempt]);
             terhubung = true;
             break;
         }
+        Serial.printf("[SD] Mount failed at SCK=%lu Hz\n", (unsigned long)sckSpeeds[attempt]);
         SD.end();
         digitalWrite(SD_CS_PIN, HIGH);
         delay(150);
@@ -635,19 +695,23 @@ bool initializeSDCard() {
 
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
+        Serial.println("[SD] No card type detected after mount");
         SD.end();
         return false;
     }
+    Serial.printf("[SD] Card type=%u size=%llu MB\n", cardType,
+        (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
 
     const char *testPath = "/.sd_health_test";
     if (SD.exists(testPath)) SD.remove(testPath);
     File testFile = SD.open(testPath, FILE_WRITE);
     if (!testFile) {
+        Serial.println("[SD] Health test failed: cannot open test file for write");
         SD.end();
         digitalWrite(SD_CS_PIN, HIGH);
         return false;
     }
-    testFile.print("ELOTO_SD_OK");
+    size_t testBytesWritten = testFile.print("ELOTO_SD_OK");
     testFile.close();
 
     testFile = SD.open(testPath, FILE_READ);
@@ -660,10 +724,13 @@ bool initializeSDCard() {
     }
     SD.remove(testPath);
     if (testValue != "ELOTO_SD_OK") {
+        Serial.printf("[SD] Health test mismatch written=%u readback=%u bytes\n",
+            (unsigned int)testBytesWritten, (unsigned int)testValue.length());
         SD.end();
         digitalWrite(SD_CS_PIN, HIGH);
         return false;
     }
+    Serial.println("[SD] Read/write health test passed");
 
     recoverSdFile("/session.json", "/session.json.tmp", "/session.json.bak");
     recoverSdFile("/users.csv", "/users.csv.tmp", "/users.csv.bak");
@@ -1015,6 +1082,17 @@ bool isValidJpeg(const uint8_t *data, size_t size) {
         data[size - 2] == 0xFF && data[size - 1] == 0xD9;
 }
 
+size_t readPhotoBody(Stream &stream, uint8_t *buffer, size_t expectedSize, uint32_t timeoutMs) {
+    size_t received = 0;
+    uint32_t startedAt = millis();
+    while (received < expectedSize && uint32_t(millis() - startedAt) < timeoutMs) {
+        size_t chunk = stream.readBytes(buffer + received, expectedSize - received);
+        if (chunk == 0) break;
+        received += chunk;
+    }
+    return received;
+}
+
 // Tulis JPEG ke nama FAT 8.3 secara transaksional agar cache lama tetap utuh.
 bool cachePhotoToSD(const String &uid, const String &sid, const uint8_t *jpegData, size_t jpegSize) {
     if (!sdCardMounted || sdMutex == NULL || jpegSize > 60000 ||
@@ -1113,7 +1191,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                 uint8_t *jpegData = static_cast<uint8_t *>(malloc((size_t)length));
                 if (jpegData != NULL) {
                     NetworkClient *stream = http.getStreamPtr();
-                    size_t received = stream->readBytes(jpegData, (size_t)length);
+                    size_t received = readPhotoBody(*stream, jpegData, (size_t)length, 15000);
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
                         saved = cachePhotoToSD(uid, sid, jpegData, received);
                         if (photoSyncMutex &&
@@ -1402,6 +1480,14 @@ uint32_t geoPendingSince = 0;
 uint32_t geoLastPaint = 0;
 bool geoBannerWasVisible = false;
 
+void deinitBleForTls() {
+    if (bleStackInitialized) {
+        NimBLEDevice::deinit(true);
+        bleStackInitialized = false;
+        Serial.println("[BLE] Host paused for HTTPS heap");
+    }
+}
+
 // Batasi alamat BLE ke format MAC yang valid.
 bool geoAllowedMac(const char *mac) {
     bool configured = false;
@@ -1478,19 +1564,35 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
 // Pindai tag BLE pada task terpisah.
 void geoScanTask(void *unused) {
     vTaskDelay(pdMS_TO_TICKS(1500));
-    NimBLEDevice::init("ELOTO_iTag_Confirm");
-    NimBLEScan *scan = NimBLEDevice::getScan();
     static GeoAdvertCallbacks callbacks;
-    scan->setScanCallbacks(&callbacks, true); 
-    scan->setActiveScan(true); 
-    scan->setInterval(160);
-    scan->setWindow(80); 
-    scan->setMaxResults(0); 
     for (;;) {
         uint32_t scanStart = millis();
-        scan->getResults(2000, false);
-        bool scanRan = uint32_t(millis() - scanStart) >= 1500;
-        scan->clearResults();
+        uint32_t activeScanMs = 0;
+        while (activeScanMs < 2000) {
+            if (!networkIoMutex ||
+                xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            if (!bleStackInitialized) {
+                NimBLEDevice::init("ELOTO_iTag_Confirm");
+                NimBLEScan *scan = NimBLEDevice::getScan();
+                scan->setScanCallbacks(&callbacks, false);
+                scan->setActiveScan(true);
+                scan->setInterval(160);
+                scan->setWindow(80);
+                scan->setMaxResults(0);
+                bleStackInitialized = true;
+            }
+            NimBLEScan *scan = NimBLEDevice::getScan();
+            uint32_t sliceStartedAt = millis();
+            scan->getResults(250, false);
+            activeScanMs += uint32_t(millis() - sliceStartedAt);
+            scan->clearResults();
+            xSemaphoreGive(networkIoMutex);
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        bool scanRan = activeScanMs >= 1500;
         
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
@@ -3079,8 +3181,10 @@ void networkTaskCore0(void * pvParameters) {
                 if (httpCode < 0) {
                     char secureError[160] = {};
                     int secureErrorCode = http.lastSecureError(secureError, sizeof(secureError));
-                    Serial.printf("[TELEMETRY] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u\n",
-                        secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(), (unsigned int)ESP.getFreeHeap());
+                    unsigned int stackFreeBytes = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
+                    Serial.printf("[TELEMETRY] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u largest=%u stackfree=%u\n",
+                        secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(),
+                        (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getMaxAllocHeap(), stackFreeBytes);
                 }
                 http.end();
 
@@ -3472,8 +3576,9 @@ bool verifyServerEndpoint() {
     if (code < 0) {
         char secureError[160] = {};
         int secureErrorCode = http.lastSecureError(secureError, sizeof(secureError));
-        Serial.printf("[SERVER] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u\n",
-            secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(), (unsigned int)ESP.getFreeHeap());
+        Serial.printf("[SERVER] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u largest=%u\n",
+            secureErrorCode, secureError, (long)time(nullptr), WiFi.RSSI(),
+            (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getMaxAllocHeap());
     }
     http.end();
     return verified;
@@ -4680,8 +4785,9 @@ void setup() {
     sdMutex = xSemaphoreCreateMutex();
     photoSyncMutex = xSemaphoreCreateMutex();
     gpsMutex = xSemaphoreCreateMutex();
+    networkIoMutex = xSemaphoreCreateMutex();
     networkQueue = xQueueCreate(20, sizeof(NetworkJob));
-    if (!spiBusMutex || !sdMutex || !gpsMutex || !networkQueue) {
+    if (!spiBusMutex || !sdMutex || !gpsMutex || !networkIoMutex || !networkQueue) {
         while (true) delay(1000);
     }
 
@@ -4748,7 +4854,7 @@ void setup() {
         Serial.println("[PHOTO_SYNC] Background photo cache unavailable");
         photoSyncQueue = NULL;
     }
-    if (xTaskCreatePinnedToCore(networkTaskCore0, "NetworkTask", 16384, NULL, 1, NULL, 0) != pdPASS) {}
+    if (xTaskCreatePinnedToCore(networkTaskCore0, "NetworkTask", 12288, NULL, 1, NULL, 0) != pdPASS) {}
     logAuditAsync("SYS_INIT", "SYSTEM");
     clearMainScreenArea();
     
