@@ -1718,7 +1718,8 @@ bool isFuelmanRole(const String &role) {
 const char *const GEO_MECHANIC_MACS[] = { "" };
 const uint32_t GEO_TAG_TIMEOUT_MS = 25000;
 const uint32_t GEO_WARNING_DELAY_MS = 3000;
-const uint32_t GEO_SCANNER_STALE_MS = 10000;
+// HTTPS pauses the scanner; keep health valid across one TLS request.
+const uint32_t GEO_SCANNER_STALE_MS = 20000;
 const uint8_t GEO_MAX_TAGS = 20;
 struct GeoTag { char mac[18]; int rssi; uint32_t seen; };
 GeoTag geoTags[GEO_MAX_TAGS] = {};
@@ -1877,6 +1878,10 @@ void geoScanTask(void *unused) {
             activeScanMs += uint32_t(millis() - sliceStartedAt);
             scan->clearResults();
             xSemaphoreGive(networkIoMutex);
+            // Mark progress per slice so TLS pauses do not reset scanner health.
+            portENTER_CRITICAL(&geoMux);
+            geoScanHeartbeat = millis(); geoScanCompleted = true;
+            portEXIT_CRITICAL(&geoMux);
             vTaskDelay(pdMS_TO_TICKS(1));
         }
         bool scanRan = activeScanMs >= 1500;
@@ -3292,6 +3297,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
     if (wifiConnected && backendConfigured) {
         if (ESP.getFreeHeap() <= MIN_HEAP_TO_VERIFY_CARD) {
             lookupUnavailable = true;
+            offlineFallbackAllowed = true;
             Serial.printf("[RFID] Backend lookup skipped due to low heap=%lu\n",
                 (unsigned long)ESP.getFreeHeap());
         } else {
@@ -3307,7 +3313,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
             for (uint8_t attempt = 0; attempt < 2; ++attempt) {
                 if (!http.begin(getApiUrl("users/check-card"))) {
                     lookupUnavailable = true;
-                    offlineFallbackAllowed = !deviceHasNetwork();
+                    offlineFallbackAllowed = true;
                     break;
                 }
                 http.addHeader("Content-Type", "application/json");
@@ -3385,7 +3391,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
 
                 if (httpCode < 0 || httpCode >= 500) {
                     lookupUnavailable = true;
-                    offlineFallbackAllowed = !deviceHasNetwork();
+                    offlineFallbackAllowed = true;
                 } else {
                     lookupUnavailable = true;
                     Serial.printf("[RFID] Backend responded HTTP %d; refusing local cache fallback\n", httpCode);
@@ -3597,7 +3603,7 @@ void networkTaskCore0(void * pvParameters) {
             }
         }
 
-        if (millis() - lastBlePresenceTask >= 5000) {
+        if (millis() - lastBlePresenceTask >= 10000) {
             lastBlePresenceTask = millis();
             reportBlePresence();
         }

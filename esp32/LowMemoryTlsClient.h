@@ -39,6 +39,7 @@ class LowMemoryTlsClient : public NetworkClient {
     CooperativeWiFiClient tcp_;
     Ipv4SanStore identity_;
     ESP_SSLClient tls_;
+    bool tlsConnectionEstablished_ = false;
 
 public:
     static constexpr size_t RX_BYTES = 16384;
@@ -60,13 +61,21 @@ public:
         }
     }
 
-    int connect(const char *host, uint16_t port) override { return tls_.connect(host, port); }
-    int connect(const char *host, uint16_t port, int32_t timeout) override {
-        return tls_.connect(host, port, timeout);
+    int connect(const char *host, uint16_t port) override {
+        tlsConnectionEstablished_ = tls_.connect(host, port) > 0;
+        return tlsConnectionEstablished_ ? 1 : 0;
     }
-    int connect(IPAddress ip, uint16_t port) override { return tls_.connect(ip, port); }
+    int connect(const char *host, uint16_t port, int32_t timeout) override {
+        tlsConnectionEstablished_ = tls_.connect(host, port, timeout) > 0;
+        return tlsConnectionEstablished_ ? 1 : 0;
+    }
+    int connect(IPAddress ip, uint16_t port) override {
+        tlsConnectionEstablished_ = tls_.connect(ip, port) > 0;
+        return tlsConnectionEstablished_ ? 1 : 0;
+    }
     int connect(IPAddress ip, uint16_t port, int32_t timeout) override {
-        return tls_.connect(ip, port, timeout);
+        tlsConnectionEstablished_ = tls_.connect(ip, port, timeout) > 0;
+        return tlsConnectionEstablished_ ? 1 : 0;
     }
     void setConnectionTimeout(uint32_t milliseconds) override {
         tcp_.setConnectionTimeout(milliseconds);
@@ -88,9 +97,18 @@ public:
         }
     }
     uint8_t connected() override { return tls_.connected(); }
-    void stop() override { tls_.stop(); }
+    void stop() override {
+        tls_.stop();
+        tlsConnectionEstablished_ = false;
+    }
     int fd() const override { return tcp_.fd(); }
-    int lastError(char *error, size_t size) { return tls_.getLastSSLError(error, size); }
+    int lastError(char *error, size_t size) {
+        if (!tlsConnectionEstablished_) {
+            if (error && size > 0) snprintf(error, size, "TLS handshake did not complete");
+            return -1;
+        }
+        return tls_.getLastSSLError(error, size);
+    }
 };
 
 }

@@ -723,6 +723,9 @@ test('VPS HTTPS uses a memory-bounded TLS client without disabling certificate v
   assert.match(transport, /class CooperativeWiFiClient : public WiFiClient/);
   assert.match(transport, /CooperativeWiFiClient tcp_/);
   assert.match(transport, /int available\(\) override \{\s*vTaskDelay\(pdMS_TO_TICKS\(1\)\);\s*return WiFiClient::available\(\);/);
+  assert.match(transport, /if \(!tlsConnectionEstablished_\)[\s\S]{0,220}TLS handshake did not complete[\s\S]{0,120}return -1/);
+  assert.match(transport, /tlsConnectionEstablished_ = tls_\.connect\(host, port, timeout\) > 0/);
+  assert.match(transport, /tlsConnectionEstablished_ = false;\s*\}\s*int fd\(\)/);
   assert.doesNotMatch(transport, /setInsecure\s*\(/);
 });
 
