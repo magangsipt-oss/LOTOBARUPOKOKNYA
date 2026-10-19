@@ -1,2 +1,2 @@
-# Kartu SD hanya untuk data sesi/event offline dan cache personel/foto.
-# Kredensial Wi-Fi, ID perangkat, dan alamat dashboard berasal dari firmware.
+# Salin esp32/config.example.txt ke /config.txt di root kartu SD.
+# Isi SSID/password hotspot 2,4 GHz Anda dan hapus tanda # dari profil yang dipakai.

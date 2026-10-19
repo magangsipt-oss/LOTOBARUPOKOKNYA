@@ -1,26 +1,8 @@
-volatile bool registeredUserSyncPending = false;
-bool syncDatabaseToSDCard(bool syncPhotos = true);
-bool syncDatabaseToSDCard(bool syncPhotos) {
-    if (syncPhotos) {
-    bool offlineFallbackAllowed = !wifiConnected;
-    offlineFallbackAllowed = !deviceHasNetwork();
-                        if (!sdCardMounted) {
-                            registeredUserSyncPending = true;
-                            WorkerInfo cachedCard = searchUserFromSDCard(card.uid);
-                            if (!cachedCard.isRegistered ||
-                                registeredUserSyncPending = true;
-                    offlineFallbackAllowed = !deviceHasNetwork();
-                    offlineFallbackAllowed = !deviceHasNetwork();
-    if (registeredUserSyncPending && WiFi.status() == WL_CONNECTED &&
-            lastDbSyncTask = millis();
-            if (syncDatabaseToSDCard(false)) {
-                registeredUserSyncPending = false;
-    rd6300Serial.end();
-    rd6300Serial.setRxBufferSize(1024);
 // E-LOTO integrated BLE confirmation / shared SPI / single-owner GPS (NEW STABLE REVISION)
 // Target: original dual-core ESP32 shield. See PANDUAN_ELOTO.md before upload.
 #include <Arduino.h>
 #include "../ServerDefaults.h"
+#include "../FirmwareSafety.h"
 #include <NimBLEDevice.h>
 #include <freertos/queue.h>
 #include <utility>
@@ -104,6 +86,17 @@ String device_id        = "BOX-CLIENT-001"; // ID box yang terdaftar di dashboar
 // ============================================================================
 String wifi_ssid        = "vivoV29";
 String wifi_password    = "112233445566";
+struct WifiProfile {
+    String ssid;
+    String password;
+};
+const uint8_t MAX_WIFI_PROFILES = 5;
+const uint32_t WIFI_PROFILE_TIMEOUT_MS = 15000;
+WifiProfile wifiProfiles[MAX_WIFI_PROFILES];
+uint8_t wifiProfileCount = 0;
+uint8_t nextWifiProfile = 0;
+volatile uint32_t wifiAttemptStartedAt = 0;
+volatile uint8_t wifiAttemptProfile = 0;
 String server_host      = eloto::DEFAULT_SERVER_BASE;
 const char* SERVER_PROJECT_PATH  = "";
 const char *server_ca = eloto::VPS_SERVER_CA;
@@ -111,9 +104,10 @@ SemaphoreHandle_t networkIoMutex = NULL;
 volatile bool bleStackInitialized = false;
 
 void deinitBleForTls();
+void resumeBleScannerAfterTls();
 
 bool systemClockReady() {
-    return time(nullptr) >= 1760000000;
+    return time(nullptr) >= 1792121297;
 }
 
 using ElotoSecureClient = WiFiClientSecure;
@@ -128,6 +122,7 @@ class ServerHttpClient {
         if (networkIoHeld) {
             networkIoHeld = false;
             xSemaphoreGive(networkIoMutex);
+            resumeBleScannerAfterTls();
         }
     }
 
@@ -149,6 +144,8 @@ public:
         }
         networkIoHeld = true;
         deinitBleForTls();
+        Serial.printf("[TLS] Heap after BLE pause free=%u largest=%u\n",
+            (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getMaxAllocHeap());
         requestReady = request.begin(secureClient, url);
         if (!requestReady) {
             request.end();
@@ -198,7 +195,7 @@ const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 2000;
 const uint16_t PHOTO_DISPLAY_SIZE            = 300;
 const uint16_t PHOTO_FRAME_SIZE              = 150;
-const uint32_t PHOTO_SYNC_RETRY_MS            = 10000;
+const uint32_t PHOTO_SYNC_RETRY_MS            = 3000;
 const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 15000;
 const uint32_t MIN_HEAP_TO_VERIFY_CARD        = 12000;
 const uint32_t MIN_HEAP_TO_POST_TELEMETRY     = 14000;
@@ -503,11 +500,12 @@ double gpsLastSerialLatitude = 0;
 double gpsLastSerialLongitude = 0;
 
 String lastScannedRfidUID = "";
-unsigned long lastScannedRfidTime = 0;
 bool rfidTapArmed = true;
 unsigned long lastRfidFrameMillis = 0;
+const uint32_t RFID_REMOVAL_GAP_MS = 250;
 
 bool startupSyncPending = true;
+volatile bool registeredUserSyncPending = false;
 
 bool regHasCard = false;         
 String regLastUID = "";          
@@ -520,7 +518,7 @@ bool regLastSuccess = true;
 void processRfidLogic(String uid);
 bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
-bool syncDatabaseToSDCard();
+bool syncDatabaseToSDCard(bool syncPhotos = true);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
@@ -744,22 +742,99 @@ bool initializeSDCard() {
     return terhubung;
 }
 
-// Muat kredensial Wi-Fi opsional; ID box dan server API tetap dari firmware.
+// Muat profil Wi-Fi opsional; placeholder tidak pernah dipakai untuk koneksi.
 void loadConfigFromSD() {
-    if (!sdCardMounted || !SD.exists("/config.txt")) return;
-    File configFile = SD.open("/config.txt", FILE_READ);
-    if (!configFile) return;
-    while (configFile.available()) {
-        String line = configFile.readStringUntil('\n');
-        line.trim();
-        if (line.length() == 0 || line.startsWith("#")) continue;
-        if (line.startsWith("SSID=")) {
-            wifi_ssid = line.substring(5); wifi_ssid.trim();
-        } else if (line.startsWith("PASS=")) {
-            wifi_password = line.substring(5); wifi_password.trim();
+    String indexedSsids[MAX_WIFI_PROFILES];
+    String indexedPasswords[MAX_WIFI_PROFILES];
+    bool indexedPasswordSet[MAX_WIFI_PROFILES] = {};
+    if (sdCardMounted) {
+        const char *configPaths[] = {"/config.txt", "/config.txt.txt", "/SD_CARD_CONFIG/config.txt"};
+        File configFile;
+        const char *loadedPath = nullptr;
+        for (const char *path : configPaths) {
+            if (!SD.exists(path)) continue;
+            configFile = SD.open(path, FILE_READ);
+            if (configFile) {
+                loadedPath = path;
+                break;
+            }
+        }
+        if (configFile) {
+            Serial.printf("[WIFI] Loading network settings from %s\n", loadedPath);
+            while (configFile.available()) {
+                String line = configFile.readStringUntil('\n');
+                line = String(eloto::normalizeConfigLine(std::string(line.c_str())).c_str());
+                line.trim();
+                if (line.length() == 0 || line.startsWith("#")) continue;
+
+                int separator = line.indexOf('=');
+                if (separator < 0) continue;
+                String key = line.substring(0, separator);
+                String value = line.substring(separator + 1);
+                key.trim();
+                value.trim();
+                if (key == "SSID") {
+                    wifi_ssid = value;
+                } else if (key == "PASS") {
+                    wifi_password = value;
+                } else {
+                    size_t slot = 0;
+                    eloto::WifiConfigField field = eloto::WIFI_CONFIG_NONE;
+                    if (!eloto::parseIndexedWifiKey(std::string(key.c_str()), MAX_WIFI_PROFILES, slot, field)) continue;
+                    if (field == eloto::WIFI_CONFIG_SSID) indexedSsids[slot] = value;
+                    else {
+                        indexedPasswords[slot] = value;
+                        indexedPasswordSet[slot] = true;
+                    }
+                }
+            }
+            configFile.close();
+        } else {
+            Serial.println("[WIFI] No readable config file; using compiled Wi-Fi credentials");
         }
     }
-    configFile.close();
+
+    wifiProfileCount = 0;
+    bool hasIndexedProfile = false;
+    for (uint8_t i = 0; i < MAX_WIFI_PROFILES; ++i) {
+        if (indexedSsids[i].length() > 0) hasIndexedProfile = true;
+    }
+
+    if (hasIndexedProfile) {
+        for (uint8_t i = 0; i < MAX_WIFI_PROFILES; ++i) {
+            const String &ssid = indexedSsids[i];
+            const String &password = indexedPasswords[i];
+            if (ssid.length() == 0) continue;
+            const bool validSsid = eloto::validWifiSsid(std::string(ssid.c_str()));
+            const bool validPassword = password.length() == 0 ||
+                eloto::validWifiPassword(std::string(password.c_str()));
+            const bool placeholder = ssid.startsWith("your-") || ssid.startsWith("ISI_") ||
+                password.startsWith("replace-with-") || password.startsWith("your-");
+            if (!validSsid || !validPassword || placeholder) {
+                Serial.printf("[WIFI] Skipping invalid/placeholder profile %u\n", i + 1);
+                continue;
+            }
+            wifiProfiles[wifiProfileCount].ssid = ssid;
+            wifiProfiles[wifiProfileCount].password = indexedPasswordSet[i] ? password : "";
+            ++wifiProfileCount;
+        }
+    }
+    if (wifiProfileCount == 0 && wifi_ssid.length() > 0) {
+        const bool validSsid = eloto::validWifiSsid(std::string(wifi_ssid.c_str()));
+        const bool validPassword = wifi_password.length() == 0 ||
+            eloto::validWifiPassword(std::string(wifi_password.c_str()));
+        const bool placeholder = wifi_ssid.startsWith("your-") || wifi_ssid.startsWith("ISI_") ||
+            wifi_password.startsWith("replace-with-") || wifi_password.startsWith("your-");
+        if (validSsid && validPassword && !placeholder) {
+            wifiProfiles[0].ssid = wifi_ssid;
+            wifiProfiles[0].password = wifi_password;
+            wifiProfileCount = 1;
+        } else {
+            Serial.println("[WIFI] Compiled/legacy Wi-Fi credentials are invalid or placeholders");
+        }
+    }
+    nextWifiProfile = 0;
+    Serial.printf("[WIFI] Loaded %u valid profile(s)\n", wifiProfileCount);
 }
 
 // Pilih font TFT sesuai ukuran teks.
@@ -1082,12 +1157,16 @@ bool isValidJpeg(const uint8_t *data, size_t size) {
         data[size - 2] == 0xFF && data[size - 1] == 0xD9;
 }
 
-size_t readPhotoBody(Stream &stream, uint8_t *buffer, size_t expectedSize, uint32_t timeoutMs) {
+size_t readPhotoBody(NetworkClient &stream, uint8_t *buffer, size_t expectedSize, uint32_t timeoutMs) {
     size_t received = 0;
     uint32_t startedAt = millis();
     while (received < expectedSize && uint32_t(millis() - startedAt) < timeoutMs) {
         size_t chunk = stream.readBytes(buffer + received, expectedSize - received);
-        if (chunk == 0) break;
+        if (chunk == 0) {
+            if (!stream.connected()) break;
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
         received += chunk;
     }
     return received;
@@ -1224,7 +1303,14 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             lookupId.c_str(), code, contentType.c_str(), length, saved ? 1 : 0, displayReady ? 1 : 0,
             (unsigned long)ESP.getFreeHeap());
         http.end();
-        if (saved || displayReady || code != HTTP_CODE_NOT_FOUND) return saved || displayReady;
+        if (saved || displayReady) return true;
+        if (code == HTTP_CODE_NOT_FOUND) continue;
+        if (attempt == 0 && sid.length() > 0 && !sid.equalsIgnoreCase(uid)) {
+            Serial.printf("[PHOTO_SYNC] Retrying photo via SID after UID fetch failure uid=%s sid=%s\n",
+                uid.c_str(), sid.c_str());
+            continue;
+        }
+        return false;
     }
     return false;
 }
@@ -1279,6 +1365,24 @@ void photoSyncTask(void *pvParameters) {
                 forceFullRedraw = true;
                 needsRedraw = true;
             } else {
+                String cleanUid = normalizeRfidUid(uid);
+                String cleanSid = sid;
+                cleanSid.trim();
+                cleanSid.toUpperCase();
+                uint32_t sidHash = 2166136261UL;
+                for (size_t i = 0; i < cleanSid.length(); ++i) {
+                    sidHash = (sidHash ^ (uint8_t)cleanSid[i]) * 16777619UL;
+                }
+                if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                    for (uint8_t i = 0; i < MAX_RAM_USERS; ++i) {
+                        if (photoSyncAttempts[i].uid.equalsIgnoreCase(cleanUid) &&
+                            photoSyncAttempts[i].sidHash == sidHash) {
+                            photoSyncAttempts[i].attemptedAt = millis() - PHOTO_SYNC_RETRY_MS;
+                            break;
+                        }
+                    }
+                    xSemaphoreGive(photoSyncMutex);
+                }
                 Serial.printf("[PHOTO_SYNC] Deferred uid=%s sid=%s\n", uid.c_str(), sid.c_str());
             }
         }
@@ -1473,6 +1577,7 @@ portMUX_TYPE geoMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t geoScanHeartbeat = 0, geoOverflowSeen = 0;
 bool geoScanCompleted = false, geoOverflow = false;
 TaskHandle_t geoTaskHandle = NULL;
+volatile bool bleScannerRestartedForTls = false;
 int geoCount = 0, geoTapCount = 0;
 bool geoHealthy = false, geoWarning = false;
 bool geoPending = false;
@@ -1481,10 +1586,28 @@ uint32_t geoLastPaint = 0;
 bool geoBannerWasVisible = false;
 
 void deinitBleForTls() {
+    if (geoTaskHandle != NULL) {
+        TaskHandle_t scanner = geoTaskHandle;
+        geoTaskHandle = NULL;
+        vTaskDelete(scanner);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        Serial.println("[BLE] Scanner task stopped for HTTPS heap");
+    }
     if (bleStackInitialized) {
         NimBLEDevice::deinit(true);
         bleStackInitialized = false;
         Serial.println("[BLE] Host paused for HTTPS heap");
+    }
+}
+
+void resumeBleScannerAfterTls() {
+    if (geoTaskHandle != NULL) return;
+    bleScannerRestartedForTls = true;
+    if (xTaskCreatePinnedToCore(geoScanTask, "BLEConfirm", 6144,
+            NULL, 1, &geoTaskHandle, 0) != pdPASS) {
+        geoTaskHandle = NULL;
+        bleScannerRestartedForTls = false;
+        Serial.println("[BLE] Failed to restart scanner after HTTPS");
     }
 }
 
@@ -1563,7 +1686,8 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
 
 // Pindai tag BLE pada task terpisah.
 void geoScanTask(void *unused) {
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    if (!bleScannerRestartedForTls) vTaskDelay(pdMS_TO_TICKS(1500));
+    bleScannerRestartedForTls = false;
     static GeoAdvertCallbacks callbacks;
     for (;;) {
         uint32_t scanStart = millis();
@@ -2580,7 +2704,7 @@ int findWorkerIndex(String uid) {
 }
 
 // Sinkronkan personel backend ke RAM dan SD.
-bool syncDatabaseToSDCard() {
+bool syncDatabaseToSDCard(bool syncPhotos) {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
 
@@ -2681,8 +2805,10 @@ bool syncDatabaseToSDCard() {
         return retainedEmpty;
     }
     sdSyncOk = true;
-    for (uint8_t i = 0; i < photoJobCount; ++i) {
-        requestPhotoSync(photoJobUids[i], photoJobSids[i]);
+    if (syncPhotos) {
+        for (uint8_t i = 0; i < photoJobCount; ++i) {
+            requestPhotoSync(photoJobUids[i], photoJobSids[i]);
+        }
     }
     Serial.printf("[SD_SYNC] Cached %d users; photo candidates=%u\n", syncCount, photoJobCount);
     return true;
@@ -2946,12 +3072,12 @@ WorkerInfo fetchCardDataAPI(String uid) {
     bool backendConfigured = server_host.length() > 0;
     bool backendConfirmedMissing = false;
     bool lookupUnavailable = false;
-    bool offlineFallbackAllowed = WiFi.status() != WL_CONNECTED;
+    bool offlineFallbackAllowed = !wifiConnected;
 
     if (wifiConnected && !backendConfigured) {
         discoverServer();
         backendConfigured = server_host.length() > 0;
-        offlineFallbackAllowed = !wifiConnected || !backendConfigured;
+        if (!backendConfigured) lookupUnavailable = true;
     }
 
     if (wifiConnected && backendConfigured) {
@@ -2972,7 +3098,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
             for (uint8_t attempt = 0; attempt < 2; ++attempt) {
                 if (!http.begin(getApiUrl("users/check-card"))) {
                     lookupUnavailable = true;
-                    offlineFallbackAllowed = true;
+                    offlineFallbackAllowed = !deviceHasNetwork();
                     break;
                 }
                 http.addHeader("Content-Type", "application/json");
@@ -2988,6 +3114,13 @@ WorkerInfo fetchCardDataAPI(String uid) {
                 }
                 responseBody = http.getString();
                 Serial.printf("[RFID] Online card lookup uid=%s HTTP=%d\n", lookupUid.c_str(), httpCode);
+                if (httpCode < 0) {
+                    char tlsError[160] = {};
+                    int tlsErrorCode = http.lastSecureError(tlsError, sizeof(tlsError));
+                    Serial.printf("[RFID] TLS error=%d detail=%s epoch=%ld rssi=%d heap=%u\n",
+                        tlsErrorCode, tlsError, (long)time(nullptr), WiFi.RSSI(),
+                        (unsigned int)ESP.getFreeHeap());
+                }
                 http.end();
 
                 DynamicJsonDocument doc(2048);
@@ -3009,6 +3142,19 @@ WorkerInfo fetchCardDataAPI(String uid) {
                         card.offlineFallbackAllowed = false;
                         Serial.printf("[RFID] Verified uid=%s sid=%s role=%s\n",
                             card.uid.c_str(), card.sid.c_str(), card.role.c_str());
+                        bool cacheNeedsSync = !sdCardMounted;
+                        if (sdCardMounted) {
+                            WorkerInfo cachedCard = searchUserFromSDCard(card.uid);
+                            cacheNeedsSync = !cachedCard.isRegistered ||
+                                !cachedCard.sid.equalsIgnoreCase(card.sid) ||
+                                !cachedCard.name.equalsIgnoreCase(card.name) ||
+                                !cachedCard.role.equalsIgnoreCase(card.role);
+                        }
+                        if (cacheNeedsSync) {
+                            registeredUserSyncPending = true;
+                            Serial.printf("[SD_SYNC] Verified backend user uid=%s queued for SD cache\n",
+                                card.uid.c_str());
+                        }
                         requestPhotoSync(card.uid, card.sid);
                         break;
                     }
@@ -3030,7 +3176,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
 
                 if (httpCode < 0 || httpCode >= 500) {
                     lookupUnavailable = true;
-                    offlineFallbackAllowed = true;
+                    offlineFallbackAllowed = !deviceHasNetwork();
                 } else {
                     lookupUnavailable = true;
                     Serial.printf("[RFID] Backend responded HTTP %d; refusing local cache fallback\n", httpCode);
@@ -3042,7 +3188,7 @@ WorkerInfo fetchCardDataAPI(String uid) {
             }
             http.end();
         }
-    } else {
+    } else if (!wifiConnected) {
         offlineFallbackAllowed = true;
     }
 
@@ -3230,19 +3376,32 @@ void networkTaskCore0(void * pvParameters) {
             if (pollSyncUsersCommand()) lastDbSyncTask = millis();
         }
 
+        static unsigned long lastRegisteredSyncAttempt = 0;
+        if (registeredUserSyncPending && WiFi.status() == WL_CONNECTED &&
+            server_host.length() > 0 && sdCardMounted && ESP.getFreeHeap() > 30000 &&
+            millis() - lastRegisteredSyncAttempt >= 3000) {
+            lastRegisteredSyncAttempt = millis();
+            if (syncDatabaseToSDCard(false)) {
+                registeredUserSyncPending = false;
+                lastDbSyncTask = millis();
+                Serial.println("[SD_SYNC] Backend-verified user cache updated");
+            }
+        }
+
         if (millis() - lastBlePresenceTask >= 5000) {
             lastBlePresenceTask = millis();
             reportBlePresence();
         }
 
-        if (millis() - lastWifiCheckTask > 10000) {
+        if (millis() - lastWifiCheckTask >= 1000) {
             lastWifiCheckTask = millis();
-            if (WiFi.status() != WL_CONNECTED) {
+            const bool wifiHasIp = WiFi.status() == WL_CONNECTED &&
+                WiFi.localIP().toString() != "0.0.0.0";
+            if (!wifiHasIp) {
                 wasWifiConnected = false;
-                if (millis() - lastReconnectAttempt > 30000) {
+                if (millis() - lastReconnectAttempt >= WIFI_PROFILE_TIMEOUT_MS &&
+                    millis() - wifiAttemptStartedAt >= WIFI_PROFILE_TIMEOUT_MS) {
                     lastReconnectAttempt = millis();
-                    WiFi.disconnect();
-                    delay(100);
                     tryConnectBestWifi();
                 }
             } else if ((!wasWifiConnected || startupSyncPending ||
@@ -3548,9 +3707,25 @@ void processRfidLogic(String uid) {
     needsRedraw = true;
 }
 
-// Mulai koneksi ke profil Wi-Fi terpilih.
+// Mulai koneksi ke profil Wi-Fi berikutnya.
 bool tryConnectBestWifi() {
-    if (wifi_ssid.length() == 0 || wifi_ssid.startsWith("ISI_")) return false;
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0") return true;
+    if (wifiProfileCount == 0) {
+        Serial.println("[WIFI] No valid profile. Configure WIFI_1_SSID/WIFI_1_PASS on SD or valid compiled credentials.");
+        return false;
+    }
+
+    const uint8_t profileIndex = nextWifiProfile;
+    nextWifiProfile = (nextWifiProfile + 1) % wifiProfileCount;
+    wifi_ssid = wifiProfiles[profileIndex].ssid;
+    wifi_password = wifiProfiles[profileIndex].password;
+    wifiAttemptProfile = profileIndex;
+    wifiAttemptStartedAt = millis();
+
+    WiFi.disconnect(false, false);
+    delay(100);
+    Serial.printf("[WIFI] Connecting profile %u/%u SSID=%s (2.4 GHz only)\n",
+        profileIndex + 1, wifiProfileCount, wifi_ssid.c_str());
     WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
     return true;
 }
@@ -3646,6 +3821,10 @@ void connectWiFiRoutine() {
         logAuditAsync("WIFI_CONNECTED", WiFi.localIP().toString());
         startupSyncPending = true;
     } else {
+        Serial.printf("[WIFI] No IP after 12s: status=%d profile=%u/%u target=%s RSSI=%d\n",
+            WiFi.status(), wifiAttemptProfile + 1, wifiProfileCount,
+            wifi_ssid.c_str(), WiFi.RSSI());
+        Serial.println("[WIFI] Check exact SSID/password, WPA2, hotspot 2.4 GHz compatibility mode, and that SSID broadcast is enabled.");
         buzzFailed();
         selectedFooterAction = 1;
         currentState = STATE_SERVER_OFFLINE;
@@ -4420,18 +4599,27 @@ void drawScreen() {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("SEMUA MEKANIK MASUK", 240, 72);
         int totalMekanik = countQueueMechanics();
-        if (safetyQueue.topIndex > 0 && !isQueueSupervisor(safetyQueue.topIndex)) {
-            WorkerInfo &lastWorker = safetyQueue.workers[safetyQueue.topIndex];
-            tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-            tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
-            photoAlreadyDrawn = drawPhotoFromAPI(lastWorker.uid, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastWorker.sid);
-            if (!photoAlreadyDrawn)
-                drawSinglePersonIcon(95, 167, 2.0, ELOTO_HEADER, false);
-            drawMechanicCountBadge(244, 101, totalMekanik);
-        } else {
-            drawMechanicCountBadge(184, 101, totalMekanik);
+        uint8_t iconCount = constrain(totalMekanik, 0, MAX_WORKERS);
+        if (iconCount > 0) {
+            uint8_t columns = min((uint8_t)iconCount, (uint8_t)5);
+            uint8_t rows = (iconCount + columns - 1) / columns;
+            float iconScale = iconCount == 1 ? 2.0f : (iconCount <= 2 ? 1.6f :
+                (iconCount <= 4 ? 1.3f : (iconCount <= 5 ? 1.0f : 0.75f)));
+            const int16_t groupX = 30;
+            const int16_t groupY = 96;
+            const int16_t groupWidth = 420;
+            const int16_t groupHeight = 92;
+            int16_t cellWidth = groupWidth / columns;
+            int16_t cellHeight = groupHeight / rows;
+            for (uint8_t index = 0; index < iconCount; ++index) {
+                uint8_t row = index / columns;
+                uint8_t column = index % columns;
+                int16_t centerX = groupX + cellWidth * column + cellWidth / 2;
+                int16_t centerY = groupY + cellHeight * row + cellHeight / 2;
+                drawSinglePersonIcon(centerX, centerY, iconScale, ELOTO_HEADER, false);
+            }
         }
-        if (safetyQueue.topIndex > 0 && !isQueueSupervisor(safetyQueue.topIndex)) {
+        if (totalMekanik > 0) {
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -4798,6 +4986,7 @@ void setup() {
         sdSyncOk = sdUserCount > 0;
     } else {
         sdCardMounted = false;
+        loadConfigFromSD();
     }
 
     tft.init();
@@ -4822,6 +5011,7 @@ void setup() {
     
     rd6300Serial.end();
     delay(100);
+    rd6300Serial.setRxBufferSize(2048);
     rd6300Serial.begin(9600, SERIAL_8N1, RD6300_RX_PIN, RD6300_TX_PIN);
     delay(500);
     while (rd6300Serial.available()) {
@@ -4974,7 +5164,7 @@ void loop() {
         currentState == STATE_MEKANIK_IN || currentState == STATE_ALL_WORKERS_REGISTERED ||
         currentState == STATE_WORKER_DETAIL || currentState == STATE_SPV_OUT_CONFIRM;
     if (photoScreen && !photoAlreadyDrawn &&
-        uint32_t(millis() - lastPhotoRetryAt) >= 10000) {
+        uint32_t(millis() - lastPhotoRetryAt) >= PHOTO_SYNC_RETRY_MS) {
         lastPhotoRetryAt = millis();
         needsRedraw = true;
     }
@@ -5056,23 +5246,18 @@ void loop() {
             unsigned long now = millis();
             bool sameCard = authUID.equalsIgnoreCase(lastScannedRfidUID);
 
-            // Jika kartu yang sama masih menempel, beri jeda 1,2 detik (jangan diproses berulang)
-            if (sameCard && (now - lastScannedRfidTime < 2500)) {
-                return;
-            }
-            // Jika kartu berbeda, cukup jeda 250 ms (sangat cepat & responsif)
-            if (!sameCard && (now - lastScanTime < 250)) {
+            // The removal gap blocks repeats; keep only a brief debounce for different cards.
+            if (!sameCard && (now - lastScanTime < 100)) {
                 return;
             }
 
             lastScannedRfidUID = authUID;
-            lastScannedRfidTime = now;
             lastScanTime = now;
 
             processRfidLogic(authUID);
             clearRfidBuffer();
         }
-    } else if (!rfidTapArmed && millis() - lastRfidFrameMillis >= 800) {
+    } else if (!rfidTapArmed && millis() - lastRfidFrameMillis >= RFID_REMOVAL_GAP_MS) {
         rfidTapArmed = true;
     }
 }

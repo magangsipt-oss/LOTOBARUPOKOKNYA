@@ -160,8 +160,12 @@ test('firmware loads indexed Wi-Fi profiles and rotates after a connection timeo
   const source = readFileSync(firmware, 'utf8');
 
   assert.match(source, /parseIndexedWifiKey\([\s\S]{0,180}MAX_WIFI_PROFILES/);
-  assert.match(source, /activeWifiProfileIndex = \(activeWifiProfileIndex \+ 1\) % MAX_WIFI_PROFILES/);
+  assert.match(source, /nextWifiProfile = \(nextWifiProfile \+ 1\) % wifiProfileCount/);
+  assert.match(source, /WIFI_PROFILE_TIMEOUT_MS = 15000/);
+  assert.match(source, /wifiAttemptStartedAt >= WIFI_PROFILE_TIMEOUT_MS/);
+  assert.match(source, /WiFi\.disconnect\(false, false\)/);
   assert.match(source, /WiFi\.begin\(wifi_ssid\.c_str\(\), wifi_password\.c_str\(\)\)/);
+  assert.match(source, /WiFi only supports 2\.4 GHz|2\.4 GHz only/);
 });
 
 test('firmware declares custom GPS return type before Arduino prototype generation', () => {
@@ -590,4 +594,24 @@ test('firmware services keypad input before potentially blocking loop work and l
   assert.ok(loop.indexOf('uint8_t currentDebouncedKey = getDebouncedKey();') <
     loop.indexOf('server.handleClient();'));
   assert.match(loop, /\[INPUT\] loop_gap_ms=%u state=%s/);
+});
+
+test('HTTPS releases BLE scanner stack memory and resumes scanning afterward', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const pause = source.split('void deinitBleForTls() {', 2)[1]
+    .split('\nvoid resumeBleScannerAfterTls()', 1)[0];
+  const resume = source.split('void resumeBleScannerAfterTls() {', 2)[1]
+    .split('\n// Batasi alamat BLE', 1)[0];
+  const release = source.split('void releaseNetworkIo() {', 2)[1]
+    .split('\n    }', 1)[0];
+  const scanTask = source.split('void geoScanTask(void *unused) {', 2)[1]
+    .split('\n// Hitung tag mekanik', 1)[0];
+
+  assert.match(pause, /vTaskDelete\(scanner\)/);
+  assert.match(pause, /NimBLEDevice::deinit\(true\)/);
+  assert.match(release, /xSemaphoreGive\(networkIoMutex\);[\s\S]*resumeBleScannerAfterTls\(\)/);
+  assert.match(resume, /BLEConfirm", 6144/);
+  assert.match(resume, /bleScannerRestartedForTls = true/);
+  assert.match(scanTask, /if \(!bleScannerRestartedForTls\) vTaskDelay/);
 });

@@ -61,11 +61,11 @@ Header lokal berikut sudah diabaikan Git; isi di komputer yang dipakai untuk men
 - `esp32/ELOTO_FIXED/network_secrets.local.h`: `ELOTO_NETWORK_SSID` dan `ELOTO_NETWORK_PASSWORD`.
 - `esp32/ELOTO_FIXED/device_secrets.override.h`: `ELOTO_DEVICE_ID`.
 
-Pastikan nilai itu valid sebelum upload. Firmware memakai satu profil Wi-Fi dari header. Jika ingin beberapa profil Wi-Fi, mengganti server, atau mengganti CA, salin format [esp32/config.example.txt](../esp32/config.example.txt) sebagai `/config.txt` pada SD:
+Pastikan nilai itu valid sebelum upload. Firmware memakai kredensial dari header sebagai fallback. Untuk mengatur sampai lima profil hotspot/Wi-Fi tanpa kompilasi ulang, salin [esp32/config.example.txt](../esp32/config.example.txt) ke `/config.txt` pada root SD lalu ganti placeholder:
 
 | Kunci / file | Fungsi |
 | --- | --- |
-| `WIFI_1_SSID` … `WIFI_5_SSID` dan `WIFI_1_PASS` … `WIFI_5_PASS` | Hingga lima profil Wi-Fi; perangkat mencoba profil berurutan dan pindah setelah timeout. Format lama `SSID`/`PASS` tetap didukung; nilai contoh seperti `your-...` diabaikan. ESP32 hanya mendukung Wi-Fi 2,4 GHz |
+| `WIFI_1_SSID` … `WIFI_5_SSID` dan `WIFI_1_PASS` … `WIFI_5_PASS` | Hingga lima profil Wi-Fi; perangkat mencoba profil berurutan dan berpindah setelah 15 detik tanpa koneksi. Format lama `SSID`/`PASS` tetap didukung; nilai contoh seperti `your-...` diabaikan. ESP32 hanya mendukung Wi-Fi 2,4 GHz |
 | `SERVER` | Opsional override endpoint; default production `https://103.197.188.61`. LAN tepercaya: `http://192.168.1.10:5002` |
 | `/server_ca.pem` | Opsional override root CA TLS. Default production memakai ISRG Root X1 yang tertanam di firmware |
 

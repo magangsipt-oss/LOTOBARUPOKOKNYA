@@ -1,2 +1,13 @@
-# SD card is only for offline session/event data and optional personnel/photo cache.
-# Wi-Fi credentials, device ID, and dashboard endpoint are compiled into firmware.
+# Optional Wi-Fi profiles are tried in order; ESP32 supports 2.4 GHz only.
+# Replace placeholders before copying this file to /config.txt on the SD card.
+WIFI_1_SSID=your-2.4GHz-hotspot
+WIFI_1_PASS=replace-with-your-hotspot-password
+WIFI_2_SSID=your-fallback-2.4GHz-wifi
+WIFI_2_PASS=replace-with-fallback-password
+
+# Optional legacy single-profile format:
+# SSID=your-2.4GHz-hotspot
+# PASS=replace-with-your-hotspot-password
+
+# Optional: override the API base URL. Use HTTPS in production.
+# SERVER=https://your-server.example
