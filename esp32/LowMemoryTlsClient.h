@@ -51,7 +51,7 @@ public:
         tls_.setX509Time(static_cast<uint32_t>(time(nullptr)));
         tls_.setBufferSizes(RX_BYTES, TX_BYTES);
         tls_.setSSLVersion(BR_TLS12, BR_TLS12);
-        tls_.setHandshakeTimeout(10000);
+        tls_.setHandshakeTimeout(6000);
         tls_.setTimeout(3);
 
         IPAddress address;

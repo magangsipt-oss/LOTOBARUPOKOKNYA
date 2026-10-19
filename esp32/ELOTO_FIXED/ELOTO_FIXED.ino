@@ -103,6 +103,14 @@ SemaphoreHandle_t networkIoMutex = NULL;
 portMUX_TYPE networkIoWaitersMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t networkIoWaiters = 0;
 volatile bool bleStackInitialized = false;
+// Diagnostics: who holds networkIoMutex and since when.
+char networkIoOwner[48] = "";
+volatile uint32_t networkIoOwnerSince = 0;
+
+void setNetworkIoOwner(const char *owner) {
+    strlcpy(networkIoOwner, owner, sizeof(networkIoOwner));
+    networkIoOwnerSince = millis();
+}
 
 void deinitBleForTls();
 void resumeBleScannerAfterTls();
@@ -165,10 +173,17 @@ public:
         BaseType_t mutexAcquired = xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(mutexWaitMs));
         unregisterNetworkIoWaiter();
         if (mutexAcquired != pdTRUE) {
-            Serial.println("[TLS] Request deferred because BLE/network mutex is busy");
+            TaskHandle_t holder = xSemaphoreGetMutexHolder(networkIoMutex);
+            Serial.printf("[TLS] Request deferred because BLE/network mutex is busy holder=%s owner=%s held_ms=%lu url=%s\n",
+                holder ? pcTaskGetName(holder) : "none", networkIoOwner,
+                (unsigned long)(millis() - networkIoOwnerSince), url.c_str());
             return false;
         }
         networkIoHeld = true;
+        {
+            int pathAt = url.indexOf("/api/");
+            setNetworkIoOwner(pathAt >= 0 ? url.c_str() + pathAt : url.c_str());
+        }
         deinitBleForTls();
         Serial.printf("[TLS] Heap after BLE pause free=%u largest=%u\n",
             (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getMaxAllocHeap());
@@ -1874,6 +1889,7 @@ void geoScanTask(void *unused) {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
+            setNetworkIoOwner("BLE scan");
             if (!bleStackInitialized) {
                 NimBLEDevice::init("ELOTO_iTag_Confirm");
                 NimBLEScan *scan = NimBLEDevice::getScan();
