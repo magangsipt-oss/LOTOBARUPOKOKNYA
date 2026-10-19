@@ -258,6 +258,8 @@ const uint32_t NOTIFICATION_ERROR_DURATION   = 2000;
 const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 const uint16_t PHOTO_FRAME_SIZE              = 150;
 const uint32_t PHOTO_SYNC_RETRY_MS            = 3000;
+// Same UID is not re-queued within this window; prevents photo GETs starving telemetry.
+const uint32_t PHOTO_SYNC_REQUEST_COOLDOWN_MS = 15000;
 const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 15000;
 const uint32_t MIN_HEAP_TO_VERIFY_CARD        = 12000;
 const uint32_t MIN_HEAP_TO_POST_TELEMETRY     = 14000;
@@ -1486,7 +1488,7 @@ void requestPhotoSync(const String &uid, const String &sid) {
     for (uint8_t i = 0; i < MAX_RAM_USERS; ++i) {
         if (photoSyncAttempts[i].uid.equalsIgnoreCase(cleanUid) &&
             photoSyncAttempts[i].sidHash == sidHash &&
-            now - photoSyncAttempts[i].attemptedAt < PHOTO_SYNC_RETRY_MS) {
+            now - photoSyncAttempts[i].attemptedAt < PHOTO_SYNC_REQUEST_COOLDOWN_MS) {
             xSemaphoreGive(photoSyncMutex);
             return;
         }
@@ -1513,6 +1515,17 @@ void photoSyncTask(void *pvParameters) {
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
             String uid(job.uid);
             String sid(job.sid);
+            bool alreadyLoaded = false;
+            if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                alreadyLoaded = photoDisplayData && photoDisplaySize > 100 &&
+                    photoDisplayUid.equalsIgnoreCase(normalizeRfidUid(uid));
+                xSemaphoreGive(photoSyncMutex);
+            }
+            // Skip stale duplicate jobs whose photo is already in the display buffer.
+            if (alreadyLoaded) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
             if (fetchPhotoFromAPI(uid, sid)) {
                 photoAlreadyDrawn = false;
                 forceFullRedraw = true;
@@ -1874,18 +1887,31 @@ void geoScanTask(void *unused) {
             }
             NimBLEScan *scan = NimBLEDevice::getScan();
             uint32_t sliceStartedAt = millis();
-            scan->getResults(250, false);
+            // Bounded scan: blocking getResults() waits forever if the scan-end
+            // event is lost (Wi-Fi coex), which would hold networkIoMutex forever.
+            bool sliceScanned = scan->start(250, false, true);
+            if (sliceScanned) {
+                while (scan->isScanning() && uint32_t(millis() - sliceStartedAt) < 1000) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                if (scan->isScanning()) {
+                    scan->stop();
+                    Serial.println("[BLE] Scan slice timed out; stopped");
+                }
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
             activeScanMs += uint32_t(millis() - sliceStartedAt);
             scan->clearResults();
             xSemaphoreGive(networkIoMutex);
             // Mark progress per slice so TLS pauses do not reset scanner health.
-            portENTER_CRITICAL(&geoMux);
-            geoScanHeartbeat = millis(); geoScanCompleted = true;
-            portEXIT_CRITICAL(&geoMux);
+            if (sliceScanned) {
+                portENTER_CRITICAL(&geoMux);
+                geoScanHeartbeat = millis(); geoScanCompleted = true;
+                portEXIT_CRITICAL(&geoMux);
+            }
             vTaskDelay(pdMS_TO_TICKS(1));
         }
-        bool scanRan = activeScanMs >= 1500;
-        
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
         for (uint8_t i = 0; i < geoTagCount;) {
@@ -1895,7 +1921,6 @@ void geoScanTask(void *unused) {
         }
         if (geoOverflow && uint32_t(now - geoOverflowSeen) > GEO_TAG_TIMEOUT_MS)
             geoOverflow = false;
-        geoScanHeartbeat = now; geoScanCompleted = scanRan;
         portEXIT_CRITICAL(&geoMux);
 
         static uint32_t lastDiagnosticsAt = 0;
