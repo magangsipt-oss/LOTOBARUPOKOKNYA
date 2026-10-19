@@ -631,18 +631,64 @@ test('BLE scan yields the shared radio mutex to pending HTTPS requests', () => {
   assert.match(source, /http\.begin\(url, 20000\)/);
 });
 
+test('BLE scanner recognizes iTag service UUIDs and reports scan diagnostics', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const scanTask = source.split('void geoScanTask(void *unused) {', 2)[1]
+    .split('\n// Hitung tag mekanik', 1)[0];
+  const badge = source.split('void drawBleBadge(bool isConnected) {', 2)[1]
+    .split('\n}', 1)[0];
+  const headerRefresh = source.split('// Timer 1 detik: update jam sesi dan refresh status badge BLE/GPS/SD/WiFi', 2)[1]
+    .split('\n    }\n    ', 1)[0];
+
+  assert.match(source, /NimBLEUUID\(\(uint16_t\)0xFFE0\)/);
+  assert.match(scanTask, /setScanCallbacks\(&callbacks, true\)/);
+  assert.match(scanTask, /geoAdvertisements/);
+  assert.match(scanTask, /geoTagAdvertisements/);
+  assert.match(scanTask, /\[BLE\] scan window adverts=/);
+  assert.match(badge, /geoCount > 0 \? String\(geoCount\)/);
+  assert.match(headerRefresh, /geoHealthy != lastBleHealthy/);
+});
+
 test('photo sync streams JPEGs to SD and renders the cache without a full-image heap buffer', () => {
   const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
   const source = readFileSync(firmware, 'utf8');
   const photoFetch = source.split('bool fetchPhotoFromAPI(', 2)[1]
     .split('\n// Jadwalkan cache foto', 1)[0];
+  const photoQueue = source.split('void requestPhotoSync(const String &uid, const String &sid) {', 2)[1]
+    .split('\nvoid photoSyncTask', 1)[0];
   const photoDraw = source.slice(source.lastIndexOf('bool drawPhotoFromAPI('))
     .split('\n// Kenali nama event', 1)[0];
 
   assert.match(photoFetch, /cachePhotoStreamToSD\(uid, sid, \*stream/);
+  assert.match(photoFetch, /photoDisplayRequestedUid\.equalsIgnoreCase\(normalizeRfidUid\(uid\)\)/);
   assert.match(source, /size_t count = stream\.readBytes\(chunk, requested\)/);
+  assert.match(photoQueue, /photoDisplayUid\.equalsIgnoreCase\(cleanUid\)/);
   assert.match(photoDraw, /TJpgDec\.drawFsJpg\(renderX, renderY, paths\[i\], SD\)/);
   assert.doesNotMatch(photoDraw, /malloc\(size\)/);
+});
+
+test('mechanic completion screen requests and displays the most recently registered mechanic photo', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const drawScreen = source.slice(source.lastIndexOf('void drawScreen() {'));
+  const completedScreen = drawScreen.slice(drawScreen.indexOf('else if (currentState == STATE_ALL_WORKERS_REGISTERED) {'))
+    .split('\n    else if (currentState == STATE_WORKER_LIST)', 1)[0];
+
+  assert.match(completedScreen, /for \(int index = safetyQueue\.topIndex; index >= 0; --index\)/);
+  assert.match(completedScreen, /drawPhotoFromAPI\(lastMechanic\.uid,[\s\S]*lastMechanic\.sid\)/);
+  assert.match(completedScreen, /lastMechanic\.name/);
+});
+
+test('personnel sync does not queue every photo ahead of the active display request', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const syncUsers = source.split('bool syncDatabaseToSDCard(bool syncPhotos) {', 2)[1]
+    .split('\n// Jalankan permintaan sinkronisasi dashboard', 1)[0];
+
+  assert.match(source, /bool syncDatabaseToSDCard\(bool syncPhotos = false\)/);
+  assert.match(syncUsers, /if \(syncPhotos && photoJobCount < MAX_RAM_USERS\)/);
+  assert.match(syncUsers, /if \(syncPhotos\) \{\s*for \(uint8_t i = 0; i < photoJobCount; \+\+i\)/);
 });
 
 test('offline telemetry replay yields while reading bounded SD log lines', () => {

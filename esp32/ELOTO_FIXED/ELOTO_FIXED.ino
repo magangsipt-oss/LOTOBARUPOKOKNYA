@@ -399,6 +399,7 @@ uint8_t photoSyncAttemptIndex = 0;
 uint8_t *photoDisplayData = NULL;
 size_t photoDisplaySize = 0;
 String photoDisplayUid = "";
+String photoDisplayRequestedUid = "";
 
 unsigned long sessionStartTime = 0;
 bool isSessionActive = false;
@@ -580,7 +581,7 @@ bool regLastSuccess = true;
 void processRfidLogic(String uid);
 bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
-bool syncDatabaseToSDCard(bool syncPhotos = true);
+bool syncDatabaseToSDCard(bool syncPhotos = false);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
@@ -1021,8 +1022,7 @@ void drawBluetoothIcon(int16_t cx, int16_t cy, uint16_t color) {
 
 // Tampilkan jumlah tag BLE pada header.
 void drawBleBadge(bool isConnected) {
-    // Latar hijau jika ada tag terdeteksi (> 0), kuning jika 0 / standby
-    uint16_t bg = (geoCount > 0) ? TFT_GREEN : TFT_YELLOW;
+    uint16_t bg = isConnected ? TFT_GREEN : (geoHealthy ? TFT_YELLOW : TFT_RED);
     uint16_t fg = TFT_BLACK;
 
     tft.fillRoundRect(246, 8, 60, 25, 4, bg);
@@ -1031,11 +1031,7 @@ void drawBleBadge(bool isConnected) {
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(fg, bg);
     setStoryFont(9);
-    // Tampilkan angka jumlah geofencing / iTag yang tersambung di samping logo bluetooth
-    String bleText = "--";
-    if (geoHealthy) {
-        bleText = String(geoCount);
-    }
+    String bleText = geoCount > 0 ? String(geoCount) : (geoHealthy ? "0" : "--");
     tft.drawString(bleText, 285, 21);
 }
 
@@ -1418,12 +1414,14 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
                         if (photoSyncMutex &&
                             xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                            free(photoDisplayData);
-                            photoDisplayData = jpegData;
-                            photoDisplaySize = received;
-                            photoDisplayUid = normalizeRfidUid(uid);
-                            jpegData = NULL;
-                            displayReady = true;
+                            if (photoDisplayRequestedUid.equalsIgnoreCase(normalizeRfidUid(uid))) {
+                                free(photoDisplayData);
+                                photoDisplayData = jpegData;
+                                photoDisplaySize = received;
+                                photoDisplayUid = normalizeRfidUid(uid);
+                                jpegData = NULL;
+                                displayReady = true;
+                            }
                             xSemaphoreGive(photoSyncMutex);
                         }
                         Serial.printf("[PHOTO_SYNC] Display buffer uid=%s ready=%d heap=%lu\n",
@@ -1474,6 +1472,11 @@ void requestPhotoSync(const String &uid, const String &sid) {
     if (cleanUid.length() == 0 || !photoSyncQueue || !photoSyncMutex ||
         WiFi.status() != WL_CONNECTED) return;
     if (xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+    if (photoDisplayData && photoDisplaySize > 100 &&
+        photoDisplayUid.equalsIgnoreCase(cleanUid)) {
+        xSemaphoreGive(photoSyncMutex);
+        return;
+    }
 
     uint32_t sidHash = 2166136261UL;
     for (size_t i = 0; i < cleanSid.length(); ++i) {
@@ -1548,8 +1551,12 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
     String hexUid = uid;
     hexUid.toUpperCase();
     String decUid = hexToDecStringUnpadded(hexUid);
-    requestPhotoSync(uid, sidHint);
     String cleanUid = normalizeRfidUid(uid);
+    if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        photoDisplayRequestedUid = cleanUid;
+        xSemaphoreGive(photoSyncMutex);
+    }
+    requestPhotoSync(uid, sidHint);
     bool drawn = false;
     if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (photoDisplayData && photoDisplaySize > 100 &&
@@ -1719,6 +1726,7 @@ uint8_t geoTagCount = 0;
 portMUX_TYPE geoMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t geoScanHeartbeat = 0, geoOverflowSeen = 0;
 bool geoScanCompleted = false, geoOverflow = false;
+uint32_t geoAdvertisements = 0, geoTagAdvertisements = 0;
 TaskHandle_t geoTaskHandle = NULL;
 volatile bool bleScannerRestartedForTls = false;
 int geoCount = 0, geoTapCount = 0;
@@ -1796,6 +1804,10 @@ bool advertisedNameContains(const NimBLEAdvertisedDevice *device, const char *ne
 class GeoAdvertCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice *device) override {
         if (!device) return;
+        portENTER_CRITICAL(&geoMux);
+        ++geoAdvertisements;
+        portEXIT_CRITICAL(&geoMux);
+
         const uint8_t *address = device->getAddress().getVal();
         char mac[18];
         snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -1805,11 +1817,13 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
             advertisedNameContains(device, "BAND") || advertisedNameContains(device, "BUDS") ||
             advertisedNameContains(device, "PHONE")) return;
         bool itag = (device->haveServiceUUID() &&
-            device->isAdvertisingService(NimBLEUUID((uint16_t)0x1802))) ||
+            (device->isAdvertisingService(NimBLEUUID((uint16_t)0x1802)) ||
+                device->isAdvertisingService(NimBLEUUID((uint16_t)0xFFE0)))) ||
             advertisedNameContains(device, "ITAG") || advertisedNameContains(device, "ISEARCH");
-            
+
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
+        if (itag) ++geoTagAdvertisements;
         for (uint8_t i = 0; i < geoTagCount; ++i) {
             if (strcasecmp(mac, geoTags[i].mac) == 0) {
                 geoTags[i].seen = now; geoTags[i].rssi = device->getRSSI();
@@ -1849,7 +1863,8 @@ void geoScanTask(void *unused) {
             if (!bleStackInitialized) {
                 NimBLEDevice::init("ELOTO_iTag_Confirm");
                 NimBLEScan *scan = NimBLEDevice::getScan();
-                scan->setScanCallbacks(&callbacks, false);
+                // Refresh known tags on repeated advertisements so presence does not expire.
+                scan->setScanCallbacks(&callbacks, true);
                 scan->setActiveScan(true);
                 scan->setInterval(160);
                 scan->setWindow(80);
@@ -1877,6 +1892,24 @@ void geoScanTask(void *unused) {
             geoOverflow = false;
         geoScanHeartbeat = now; geoScanCompleted = scanRan;
         portEXIT_CRITICAL(&geoMux);
+
+        static uint32_t lastDiagnosticsAt = 0;
+        if (uint32_t(now - lastDiagnosticsAt) >= 10000) {
+            uint32_t advertisements;
+            uint32_t tagAdvertisements;
+            uint8_t tagCount;
+            portENTER_CRITICAL(&geoMux);
+            advertisements = geoAdvertisements;
+            tagAdvertisements = geoTagAdvertisements;
+            tagCount = geoTagCount;
+            geoAdvertisements = 0;
+            geoTagAdvertisements = 0;
+            portEXIT_CRITICAL(&geoMux);
+            Serial.printf("[BLE] scan window adverts=%lu itag_candidates=%lu tags=%u scan_ms=%lu heap=%u\n",
+                (unsigned long)advertisements, (unsigned long)tagAdvertisements,
+                tagCount, (unsigned long)activeScanMs, (unsigned int)ESP.getFreeHeap());
+            lastDiagnosticsAt = now;
+        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -2911,7 +2944,7 @@ bool syncDatabaseToSDCard(bool syncPhotos) {
                                 }
                                 expectedBytes += line.length() + 1;
                                 syncCount++;
-                                if (photoJobCount < MAX_RAM_USERS) {
+                                if (syncPhotos && photoJobCount < MAX_RAM_USERS) {
                                     uid.toCharArray(photoJobUids[photoJobCount], sizeof(photoJobUids[0]));
                                     sid.toCharArray(photoJobSids[photoJobCount], sizeof(photoJobSids[0]));
                                     photoJobCount++;
@@ -4778,32 +4811,34 @@ void drawScreen() {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("SEMUA MEKANIK MASUK", 240, 72);
         int totalMekanik = countQueueMechanics();
-        uint8_t iconCount = constrain(totalMekanik, 0, MAX_WORKERS);
-        if (iconCount > 0) {
-            uint8_t columns = min((uint8_t)iconCount, (uint8_t)5);
-            uint8_t rows = (iconCount + columns - 1) / columns;
-            float iconScale = iconCount == 1 ? 2.0f : (iconCount <= 2 ? 1.6f :
-                (iconCount <= 4 ? 1.3f : (iconCount <= 5 ? 1.0f : 0.75f)));
-            const int16_t groupX = 30;
-            const int16_t groupY = 96;
-            const int16_t groupWidth = 420;
-            const int16_t groupHeight = 92;
-            int16_t cellWidth = groupWidth / columns;
-            int16_t cellHeight = groupHeight / rows;
-            for (uint8_t index = 0; index < iconCount; ++index) {
-                uint8_t row = index / columns;
-                uint8_t column = index % columns;
-                int16_t centerX = groupX + cellWidth * column + cellWidth / 2;
-                int16_t centerY = groupY + cellHeight * row + cellHeight / 2;
-                drawSinglePersonIcon(centerX, centerY, iconScale, ELOTO_HEADER, false);
+        int lastMechanicIndex = -1;
+        for (int index = safetyQueue.topIndex; index >= 0; --index) {
+            if (!isQueueSupervisor(index) && !isFuelmanRole(safetyQueue.workers[index].role)) {
+                lastMechanicIndex = index;
+                break;
             }
+        }
+        if (lastMechanicIndex >= 0) {
+            WorkerInfo &lastMechanic = safetyQueue.workers[lastMechanicIndex];
+            const int16_t photoSize = 110;
+            tft.fillRect(24, 96, photoSize, photoSize, ELOTO_BG);
+            tft.drawRect(24, 96, photoSize, photoSize, TFT_WHITE);
+            if (!drawPhotoFromAPI(lastMechanic.uid, 24, 96, photoSize, photoSize, lastMechanic.sid)) {
+                drawSinglePersonIcon(79, 151, 1.8f, ELOTO_HEADER, false);
+            }
+            tft.setTextDatum(TL_DATUM);
+            setStoryFont(9);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            drawTextFit(lastMechanic.name, 154, 102, 300, TFT_WHITE, TFT_BLACK, 9);
+            tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+            drawTextFit("SID: " + formatSid(lastMechanic.sid), 154, 132, 300, TFT_LIGHTGREY, TFT_BLACK, 9);
         }
         if (totalMekanik > 0) {
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            drawTextFit("TOTAL: " + String(totalMekanik) + " MEKANIK", 190, 198, 260, TFT_WHITE, TFT_BLACK, 9);
-            drawTextFit("SIAP MEMULAI PEKERJAAN", 190, 226, 260, TFT_LIGHTGREY, TFT_BLACK, 9);
+            drawTextFit("TOTAL: " + String(totalMekanik) + " MEKANIK", 154, 166, 300, TFT_WHITE, TFT_BLACK, 9);
+            drawTextFit("SIAP MEMULAI PEKERJAAN", 154, 198, 300, TFT_LIGHTGREY, TFT_BLACK, 9);
         } else {
             tft.setTextDatum(MC_DATUM);
             setStoryFont(12);
@@ -5308,10 +5343,12 @@ void loop() {
         static bool lastWifiState = false;
         static bool lastGpsHistory = false;
         static bool lastBleState = false;
+        static bool lastBleHealthy = false;
         static int lastGeoCount = -1;
         
-        if (gpsNow != lastGpsState || sdNow != lastSdState || wifiNow != lastWifiState || gpsHasHistory != lastGpsHistory || bleNow != lastBleState || geoCount != lastGeoCount) {
+        if (gpsNow != lastGpsState || sdNow != lastSdState || wifiNow != lastWifiState || gpsHasHistory != lastGpsHistory || bleNow != lastBleState || geoHealthy != lastBleHealthy || geoCount != lastGeoCount) {
             lastGpsState = gpsNow; lastSdState = sdNow; lastWifiState = wifiNow; lastGpsHistory = gpsHasHistory; lastBleState = bleNow; lastGeoCount = geoCount;
+            lastBleHealthy = geoHealthy;
 
             // 1. Badge BLE
             drawBleBadge(bleNow);
