@@ -615,3 +615,80 @@ test('HTTPS releases BLE scanner stack memory and resumes scanning afterward', (
   assert.match(resume, /bleScannerRestartedForTls = true/);
   assert.match(scanTask, /if \(!bleScannerRestartedForTls\) vTaskDelay/);
 });
+
+test('BLE scan yields the shared radio mutex to pending HTTPS requests', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const begin = source.split('bool begin(const String &url, uint32_t mutexWaitMs = 3000) {', 2)[1]
+    .split('\n    }\n\n    template', 1)[0];
+  const scanTask = source.split('void geoScanTask(void *unused) {', 2)[1]
+    .split('\n// Hitung tag mekanik', 1)[0];
+
+  assert.match(begin, /registerNetworkIoWaiter\(\);[\s\S]*xSemaphoreTake\(networkIoMutex,[\s\S]*unregisterNetworkIoWaiter\(\)/);
+  assert.match(source, /bool begin\(const String &url, uint32_t mutexWaitMs = 3000\)/);
+  assert.match(scanTask, /networkIoRequestPending\(\)[\s\S]*xSemaphoreTake\(networkIoMutex/);
+  assert.match(scanTask, /if \(networkIoRequestPending\(\)\) \{\s*xSemaphoreGive\(networkIoMutex\);/);
+  assert.match(source, /http\.begin\(url, 20000\)/);
+});
+
+test('photo sync streams JPEGs to SD and renders the cache without a full-image heap buffer', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const photoFetch = source.split('bool fetchPhotoFromAPI(', 2)[1]
+    .split('\n// Jadwalkan cache foto', 1)[0];
+  const photoDraw = source.slice(source.lastIndexOf('bool drawPhotoFromAPI('))
+    .split('\n// Kenali nama event', 1)[0];
+
+  assert.match(photoFetch, /cachePhotoStreamToSD\(uid, sid, \*stream/);
+  assert.match(source, /size_t count = stream\.readBytes\(chunk, requested\)/);
+  assert.match(photoDraw, /TJpgDec\.drawFsJpg\(renderX, renderY, paths\[i\], SD\)/);
+  assert.doesNotMatch(photoDraw, /malloc\(size\)/);
+});
+
+test('offline telemetry replay yields while reading bounded SD log lines', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const replay = source.split('void uploadOfflineLogsSDCard() {', 2)[1]
+    .split('\n// Simpan hasil baca SD', 1)[0];
+  const networkTask = source.split('void networkTaskCore0(void * pvParameters) {', 2)[1]
+    .split('\n// Antrekan event', 1)[0];
+  const reconnect = networkTask.split('} else if (!wasWifiConnected) {', 2)[1]
+    .split('} else if ((startupSyncPending', 1)[0];
+
+  assert.doesNotMatch(replay, /readStringUntil\(/);
+  assert.match(replay, /lineLength < 512/);
+  assert.match(replay, /vTaskDelay\(pdMS_TO_TICKS\(1\)\)/);
+  assert.match(replay, /stopped = true;\s*continue;/);
+  assert.match(reconnect, /logAuditAsync\("HEARTBEAT_SYNC"/);
+  assert.doesNotMatch(reconnect, /syncDatabaseToSDCard|uploadOfflineLogsSDCard/);
+  assert.match(networkTask, /uxQueueMessagesWaiting\(networkQueue\) == 0/);
+});
+
+test('VPS HTTPS uses a memory-bounded TLS client without disabling certificate validation', () => {
+  const transportPath = fileURLToPath(new URL('../../esp32/LowMemoryTlsClient.h', import.meta.url));
+  const transport = readFileSync(transportPath, 'utf8');
+
+  assert.match(transport, /tls_\.setCACert\(DEFAULT_SERVER_CA\)/);
+  assert.match(transport, /tls_\.setX509Time\(static_cast<uint32_t>\(time\(nullptr\)\)\)/);
+  assert.match(transport, /setBufferSizes\(RX_BYTES, TX_BYTES\)/);
+  assert.match(transport, /RX_BYTES = 16384/);
+  assert.match(transport, /TX_BYTES = 512/);
+  assert.match(transport, /tls_\.setCertStore\(&identity_\)/);
+  assert.match(transport, /class CooperativeWiFiClient : public WiFiClient/);
+  assert.match(transport, /CooperativeWiFiClient tcp_/);
+  assert.match(transport, /int available\(\) override \{\s*vTaskDelay\(pdMS_TO_TICKS\(1\)\);\s*return WiFiClient::available\(\);/);
+  assert.doesNotMatch(transport, /setInsecure\s*\(/);
+});
+
+test('HTTPClient is destroyed before its referenced TLS transport', () => {
+  const firmware = fileURLToPath(new URL('../../esp32/ELOTO_FIXED/ELOTO_FIXED.ino', import.meta.url));
+  const source = readFileSync(firmware, 'utf8');
+  const wrapper = source.split('class ServerHttpClient {', 2)[1]
+    .split('\n};', 1)[0];
+  const end = wrapper.split('void end() {', 2)[1].split('\n    }', 1)[0];
+
+  assert.ok(wrapper.indexOf('std::unique_ptr<ElotoSecureClient> secureClient;') <
+    wrapper.indexOf('HTTPClient request;'));
+  assert.match(end, /request\.end\(\);[\s\S]*secureClient->stop\(\)/);
+  assert.doesNotMatch(end, /secureClient\.reset\(\)/);
+});

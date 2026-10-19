@@ -12,7 +12,7 @@
 #include <freertos/semphr.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <WiFiClientSecure.h>
+#include "../LowMemoryTlsClient.h"
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <time.h>
@@ -99,24 +99,45 @@ volatile uint32_t wifiAttemptStartedAt = 0;
 volatile uint8_t wifiAttemptProfile = 0;
 String server_host      = eloto::DEFAULT_SERVER_BASE;
 const char* SERVER_PROJECT_PATH  = "";
-const char *server_ca = eloto::VPS_SERVER_CA;
 SemaphoreHandle_t networkIoMutex = NULL;
+portMUX_TYPE networkIoWaitersMux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t networkIoWaiters = 0;
 volatile bool bleStackInitialized = false;
 
 void deinitBleForTls();
 void resumeBleScannerAfterTls();
 
+void registerNetworkIoWaiter() {
+    portENTER_CRITICAL(&networkIoWaitersMux);
+    ++networkIoWaiters;
+    portEXIT_CRITICAL(&networkIoWaitersMux);
+}
+
+void unregisterNetworkIoWaiter() {
+    portENTER_CRITICAL(&networkIoWaitersMux);
+    if (networkIoWaiters > 0) --networkIoWaiters;
+    portEXIT_CRITICAL(&networkIoWaitersMux);
+}
+
+bool networkIoRequestPending() {
+    portENTER_CRITICAL(&networkIoWaitersMux);
+    bool pending = networkIoWaiters > 0;
+    portEXIT_CRITICAL(&networkIoWaitersMux);
+    return pending;
+}
+
 bool systemClockReady() {
     return time(nullptr) >= 1792121297;
 }
 
-using ElotoSecureClient = WiFiClientSecure;
+using ElotoSecureClient = eloto::LowMemoryTlsClient;
 
 class ServerHttpClient {
-    ElotoSecureClient secureClient;
+    std::unique_ptr<ElotoSecureClient> secureClient;
     HTTPClient request;
     bool networkIoHeld = false;
     bool requestReady = false;
+    String secureHost;
 
     void releaseNetworkIo() {
         if (networkIoHeld) {
@@ -127,18 +148,23 @@ class ServerHttpClient {
     }
 
 public:
-    ServerHttpClient() {
-        secureClient.setCACert(server_ca);
-    }
+    ServerHttpClient() = default;
 
-    bool begin(const String &url) {
+    bool begin(const String &url, uint32_t mutexWaitMs = 3000) {
         request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
         if (!url.startsWith("https://")) return false;
         if (!systemClockReady()) {
             Serial.printf("[TLS] Request deferred until NTP is ready epoch=%ld\n", (long)time(nullptr));
             return false;
         }
-        if (!networkIoMutex || xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        if (!networkIoMutex) {
+            Serial.println("[TLS] Request deferred because BLE/network mutex is unavailable");
+            return false;
+        }
+        registerNetworkIoWaiter();
+        BaseType_t mutexAcquired = xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(mutexWaitMs));
+        unregisterNetworkIoWaiter();
+        if (mutexAcquired != pdTRUE) {
             Serial.println("[TLS] Request deferred because BLE/network mutex is busy");
             return false;
         }
@@ -146,9 +172,40 @@ public:
         deinitBleForTls();
         Serial.printf("[TLS] Heap after BLE pause free=%u largest=%u\n",
             (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getMaxAllocHeap());
-        requestReady = request.begin(secureClient, url);
+        int authorityStart = url.indexOf("://") + 3;
+        int pathStart = url.indexOf('/', authorityStart);
+        String authority = pathStart >= 0 ? url.substring(authorityStart, pathStart) :
+            url.substring(authorityStart);
+        if (authority.startsWith("[")) {
+            Serial.println("[TLS] IPv6 server endpoints are not supported by the current verifier");
+            releaseNetworkIo();
+            return false;
+        }
+        int portSeparator = authority.indexOf(':');
+        String host = portSeparator >= 0 ? authority.substring(0, portSeparator) : authority;
+        if (host.length() == 0 || host.length() >= 64 || host.indexOf('@') >= 0) {
+            Serial.println("[TLS] Invalid HTTPS authority; request refused");
+            releaseNetworkIo();
+            return false;
+        }
+        if (secureClient && !secureHost.equalsIgnoreCase(host)) {
+            Serial.println("[TLS] Reusing a request client for another host is not allowed");
+            releaseNetworkIo();
+            return false;
+        }
+        if (!secureClient) {
+            secureClient.reset(new (std::nothrow) ElotoSecureClient(host.c_str()));
+            if (!secureClient) {
+                Serial.println("[TLS] Could not allocate low-memory TLS client");
+                releaseNetworkIo();
+                return false;
+            }
+            secureHost = host;
+        }
+        requestReady = request.begin(*secureClient, url);
         if (!requestReady) {
             request.end();
+            secureClient->stop();
             releaseNetworkIo();
             Serial.printf("[TLS] HTTPClient begin failed url=%s\n", url.c_str());
             return false;
@@ -166,7 +223,7 @@ public:
     }
 
     void setTimeout(uint16_t timeout) {
-        secureClient.setTimeout(timeout);
+        if (secureClient) secureClient->setTimeout(timeout);
         request.setTimeout(timeout);
     }
 
@@ -176,12 +233,17 @@ public:
     int getSize() { return request.getSize(); }
     String getString() { return request.getString(); }
     String header(const char *name) { return request.header(name); }
-    int lastSecureError(char *buffer, size_t size) { return secureClient.lastError(buffer, size); }
+    int lastSecureError(char *buffer, size_t size) {
+        return secureClient ? secureClient->lastError(buffer, size) : -1;
+    }
     Stream &getStream() { return request.getStream(); }
     NetworkClient *getStreamPtr() { return request.getStreamPtr(); }
     void end() {
         if (requestReady) request.end();
         requestReady = false;
+        if (secureClient) {
+            secureClient->stop();
+        }
         releaseNetworkIo();
     }
 
@@ -193,7 +255,7 @@ public:
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 2000;
-const uint16_t PHOTO_DISPLAY_SIZE            = 300;
+const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 const uint16_t PHOTO_FRAME_SIZE              = 150;
 const uint32_t PHOTO_SYNC_RETRY_MS            = 3000;
 const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 15000;
@@ -1172,44 +1234,128 @@ size_t readPhotoBody(NetworkClient &stream, uint8_t *buffer, size_t expectedSize
     return received;
 }
 
-// Tulis JPEG ke nama FAT 8.3 secara transaksional agar cache lama tetap utuh.
-bool cachePhotoToSD(const String &uid, const String &sid, const uint8_t *jpegData, size_t jpegSize) {
-    if (!sdCardMounted || sdMutex == NULL || jpegSize > 60000 ||
-        !isValidJpeg(jpegData, jpegSize)) return false;
-    if (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return false;
+// Simpan foto per-chunk agar unduhan TLS tidak membutuhkan buffer JPEG kontigu.
+bool cachePhotoStreamToSD(const String &uid, const String &sid, NetworkClient &stream,
+        size_t expectedSize, uint32_t timeoutMs) {
+    if (!sdCardMounted || !sdMutex || !spiBusMutex || expectedSize <= 100 ||
+        expectedSize > 60000 || relayPulseActive) return false;
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        Serial.printf("[PHOTO_SYNC] SD cache deferred uid=%s reason=sd_busy\n", uid.c_str());
+        return false;
+    }
 
     String base = "/foto/" + photoCacheBaseName(uid, sid);
     String active = base + ".jpg";
     String temporary = base + ".TMP";
     String backup = base + ".BAK";
     bool saved = false;
-    bool directoryReady = SD.exists("/foto") || SD.mkdir("/foto");
-    if (directoryReady) {
-        File directory = SD.open("/foto", FILE_READ);
-        directoryReady = directory && directory.isDirectory();
-        if (directory) directory.close();
+    bool fileReady = false;
+    const char *failureReason = "stream_timeout";
+    File photo;
+    if (xSemaphoreTakeRecursive(spiBusMutex, portMAX_DELAY) == pdTRUE) {
+        digitalWrite(TFT_CS_PIN, HIGH);
+        digitalWrite(TOUCH_CS_PIN, HIGH);
+        digitalWrite(SD_CS_PIN, HIGH);
+        bool directoryReady = SD.exists("/foto") || SD.mkdir("/foto");
+        if (directoryReady) {
+            File directory = SD.open("/foto", FILE_READ);
+            directoryReady = directory && directory.isDirectory();
+            if (directory) directory.close();
+        }
+        if (directoryReady && recoverSdFile(active.c_str(), temporary.c_str(), backup.c_str())) {
+            photo = SD.open(temporary, FILE_WRITE);
+            fileReady = static_cast<bool>(photo);
+        }
+        xSemaphoreGiveRecursive(spiBusMutex);
     }
-    if (directoryReady && recoverSdFile(active.c_str(), temporary.c_str(), backup.c_str())) {
-        File photo = SD.open(temporary, FILE_WRITE);
-        if (photo) {
-            size_t written = photo.write(jpegData, jpegSize);
-            photo.flush();
-            photo.close();
+    if (!fileReady) {
+        xSemaphoreGive(sdMutex);
+        Serial.printf("[PHOTO_SYNC] SD cache open failed uid=%s reason=cache_setup\n", uid.c_str());
+        return false;
+    }
+
+    uint8_t chunk[512];
+    size_t received = 0;
+    uint8_t firstBytes[2] = {};
+    uint8_t lastBytes[2] = {};
+    uint32_t startedAt = millis();
+    bool complete = true;
+    while (received < expectedSize && uint32_t(millis() - startedAt) < timeoutMs) {
+        if (relayPulseActive) {
+            complete = false;
+            failureReason = "relay_active";
+            break;
+        }
+        size_t requested = expectedSize - received;
+        if (requested > sizeof(chunk)) requested = sizeof(chunk);
+        size_t count = stream.readBytes(chunk, requested);
+        if (count == 0) {
+            if (!stream.connected()) {
+                complete = false;
+                failureReason = "stream_closed";
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        if (received < sizeof(firstBytes)) {
+            size_t firstCount = sizeof(firstBytes) - received;
+            if (firstCount > count) firstCount = count;
+            memcpy(firstBytes + received, chunk, firstCount);
+        }
+        if (count > 1) {
+            lastBytes[0] = chunk[count - 2];
+            lastBytes[1] = chunk[count - 1];
+        } else {
+            lastBytes[0] = lastBytes[1];
+            lastBytes[1] = chunk[0];
+        }
+        if (xSemaphoreTakeRecursive(spiBusMutex, portMAX_DELAY) != pdTRUE) {
+            complete = false;
+            break;
+        }
+        size_t written = photo.write(chunk, count);
+        xSemaphoreGiveRecursive(spiBusMutex);
+        if (written != count) {
+            complete = false;
+            failureReason = "sd_write";
+            break;
+        }
+        received += count;
+    }
+    complete = complete && received == expectedSize &&
+        firstBytes[0] == 0xFF && firstBytes[1] == 0xD8 &&
+        lastBytes[0] == 0xFF && lastBytes[1] == 0xD9;
+    if (received == expectedSize && (firstBytes[0] != 0xFF || firstBytes[1] != 0xD8 ||
+        lastBytes[0] != 0xFF || lastBytes[1] != 0xD9)) failureReason = "invalid_jpeg";
+
+    if (xSemaphoreTakeRecursive(spiBusMutex, portMAX_DELAY) == pdTRUE) {
+        photo.flush();
+        photo.close();
+        if (complete) {
             File verify = SD.open(temporary, FILE_READ);
-            bool valid = written == jpegSize && verify && verify.size() == jpegSize;
+            bool valid = verify && verify.size() == expectedSize;
             if (verify) {
-                uint8_t signature[2] = { 0, 0 };
+                uint8_t signature[2] = {};
                 valid = valid && verify.read(signature, sizeof(signature)) == sizeof(signature) &&
-                    signature[0] == 0xFF && signature[1] == 0xD8;
+                    signature[0] == 0xFF && signature[1] == 0xD8 &&
+                    verify.seek(expectedSize - sizeof(signature)) &&
+                    verify.read(signature, sizeof(signature)) == sizeof(signature) &&
+                    signature[0] == 0xFF && signature[1] == 0xD9;
                 verify.close();
             }
-            if (valid) saved = commitSdFile(active.c_str(), temporary.c_str(), backup.c_str());
+            if (!valid) failureReason = "file_verify";
+            else if (commitSdFile(active.c_str(), temporary.c_str(), backup.c_str())) saved = true;
+            else failureReason = "commit_failed";
         }
+        if (!saved && SD.exists(temporary)) SD.remove(temporary);
+        digitalWrite(SD_CS_PIN, HIGH);
+        xSemaphoreGiveRecursive(spiBusMutex);
     }
-    digitalWrite(SD_CS_PIN, HIGH);
-    giveSd();
-    if (!saved) Serial.printf("[PHOTO_SYNC] SD cache write failed uid=%s sid=%s bytes=%u\n",
-        uid.c_str(), sid.c_str(), (unsigned int)jpegSize);
+    xSemaphoreGive(sdMutex);
+    if (!saved) Serial.printf("[PHOTO_SYNC] SD stream cache failed uid=%s sid=%s received=%u expected=%u complete=%d reason=%s\n",
+        uid.c_str(), sid.c_str(), (unsigned int)received, (unsigned int)expectedSize,
+        complete ? 1 : 0, failureReason);
     return saved;
 }
 
@@ -1239,7 +1385,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             (attempt > 0 && lookupId.equalsIgnoreCase(lookupIds[0]))) continue;
 
         String photoUrl = getApiUrl("users/photo/") + lookupId + "?size=" +
-            String(PHOTO_DISPLAY_SIZE) + "&quality=78&fit=cover";
+            String(PHOTO_DISPLAY_SIZE) + "&quality=60&fit=cover";
         ServerHttpClient http;
         if (!http.begin(photoUrl)) {
             Serial.printf("[PHOTO_SYNC] HTTP begin failed uid=%s lookup=%s\n", uid.c_str(), lookupId.c_str());
@@ -1263,16 +1409,13 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             } else if (length <= 100 || length > 60000) {
                 Serial.printf("[PHOTO_SYNC] Invalid JPEG size uid=%s content=%d type=%s\n",
                     uid.c_str(), length, contentType.c_str());
-            } else if (availableHeap <= (uint32_t)length + 12000 || largestBlock < (uint32_t)length) {
-                Serial.printf("[PHOTO_SYNC] Deferred after GET uid=%s bytes=%d heap=%lu largest_block=%lu\n",
-                    uid.c_str(), length, (unsigned long)availableHeap, (unsigned long)largestBlock);
-            } else {
+            } else if (availableHeap > (uint32_t)length + 12000 && largestBlock >= (uint32_t)length) {
                 uint8_t *jpegData = static_cast<uint8_t *>(malloc((size_t)length));
                 if (jpegData != NULL) {
                     NetworkClient *stream = http.getStreamPtr();
-                    size_t received = readPhotoBody(*stream, jpegData, (size_t)length, 15000);
+                    size_t received = stream ?
+                        readPhotoBody(*stream, jpegData, (size_t)length, 15000) : 0;
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
-                        saved = cachePhotoToSD(uid, sid, jpegData, received);
                         if (photoSyncMutex &&
                             xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                             free(photoDisplayData);
@@ -1283,8 +1426,8 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                             displayReady = true;
                             xSemaphoreGive(photoSyncMutex);
                         }
-                        Serial.printf("[PHOTO_SYNC] Display buffer uid=%s ready=%d SD_saved=%d\n",
-                            uid.c_str(), displayReady ? 1 : 0, saved ? 1 : 0);
+                        Serial.printf("[PHOTO_SYNC] Display buffer uid=%s ready=%d heap=%lu\n",
+                            uid.c_str(), displayReady ? 1 : 0, (unsigned long)ESP.getFreeHeap());
                     } else {
                         Serial.printf("[PHOTO_SYNC] Invalid/truncated JPEG uid=%s received=%u expected=%d start=%02X%02X end=%02X%02X\n",
                             uid.c_str(), (unsigned int)received, length,
@@ -1297,6 +1440,12 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                     Serial.printf("[PHOTO_SYNC] JPEG allocation failed uid=%s bytes=%d heap=%lu\n",
                         uid.c_str(), length, (unsigned long)availableHeap);
                 }
+            } else if (sdCardMounted) {
+                NetworkClient *stream = http.getStreamPtr();
+                saved = stream && cachePhotoStreamToSD(uid, sid, *stream, (size_t)length, 15000);
+            } else {
+                Serial.printf("[PHOTO_SYNC] Deferred after GET uid=%s bytes=%d heap=%lu largest_block=%lu\n",
+                    uid.c_str(), length, (unsigned long)availableHeap, (unsigned long)largestBlock);
             }
         }
         Serial.printf("[PHOTO_SYNC] GET lookup=%s HTTP=%d type=%s content=%d SD_saved=%d display_ready=%d heap=%lu\n",
@@ -1304,6 +1453,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             (unsigned long)ESP.getFreeHeap());
         http.end();
         if (saved || displayReady) return true;
+        if (code == HTTP_CODE_OK) return false;
         if (code == HTTP_CODE_NOT_FOUND) continue;
         if (attempt == 0 && sid.length() > 0 && !sid.equalsIgnoreCase(uid)) {
             Serial.printf("[PHOTO_SYNC] Retrying photo via SID after UID fetch failure uid=%s sid=%s\n",
@@ -1377,7 +1527,7 @@ void photoSyncTask(void *pvParameters) {
                     for (uint8_t i = 0; i < MAX_RAM_USERS; ++i) {
                         if (photoSyncAttempts[i].uid.equalsIgnoreCase(cleanUid) &&
                             photoSyncAttempts[i].sidHash == sidHash) {
-                            photoSyncAttempts[i].attemptedAt = millis() - PHOTO_SYNC_RETRY_MS;
+                            photoSyncAttempts[i].attemptedAt = millis();
                             break;
                         }
                     }
@@ -1393,7 +1543,7 @@ void photoSyncTask(void *pvParameters) {
 // Gambar foto dari cache SD; tidak melakukan HTTP di jalur input/tampilan.
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, const String &sidHint) {
     uid.trim();
-    if (uid.length() == 0 || ESP.getFreeHeap() < 16000) return false;
+    if (uid.length() == 0) return false;
 
     String hexUid = uid;
     hexUid.toUpperCase();
@@ -1434,67 +1584,60 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         "/foto/" + decUid + ".jpg",
         "/foto/" + uid + ".jpg"
     };
-    uint8_t *jpegData = NULL;
-    size_t jpegSize = 0;
-    String cachedPath = "";
+    bool invalidJpeg = false;
 
-    if (sdCardMounted && takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
-        for (uint8_t i = 0; i < 5 && jpegData == NULL; ++i) {
+    if (sdCardMounted && takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
+        for (uint8_t i = 0; i < 5 && !drawn && !invalidJpeg; ++i) {
             File photo = SD.open(paths[i], FILE_READ);
             if (!photo) continue;
             size_t size = photo.size();
-            if (size > 100 && size <= 60000 && ESP.getMaxAllocHeap() >= size) {
-                jpegData = static_cast<uint8_t *>(malloc(size));
-                if (jpegData != NULL && photo.read(jpegData, size) == size) {
-                    jpegSize = size;
-                    cachedPath = paths[i];
-                }
-                else {
-                    free(jpegData);
-                    jpegData = NULL;
-                }
-            }
+            uint8_t signature[2] = {};
+            bool valid = size > 100 && size <= 60000 &&
+                photo.read(signature, sizeof(signature)) == sizeof(signature) &&
+                signature[0] == 0xFF && signature[1] == 0xD8 &&
+                photo.seek(size - sizeof(signature)) &&
+                photo.read(signature, sizeof(signature)) == sizeof(signature) &&
+                signature[0] == 0xFF && signature[1] == 0xD9;
             photo.close();
-        }
-        digitalWrite(SD_CS_PIN, HIGH);
-        giveSd();
-    }
+            if (!valid) {
+                if (size > 100) {
+                    SD.remove(paths[i]);
+                    invalidJpeg = true;
+                }
+                continue;
+            }
 
-    drawn = false;
-    bool invalidJpeg = false;
-    if (isValidJpeg(jpegData, jpegSize)) {
-        uint16_t sourceW = 0, sourceH = 0;
-        if (TJpgDec.getJpgSize(&sourceW, &sourceH, jpegData, jpegSize) == JDR_OK && sourceW > 0 && sourceH > 0) {
+            uint16_t sourceW = 0, sourceH = 0;
+            if (TJpgDec.getFsJpgSize(&sourceW, &sourceH, paths[i], SD) != JDR_OK ||
+                sourceW == 0 || sourceH == 0) {
+                SD.remove(paths[i]);
+                invalidJpeg = true;
+                continue;
+            }
             uint8_t scale = 1;
             while (scale < 8 && (sourceW / scale > boxW || sourceH / scale > boxH)) scale *= 2;
             uint16_t renderW = sourceW / scale;
             uint16_t renderH = sourceH / scale;
             int32_t renderX = boxX + (boxW - renderW) / 2;
             int32_t renderY = boxY + (boxH - renderH) / 2;
-            if (renderX >= boxX && renderY >= boxY && renderX + renderW <= boxX + boxW &&
-                renderY + renderH <= boxY + boxH) {
+            if (renderX >= boxX && renderY >= boxY &&
+                renderX + renderW <= boxX + boxW && renderY + renderH <= boxY + boxH) {
                 tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
                 TJpgDec.setJpgScale(scale);
                 TJpgDec.setCallback(tft_output);
-                drawn = TJpgDec.drawJpg(renderX, renderY, jpegData, jpegSize) == JDR_OK;
+                drawn = TJpgDec.drawFsJpg(renderX, renderY, paths[i], SD) == JDR_OK;
+                Serial.printf("[PHOTO] SD image rendered uid=%s result=%d bytes=%u\n",
+                    uid.c_str(), drawn ? 1 : 0, (unsigned int)size);
+                if (!drawn) {
+                    SD.remove(paths[i]);
+                    invalidJpeg = true;
+                }
             }
-        } else invalidJpeg = true;
-    } else if (jpegData != NULL) {
-        invalidJpeg = true;
-    }
-    if (jpegData != NULL) free(jpegData);
-    if (invalidJpeg && cachedPath.length() > 0 && sdCardMounted &&
-        takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
-        bool removed = SD.remove(cachedPath);
+        }
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
-        Serial.printf("[PHOTO] Cached JPEG decode failed uid=%s path=%s removed=%d\n",
-            uid.c_str(), cachedPath.c_str(), removed ? 1 : 0);
-        if (removed) requestPhotoSync(uid, sidHint);
-    } else if (!drawn && cachedPath.length() > 0) {
-        Serial.printf("[PHOTO] JPEG render failed uid=%s path=%s bytes=%u\n",
-            uid.c_str(), cachedPath.c_str(), (unsigned int)jpegSize);
     }
+    if (invalidJpeg) requestPhotoSync(uid, sidHint);
     return drawn;
 }
 
@@ -1693,8 +1836,13 @@ void geoScanTask(void *unused) {
         uint32_t scanStart = millis();
         uint32_t activeScanMs = 0;
         while (activeScanMs < 2000) {
-            if (!networkIoMutex ||
+            if (networkIoRequestPending() || !networkIoMutex ||
                 xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            if (networkIoRequestPending()) {
+                xSemaphoreGive(networkIoMutex);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
@@ -2946,7 +3094,34 @@ void uploadOfflineLogsSDCard() {
                 bool writeOk = true;
                 size_t pendingBytes = 0;
                 while (logFile.available()) {
-                    String line = logFile.readStringUntil('\n');
+                    String line;
+                    line.reserve(256);
+                    bool lineOverflow = false;
+                    bool readError = false;
+                    size_t lineLength = 0;
+                    while (logFile.available()) {
+                        int nextByte = logFile.read();
+                        if (nextByte < 0) {
+                            readError = true;
+                            break;
+                        }
+                        if (nextByte == '\n') break;
+                        if (lineLength < 512) line += (char)nextByte;
+                        else lineOverflow = true;
+                        ++lineLength;
+                        if ((lineLength & 0x3F) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+                    }
+                    if (readError) {
+                        Serial.println("[TELEMETRY] Offline log read failed; keeping source file");
+                        writeOk = false;
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    if (lineOverflow) {
+                        Serial.printf("[TELEMETRY] Dropped oversized offline log line bytes=%u\n",
+                            (unsigned int)lineLength);
+                        continue;
+                    }
                     line.trim();
                     if (line.length() == 0) continue;
 
@@ -3006,6 +3181,7 @@ void uploadOfflineLogsSDCard() {
                                 http.end();
                                 while (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) vTaskDelay(pdMS_TO_TICKS(20));
                                 if (httpCode >= 200 && httpCode < 300) {
+                                    stopped = true;
                                     continue;
                                 }
                             }
@@ -3270,7 +3446,7 @@ void networkTaskCore0(void * pvParameters) {
                 ESP.getFreeHeap() >= MIN_HEAP_TO_POST_TELEMETRY) {
                 String url = getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry";
                 ServerHttpClient http;
-                http.begin(url);
+                http.begin(url, 20000);
                 http.addHeader("User-Agent", "ESP32-E-LOTO/5.0");
                 http.addHeader("Content-Type", "application/json");
                 http.addHeader("X-Device-Id", getDeviceId());
@@ -3366,7 +3542,7 @@ void networkTaskCore0(void * pvParameters) {
         }
 
         if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && sdCardMounted &&
-            millis() - lastOfflineUploadTask >= 15000 && ESP.getFreeHeap() > 30000) {
+            millis() - lastOfflineUploadTask >= 5000 && ESP.getFreeHeap() > 30000) {
             lastOfflineUploadTask = millis();
             uploadOfflineLogsSDCard();
         }
@@ -3404,16 +3580,19 @@ void networkTaskCore0(void * pvParameters) {
                     lastReconnectAttempt = millis();
                     tryConnectBestWifi();
                 }
-            } else if ((!wasWifiConnected || startupSyncPending ||
-                        millis() - lastDbSyncTask >= PERSONNEL_SYNC_INTERVAL_MS) && ESP.getFreeHeap() > 30000) {
-                bool justReconnected = !wasWifiConnected;
+            } else if (!wasWifiConnected) {
                 wasWifiConnected = true;
-                lastDbSyncTask = millis();
-                if (justReconnected) discoverServer();
-                syncDatabaseToSDCard();
-                uploadOfflineLogsSDCard();
-                startupSyncPending = false;
+                lastOfflineUploadTask = millis();
+                discoverServer();
                 logAuditAsync("HEARTBEAT_SYNC", lastScannedUID);
+                initialHeartbeatSent = true;
+                lastHeartbeatTask = millis();
+            } else if ((startupSyncPending ||
+                        millis() - lastDbSyncTask >= PERSONNEL_SYNC_INTERVAL_MS) &&
+                        ESP.getFreeHeap() > 30000 && uxQueueMessagesWaiting(networkQueue) == 0) {
+                lastDbSyncTask = millis();
+                syncDatabaseToSDCard();
+                startupSyncPending = false;
             }
         }
 
