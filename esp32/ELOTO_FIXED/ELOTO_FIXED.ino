@@ -106,6 +106,16 @@ volatile bool bleStackInitialized = false;
 // Diagnostics: who holds networkIoMutex and since when.
 char networkIoOwner[48] = "";
 volatile uint32_t networkIoOwnerSince = 0;
+// BLE dinyalakan ulang hanya setelah jaringan diam, agar burst HTTPS cukup satu siklus deinit/init.
+volatile uint32_t lastNetworkIoReleasedAt = 0;
+volatile bool bleInitInProgress = false;
+volatile uint32_t bleInitStartedAt = 0;
+volatile bool bleHalted = false;
+const uint32_t BLE_RESUME_QUIET_MS = 1500;
+const uint32_t BLE_INIT_HANG_MS = 10000;
+// Log lapangan: init berhasil pada free~48 KB/largest~13 KB; macet saat largest~5 KB.
+const uint32_t BLE_INIT_MIN_FREE_HEAP = 42000;
+const uint32_t BLE_INIT_MIN_BLOCK = 9000;
 
 void setNetworkIoOwner(const char *owner) {
     strlcpy(networkIoOwner, owner, sizeof(networkIoOwner));
@@ -144,13 +154,16 @@ class ServerHttpClient {
     std::unique_ptr<ElotoSecureClient> secureClient;
     HTTPClient request;
     bool networkIoHeld = false;
+    SemaphoreHandle_t heldMutex = NULL;
     bool requestReady = false;
     String secureHost;
 
     void releaseNetworkIo() {
         if (networkIoHeld) {
             networkIoHeld = false;
-            xSemaphoreGive(networkIoMutex);
+            lastNetworkIoReleasedAt = millis();
+            xSemaphoreGive(heldMutex);
+            heldMutex = NULL;
             resumeBleScannerAfterTls();
         }
     }
@@ -170,16 +183,18 @@ public:
             return false;
         }
         registerNetworkIoWaiter();
-        BaseType_t mutexAcquired = xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(mutexWaitMs));
+        SemaphoreHandle_t ioMutex = networkIoMutex;
+        BaseType_t mutexAcquired = xSemaphoreTake(ioMutex, pdMS_TO_TICKS(mutexWaitMs));
         unregisterNetworkIoWaiter();
         if (mutexAcquired != pdTRUE) {
-            TaskHandle_t holder = xSemaphoreGetMutexHolder(networkIoMutex);
+            TaskHandle_t holder = xSemaphoreGetMutexHolder(ioMutex);
             Serial.printf("[TLS] Request deferred because BLE/network mutex is busy holder=%s owner=%s held_ms=%lu url=%s\n",
                 holder ? pcTaskGetName(holder) : "none", networkIoOwner,
                 (unsigned long)(millis() - networkIoOwnerSince), url.c_str());
             return false;
         }
         networkIoHeld = true;
+        heldMutex = ioMutex;
         {
             int pathAt = url.indexOf("/api/");
             setNetworkIoOwner(pathAt >= 0 ? url.c_str() + pathAt : url.c_str());
@@ -270,12 +285,18 @@ public:
 
 const uint32_t NOTIFICATION_SUCCESS_DURATION = 250;
 const uint32_t NOTIFICATION_ERROR_DURATION   = 2000;
+// Notifikasi tap menunggu foto pertama dari VPS selama ini, lalu menampilkannya sebentar.
+const uint32_t NOTIFICATION_PHOTO_WAIT_MS    = 3500;
+const uint32_t NOTIFICATION_PHOTO_SHOW_MS    = 700;
 const uint16_t PHOTO_DISPLAY_SIZE            = 150;
 const uint16_t PHOTO_FRAME_SIZE              = 150;
 const uint32_t PHOTO_SYNC_RETRY_MS            = 3000;
 // Same UID is not re-queued within this window; prevents photo GETs starving telemetry.
 const uint32_t PHOTO_SYNC_REQUEST_COOLDOWN_MS = 15000;
-const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 15000;
+// Setiap HTTPS mematikan BLE sementara; polling jarang menjaga BLE dan heap tetap stabil.
+const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 60000;
+const uint32_t COMMAND_POLL_INTERVAL_MS       = 10000;
+const uint32_t PHOTO_PREFETCH_INTERVAL_MS     = 600000;
 const uint32_t MIN_HEAP_TO_VERIFY_CARD        = 12000;
 const uint32_t MIN_HEAP_TO_POST_TELEMETRY     = 14000;
 
@@ -400,7 +421,10 @@ struct NetworkJob {
 struct PhotoSyncJob {
     char uid[16];
     char sid[52];
+    bool background;
+    uint8_t retries;
 };
+const uint8_t PHOTO_PREFETCH_MAX_RETRIES = 4;
 
 struct PhotoSyncAttempt {
     String uid;
@@ -417,6 +441,8 @@ uint8_t *photoDisplayData = NULL;
 size_t photoDisplaySize = 0;
 String photoDisplayUid = "";
 String photoDisplayRequestedUid = "";
+bool photoDisplayOnSd = false;
+String photoMissingUid = "";
 
 unsigned long sessionStartTime = 0;
 bool isSessionActive = false;
@@ -481,6 +507,9 @@ public:
     TFT_GUARDED(drawCircle)
     TFT_GUARDED(drawFastHLine)
     TFT_GUARDED(drawFastVLine)
+    // Ikon BLE di header memakai drawLine tiap detik; tanpa kunci ia menyela transfer SD core 0.
+    TFT_GUARDED(drawLine)
+    TFT_GUARDED(drawPixel)
     TFT_GUARDED(drawRect)
     TFT_GUARDED(drawRoundRect)
     TFT_GUARDED(drawString)
@@ -491,6 +520,7 @@ public:
     TFT_GUARDED(fillTriangle)
     TFT_GUARDED(init)
     TFT_GUARDED(pushImage)
+    TFT_GUARDED(setRotation)
 #undef TFT_GUARDED
 };
 
@@ -583,6 +613,9 @@ String lastScannedRfidUID = "";
 bool rfidTapArmed = true;
 unsigned long lastRfidFrameMillis = 0;
 const uint32_t RFID_REMOVAL_GAP_MS = 250;
+// Tap memakai daftar personel hasil sinkron VPS bila sinkron terakhir masih sesegar ini.
+const uint32_t TAP_CACHE_MAX_AGE_MS = 300000;
+volatile uint32_t lastUserSyncOkAt = 0;
 
 bool startupSyncPending = true;
 volatile bool registeredUserSyncPending = false;
@@ -607,6 +640,7 @@ void saveSessionToSD();
 void clearSessionFromSD();
 bool loadSessionFromSD();
 WorkerInfo fetchCardDataAPI(String uid);
+WorkerInfo lookupCardForTap(String uid);
 bool deviceHasNetwork();
 void rebuildCachedQueueString();
 void logAuditAsync(String event, String uid);
@@ -622,13 +656,14 @@ void drawTftFooterSingle(const String &btnText);
 void drawTftFooterTriple(const String &leftText, const String &midText, const String &rightText);     
 void updateHeaderClock(bool forceRedraw = false);
 void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, bool withOutline = false, uint16_t outlineColor = TFT_BLACK);
+void drawPhotoPending(int16_t boxX, int16_t boxY, uint16_t boxSize, uint16_t color = ELOTO_HEADER);
 uint8_t readADKeypadRaw();
 void getLcdText(String &lcd0, String &lcd1);
 void sanitizeQueueDeadlock();
 void displayCardNotification(String uid, String name, String role, String statusMsg, bool isSuccess);
 void displayErrorCardPopup(String uid, String title, String name, String role, String sid, String bottomHint);
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, const String &sidHint = "");
-void requestPhotoSync(const String &uid, const String &sid);
+void requestPhotoSync(const String &uid, const String &sid, bool background = false);
 void photoSyncTask(void *pvParameters);
 void clearMainScreenArea();
 void executeFooterChoice();
@@ -1372,6 +1407,47 @@ bool cachePhotoStreamToSD(const String &uid, const String &sid, NetworkClient &s
     return saved;
 }
 
+// Simpan JPEG yang sudah utuh di RAM ke cache SD agar tampilan berikutnya tidak perlu internet.
+bool cachePhotoBufferToSD(const String &uid, const String &sid, const uint8_t *data, size_t size) {
+    if (!sdCardMounted || !isValidJpeg(data, size) || size > 60000 || relayPulseActive) return false;
+    if (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) {
+        Serial.printf("[PHOTO_SYNC] SD cache deferred uid=%s reason=sd_busy\n", uid.c_str());
+        return false;
+    }
+    String base = "/foto/" + photoCacheBaseName(uid, sid);
+    String active = base + ".jpg";
+    String temporary = base + ".TMP";
+    String backup = base + ".BAK";
+    bool saved = false;
+    const char *reason = "cache_setup";
+    size_t verifiedSize = 0;
+    bool directoryReady = SD.exists("/foto") || SD.mkdir("/foto");
+    if (directoryReady && recoverSdFile(active.c_str(), temporary.c_str(), backup.c_str())) {
+        File photo = SD.open(temporary, FILE_WRITE);
+        reason = "open_write";
+        if (photo) {
+            bool written = photo.write(data, size) == size;
+            photo.flush();
+            photo.close();
+            reason = written ? "open_verify" : "sd_write";
+            File verify = SD.open(temporary, FILE_READ);
+            if (verify) {
+                verifiedSize = verify.size();
+                verify.close();
+                if (written) reason = verifiedSize == size ? "commit_failed" : "size_mismatch";
+            }
+            bool valid = written && verifiedSize == size;
+            saved = valid && commitSdFile(active.c_str(), temporary.c_str(), backup.c_str());
+            if (!saved && SD.exists(temporary)) SD.remove(temporary);
+        }
+    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
+    if (!saved) Serial.printf("[PHOTO_SYNC] SD buffer cache failed uid=%s bytes=%u on_card=%u reason=%s\n",
+        uid.c_str(), (unsigned int)size, (unsigned int)verifiedSize, reason);
+    return saved;
+}
+
 // Ambil foto backend di task terpisah supaya proses tapping tetap responsif.
 bool fetchPhotoFromAPI(const String &uid, const String &sid) {
     uint32_t freeHeap = ESP.getFreeHeap();
@@ -1391,6 +1467,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
     }
 
     String lookupIds[2] = { uid, sid };
+    bool allNotFound = true;
     for (uint8_t attempt = 0; attempt < 2; ++attempt) {
         String lookupId = lookupIds[attempt];
         lookupId.trim();
@@ -1400,7 +1477,8 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
         String photoUrl = getApiUrl("users/photo/") + lookupId + "?size=" +
             String(PHOTO_DISPLAY_SIZE) + "&quality=60&fit=cover";
         ServerHttpClient http;
-        if (!http.begin(photoUrl)) {
+        // Task foto sendiri: boleh menunggu kunci HTTPS lebih lama daripada gagal lalu menunggu cooldown.
+        if (!http.begin(photoUrl, 10000)) {
             Serial.printf("[PHOTO_SYNC] HTTP begin failed uid=%s lookup=%s\n", uid.c_str(), lookupId.c_str());
             return false;
         }
@@ -1414,6 +1492,12 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
         bool saved = false;
         bool displayReady = false;
         if (code == HTTP_CODE_OK) {
+            // Foto kartu yang sedang tampil masuk RAM; sinkron latar langsung ke SD agar tidak dibuang.
+            bool wantDisplay = false;
+            if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                wantDisplay = photoDisplayRequestedUid.equalsIgnoreCase(normalizeRfidUid(uid));
+                xSemaphoreGive(photoSyncMutex);
+            }
             uint32_t availableHeap = ESP.getFreeHeap();
             uint32_t largestBlock = ESP.getMaxAllocHeap();
             if (!contentType.startsWith("image/jpeg")) {
@@ -1422,13 +1506,16 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             } else if (length <= 100 || length > 60000) {
                 Serial.printf("[PHOTO_SYNC] Invalid JPEG size uid=%s content=%d type=%s\n",
                     uid.c_str(), length, contentType.c_str());
-            } else if (availableHeap > (uint32_t)length + 12000 && largestBlock >= (uint32_t)length) {
+            } else if ((wantDisplay || !sdCardMounted) &&
+                       availableHeap > (uint32_t)length + 12000 && largestBlock >= (uint32_t)length) {
                 uint8_t *jpegData = static_cast<uint8_t *>(malloc((size_t)length));
                 if (jpegData != NULL) {
                     NetworkClient *stream = http.getStreamPtr();
                     size_t received = stream ?
                         readPhotoBody(*stream, jpegData, (size_t)length, 15000) : 0;
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
+                        // Simpan juga ke SD: layar dengan dua orang (SPV + mekanik) tetap punya foto.
+                        saved = cachePhotoBufferToSD(uid, sid, jpegData, received);
                         if (photoSyncMutex &&
                             xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                             if (photoDisplayRequestedUid.equalsIgnoreCase(normalizeRfidUid(uid))) {
@@ -1436,6 +1523,8 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                                 photoDisplayData = jpegData;
                                 photoDisplaySize = received;
                                 photoDisplayUid = normalizeRfidUid(uid);
+                                photoDisplayOnSd = saved;
+                                if (photoMissingUid.equalsIgnoreCase(photoDisplayUid)) photoMissingUid = "";
                                 jpegData = NULL;
                                 displayReady = true;
                             }
@@ -1470,6 +1559,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
         if (saved || displayReady) return true;
         if (code == HTTP_CODE_OK) return false;
         if (code == HTTP_CODE_NOT_FOUND) continue;
+        allNotFound = false;
         if (attempt == 0 && sid.length() > 0 && !sid.equalsIgnoreCase(uid)) {
             Serial.printf("[PHOTO_SYNC] Retrying photo via SID after UID fetch failure uid=%s sid=%s\n",
                 uid.c_str(), sid.c_str());
@@ -1477,11 +1567,16 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
         }
         return false;
     }
+    if (allNotFound && photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // VPS tidak punya foto untuk personel ini; layar tidak perlu menunggu.
+        photoMissingUid = normalizeRfidUid(uid);
+        xSemaphoreGive(photoSyncMutex);
+    }
     return false;
 }
 
 // Jadwalkan cache foto untuk kartu yang baru diverifikasi.
-void requestPhotoSync(const String &uid, const String &sid) {
+void requestPhotoSync(const String &uid, const String &sid, bool background) {
     String cleanUid = normalizeRfidUid(uid);
     String cleanSid = sid;
     cleanSid.trim();
@@ -1500,10 +1595,13 @@ void requestPhotoSync(const String &uid, const String &sid) {
         sidHash = (sidHash ^ (uint8_t)cleanSid[i]) * 16777619UL;
     }
     unsigned long now = millis();
+    // Foto yang sedang ditunggu layar dicoba ulang cepat; prefetch latar memakai jeda panjang.
+    uint32_t cooldown = (!background && photoDisplayRequestedUid.equalsIgnoreCase(cleanUid)) ?
+        PHOTO_SYNC_RETRY_MS : PHOTO_SYNC_REQUEST_COOLDOWN_MS;
     for (uint8_t i = 0; i < MAX_RAM_USERS; ++i) {
         if (photoSyncAttempts[i].uid.equalsIgnoreCase(cleanUid) &&
             photoSyncAttempts[i].sidHash == sidHash &&
-            now - photoSyncAttempts[i].attemptedAt < PHOTO_SYNC_REQUEST_COOLDOWN_MS) {
+            now - photoSyncAttempts[i].attemptedAt < cooldown) {
             xSemaphoreGive(photoSyncMutex);
             return;
         }
@@ -1512,7 +1610,10 @@ void requestPhotoSync(const String &uid, const String &sid) {
     PhotoSyncJob job = {};
     cleanUid.toCharArray(job.uid, sizeof(job.uid));
     cleanSid.toCharArray(job.sid, sizeof(job.sid));
-    if (xQueueSendToFront(photoSyncQueue, &job, 0) == pdTRUE) {
+    job.background = background;
+    BaseType_t queued = background ? xQueueSendToBack(photoSyncQueue, &job, 0) :
+        xQueueSendToFront(photoSyncQueue, &job, 0);
+    if (queued == pdTRUE) {
         photoSyncAttempts[photoSyncAttemptIndex].uid = cleanUid;
         photoSyncAttempts[photoSyncAttemptIndex].sidHash = sidHash;
         photoSyncAttempts[photoSyncAttemptIndex].attemptedAt = now;
@@ -1565,6 +1666,15 @@ void photoSyncTask(void *pvParameters) {
                     xSemaphoreGive(photoSyncMutex);
                 }
                 Serial.printf("[PHOTO_SYNC] Deferred uid=%s sid=%s\n", uid.c_str(), sid.c_str());
+                if (job.background && job.retries < PHOTO_PREFETCH_MAX_RETRIES) {
+                    // Prefetch gagal karena jaringan sibuk: antrekan lagi di belakang, jangan dibuang.
+                    ++job.retries;
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    if (xQueueSendToBack(photoSyncQueue, &job, 0) == pdTRUE) {
+                        Serial.printf("[PHOTO_SYNC] Prefetch retry %u queued uid=%s\n",
+                            (unsigned int)job.retries, uid.c_str());
+                    }
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1584,7 +1694,6 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         photoDisplayRequestedUid = cleanUid;
         xSemaphoreGive(photoSyncMutex);
     }
-    requestPhotoSync(uid, sidHint);
     bool drawn = false;
     if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (photoDisplayData && photoDisplaySize > 100 &&
@@ -1607,6 +1716,14 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
                     Serial.printf("[PHOTO] Online image rendered uid=%s result=%d bytes=%u\n",
                         uid.c_str(), drawn ? 1 : 0, (unsigned int)photoDisplaySize);
                 }
+            }
+            // Salinan SD sudah ada: lepas buffer agar heap tidak terfragmentasi untuk TLS/BLE.
+            if (drawn && photoDisplayOnSd) {
+                free(photoDisplayData);
+                photoDisplayData = NULL;
+                photoDisplaySize = 0;
+                photoDisplayUid = "";
+                photoDisplayOnSd = false;
             }
         }
         xSemaphoreGive(photoSyncMutex);
@@ -1672,8 +1789,31 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
     }
-    if (invalidJpeg) requestPhotoSync(uid, sidHint);
+    // Unduh hanya bila foto belum ada di RAM/SD; tap kartu tetap memicu pembaruan dari VPS.
+    if (!drawn || invalidJpeg) requestPhotoSync(uid, sidHint);
     return drawn;
+}
+
+// Cek murah (tanpa SD) apakah foto UID ini sudah siap di buffer RAM.
+bool photoReadyInRam(const String &uid) {
+    bool ready = false;
+    String cleanUid = normalizeRfidUid(uid);
+    if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        ready = photoDisplayData && photoDisplaySize > 100 && photoDisplayUid.equalsIgnoreCase(cleanUid);
+        xSemaphoreGive(photoSyncMutex);
+    }
+    return ready;
+}
+
+// VPS sudah menjawab 404 untuk foto UID ini.
+bool photoKnownMissing(const String &uid) {
+    bool missing = false;
+    String cleanUid = normalizeRfidUid(uid);
+    if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        missing = photoMissingUid.equalsIgnoreCase(cleanUid);
+        xSemaphoreGive(photoSyncMutex);
+    }
+    return missing;
 }
 
 // Kenali nama event yang berasal dari tap kartu.
@@ -1781,7 +1921,7 @@ void deinitBleForTls() {
 }
 
 void resumeBleScannerAfterTls() {
-    if (geoTaskHandle != NULL) return;
+    if (geoTaskHandle != NULL || bleHalted) return;
     bleScannerRestartedForTls = true;
     if (xTaskCreatePinnedToCore(geoScanTask, "BLEConfirm", 6144,
             NULL, 1, &geoTaskHandle, 0) != pdPASS) {
@@ -1879,19 +2019,58 @@ void geoScanTask(void *unused) {
         uint32_t scanStart = millis();
         uint32_t activeScanMs = 0;
         while (activeScanMs < 2000) {
-            if (networkIoRequestPending() || !networkIoMutex ||
-                xSemaphoreTake(networkIoMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (!bleStackInitialized) {
+                // Tunggu burst HTTPS selesai; deinit/init beruntun memecah heap.
+                if (uint32_t(millis() - lastNetworkIoReleasedAt) < BLE_RESUME_QUIET_MS ||
+                    networkIoRequestPending()) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    continue;
+                }
+                // NimBLEDevice::init() menunggu sync tanpa batas; jangan mulai saat heap tidak cukup.
+                uint32_t freeHeap = ESP.getFreeHeap();
+                uint32_t largestBlock = ESP.getMaxAllocHeap();
+                if (freeHeap < BLE_INIT_MIN_FREE_HEAP || largestBlock < BLE_INIT_MIN_BLOCK) {
+                    static uint32_t lastLowHeapLog = 0;
+                    if (uint32_t(millis() - lastLowHeapLog) >= 10000) {
+                        lastLowHeapLog = millis();
+                        Serial.printf("[BLE] Init postponed: heap free=%u largest=%u\n",
+                            (unsigned int)freeHeap, (unsigned int)largestBlock);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    continue;
+                }
+            }
+            SemaphoreHandle_t ioMutex = networkIoMutex;
+            if (networkIoRequestPending() || !ioMutex ||
+                xSemaphoreTake(ioMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
             if (networkIoRequestPending()) {
-                xSemaphoreGive(networkIoMutex);
+                xSemaphoreGive(ioMutex);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
             setNetworkIoOwner("BLE scan");
             if (!bleStackInitialized) {
-                NimBLEDevice::init("ELOTO_iTag_Confirm");
+                setNetworkIoOwner("BLE init");
+                uint32_t initFree = ESP.getFreeHeap();
+                uint32_t initLargest = ESP.getMaxAllocHeap();
+                bleInitStartedAt = millis();
+                bleInitInProgress = true;
+                bool initialized = NimBLEDevice::init("ELOTO_iTag_Confirm");
+                bleInitInProgress = false;
+                if (!initialized) {
+                    xSemaphoreGive(ioMutex);
+                    Serial.printf("[BLE] Init failed free=%u largest=%u; retrying later\n",
+                        (unsigned int)initFree, (unsigned int)initLargest);
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                    continue;
+                }
+                Serial.printf("[BLE] Scanner started init_ms=%lu free_before=%u largest_before=%u free_after=%u\n",
+                    (unsigned long)(millis() - bleInitStartedAt), (unsigned int)initFree,
+                    (unsigned int)initLargest, (unsigned int)ESP.getFreeHeap());
+                setNetworkIoOwner("BLE scan");
                 NimBLEScan *scan = NimBLEDevice::getScan();
                 // Refresh known tags on repeated advertisements so presence does not expire.
                 scan->setScanCallbacks(&callbacks, true);
@@ -1919,7 +2098,7 @@ void geoScanTask(void *unused) {
             }
             activeScanMs += uint32_t(millis() - sliceStartedAt);
             scan->clearResults();
-            xSemaphoreGive(networkIoMutex);
+            xSemaphoreGive(ioMutex);
             // Mark progress per slice so TLS pauses do not reset scanner health.
             if (sliceScanned) {
                 portENTER_CRITICAL(&geoMux);
@@ -2010,14 +2189,25 @@ void reportBlePresence() {
     for (uint8_t i = 0; i < geoTagCount; ++i) tags.add(geoTags[i].mac);
     portEXIT_CRITICAL(&geoMux);
 
+    size_t tagCount = tags.size();
+
     ServerHttpClient http;
-    http.begin(getApiUrl("loto/presence"));
+    if (!http.begin(getApiUrl("loto/presence"))) {
+        Serial.printf("[BLE_PRESENCE] Deferred tags=%u reason=http_begin_failed\n", (unsigned int)tagCount);
+        return;
+    }
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Id", getDeviceId());
     http.setTimeout(2500);
     String payload;
     serializeJson(doc, payload);
     int httpCode = http.POST(payload);
+    Serial.printf("[BLE_PRESENCE] POST tags=%u => HTTP %d\n", (unsigned int)tagCount, httpCode);
+    if (httpCode != HTTP_CODE_OK) {
+        String response = http.getString();
+        if (response.length() > 160) response = response.substring(0, 160);
+        Serial.printf("[BLE_PRESENCE] Response: %s\n", response.c_str());
+    }
     http.end();
 }
 
@@ -2460,8 +2650,9 @@ void displayCardNotification(String uid, String name, String role, String status
 
     tft.fillRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
     tft.drawRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_TEXT);
-    if (!drawPhotoFromAPI(uid, 25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID)) {
-        drawSinglePersonIcon(100, 166, 2.5, ELOTO_HEADER, false);
+    bool photoShown = drawPhotoFromAPI(uid, 25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
+    if (!photoShown) {
+        drawPhotoPending(25, 91, PHOTO_FRAME_SIZE);
     }
 
     tft.setTextDatum(TL_DATUM);
@@ -2475,12 +2666,27 @@ void displayCardNotification(String uid, String name, String role, String status
     drawTftFooter("", "");
     
     uint32_t displayDuration = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
+    // Foto belum ada di RAM/SD tapi online: tahan notifikasi sampai foto dari VPS masuk.
+    bool waitingPhoto = !photoShown && WiFi.status() == WL_CONNECTED && !photoKnownMissing(uid);
+    if (waitingPhoto && displayDuration < NOTIFICATION_PHOTO_WAIT_MS) displayDuration = NOTIFICATION_PHOTO_WAIT_MS;
     unsigned long startNotify = millis();
     while (millis() - startNotify < displayDuration) {
         server.handleClient();
         feedGPS();
         clearRfidBuffer();  
         if (millis() - startNotify > 200 && readADKeypadRaw() != KEY_NONE) break;
+        if (waitingPhoto && photoKnownMissing(uid)) {
+            waitingPhoto = false;
+            displayDuration = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
+        }
+        if (waitingPhoto && photoReadyInRam(uid)) {
+            waitingPhoto = false;
+            photoShown = drawPhotoFromAPI(uid, 25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
+            uint32_t elapsed = millis() - startNotify;
+            uint32_t minimum = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
+            uint32_t untilShown = elapsed + NOTIFICATION_PHOTO_SHOW_MS;
+            displayDuration = untilShown > minimum ? untilShown : minimum;
+        }
         delay(5);
     }
     clearRfidBuffer();
@@ -2573,7 +2779,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     tft.fillRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
     tft.drawRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_GREEN);
     if (!drawPhotoFromAPI(uid, 25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, card.sid)) {
-        drawSinglePersonIcon(100, 166, 2.5, TFT_GREEN, false);
+        drawPhotoPending(25, 91, PHOTO_FRAME_SIZE, TFT_GREEN);
     }
 
     tft.setTextDatum(TL_DATUM);
@@ -2990,7 +3196,7 @@ bool syncDatabaseToSDCard(bool syncPhotos) {
                                 }
                                 expectedBytes += line.length() + 1;
                                 syncCount++;
-                                if (syncPhotos && photoJobCount < MAX_RAM_USERS) {
+                                if (syncPhotos && photoJobCount < MAX_RAM_USERS && (u["has_photo"] | true)) {
                                     uid.toCharArray(photoJobUids[photoJobCount], sizeof(photoJobUids[0]));
                                     sid.toCharArray(photoJobSids[photoJobCount], sizeof(photoJobSids[0]));
                                     photoJobCount++;
@@ -3032,10 +3238,16 @@ bool syncDatabaseToSDCard(bool syncPhotos) {
         return retainedEmpty;
     }
     sdSyncOk = true;
+    lastUserSyncOkAt = millis();
     if (syncPhotos) {
+        uint8_t queuedPhotos = 0;
         for (uint8_t i = 0; i < photoJobCount; ++i) {
-            requestPhotoSync(photoJobUids[i], photoJobSids[i]);
+            // Hanya unduh foto yang belum ada di SD; foto terbaru tetap diambil saat kartu di-tap.
+            if (hasCachedPhotoOnSD(photoJobUids[i], photoJobSids[i])) continue;
+            requestPhotoSync(photoJobUids[i], photoJobSids[i], true);
+            ++queuedPhotos;
         }
+        Serial.printf("[SD_SYNC] Photo prefetch queued=%u of %u\n", queuedPhotos, photoJobCount);
     }
     Serial.printf("[SD_SYNC] Cached %d users; photo candidates=%u\n", syncCount, photoJobCount);
     return true;
@@ -3154,147 +3366,190 @@ void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
     }
 }
 
-// Upload offline logs tanpa menyandera mutex SD Card selama HTTP POST
-// Kirim ulang antrean event offline ke backend.
-void uploadOfflineLogsSDCard() {
-    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
-    if (ESP.getFreeHeap() < 30000) return;
-    if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
-
+// Buang bagian awal antrean offline yang sudah terkirim; baris baru di akhir berkas tetap aman.
+bool dropOfflineLogPrefix(size_t consumedBytes) {
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
-    if (recoverSdFile(active, temporary, backup) && SD.exists(active)) {
-        File logFile = SD.open(active, FILE_READ);
-        if (logFile) {
-            File pendingFile = SD.open(temporary, FILE_WRITE);
-            if (pendingFile) {
-                bool stopped = false;
-                bool writeOk = true;
-                size_t pendingBytes = 0;
-                while (logFile.available()) {
-                    String line;
+    if (consumedBytes == 0) return true;
+    if (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return false;
+    bool committed = false;
+    File source = SD.open(active, FILE_READ);
+    if (source) {
+        size_t total = source.size();
+        if (consumedBytes >= total) {
+            source.close();
+            committed = SD.remove(active);
+        } else if (source.seek(consumedBytes)) {
+            File pending = SD.open(temporary, FILE_WRITE);
+            if (pending) {
+                uint8_t chunk[256];
+                size_t copied = 0;
+                bool ok = true;
+                while (source.available()) {
+                    int count = source.read(chunk, sizeof(chunk));
+                    if (count <= 0) { ok = false; break; }
+                    if (pending.write(chunk, count) != (size_t)count) { ok = false; break; }
+                    copied += count;
+                }
+                pending.flush();
+                pending.close();
+                source.close();
+                File verify = SD.open(temporary, FILE_READ);
+                ok = ok && verify && verify.size() == copied && copied == total - consumedBytes;
+                if (verify) verify.close();
+                committed = ok && commitSdFile(active, temporary, backup);
+                if (!committed && SD.exists(temporary)) SD.remove(temporary);
+            } else {
+                source.close();
+            }
+        } else {
+            source.close();
+        }
+    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
+    if (!committed) Serial.println("[TELEMETRY] Offline log trim failed; record will be retried");
+    return committed;
+}
+
+// Kirim ulang antrean event offline ke backend.
+// Berkas hanya dibuka singkat untuk membaca satu baris; tidak ada berkas terbuka selama HTTPS.
+void uploadOfflineLogsSDCard() {
+    const char *active = "/offline_logs.csv";
+    const char *temporary = "/offline_logs.csv.tmp";
+    const char *backup = "/offline_logs.csv.bak";
+
+    for (uint8_t sent = 0; sent < 3; ++sent) {
+        if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
+        if (ESP.getFreeHeap() < 30000) return;
+        if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
+
+        String line;
+        size_t consumedBytes = 0;
+        bool readOk = true;
+        bool hasRecord = false;
+        if (recoverSdFile(active, temporary, backup) && SD.exists(active)) {
+            File logFile = SD.open(active, FILE_READ);
+            if (logFile) {
+                while (!hasRecord && logFile.available()) {
+                    line = "";
                     line.reserve(256);
-                    bool lineOverflow = false;
-                    bool readError = false;
                     size_t lineLength = 0;
+                    bool lineOverflow = false;
                     while (logFile.available()) {
                         int nextByte = logFile.read();
                         if (nextByte < 0) {
-                            readError = true;
+                            readOk = false;
                             break;
                         }
+                        ++consumedBytes;
                         if (nextByte == '\n') break;
                         if (lineLength < 512) line += (char)nextByte;
                         else lineOverflow = true;
                         ++lineLength;
-                        if ((lineLength & 0x3F) == 0) vTaskDelay(pdMS_TO_TICKS(1));
                     }
-                    if (readError) {
-                        Serial.println("[TELEMETRY] Offline log read failed; keeping source file");
-                        writeOk = false;
-                        break;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(1));
+                    if (!readOk) break;
                     if (lineOverflow) {
                         Serial.printf("[TELEMETRY] Dropped oversized offline log line bytes=%u\n",
                             (unsigned int)lineLength);
                         continue;
                     }
                     line.trim();
-                    if (line.length() == 0) continue;
-
-                    if (!stopped) {
-                        int p1 = line.indexOf(',');
-                        int p2 = p1 >= 0 ? line.indexOf(',', p1 + 1) : -1;
-                        int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
-                        if (p1 > 0 && p2 > p1 + 1) {
-                            String eventId = line.substring(0, p1);
-                            String event = line.substring(p1 + 1, p2);
-                            String uid = line.substring(p2 + 1, p3 >= 0 ? p3 : line.length());
-                            int p4 = p3 >= 0 ? line.indexOf(',', p3 + 1) : -1;
-                            String latitude = p3 >= 0 ? line.substring(p3 + 1, p4 >= 0 ? p4 : line.length()) : "";
-                            String longitude = p4 >= 0 ? line.substring(p4 + 1) : "";
-                            uid.trim(); latitude.trim(); longitude.trim();
-
-                            bool legacyId = eventId.length() > 0;
-                            for (size_t i = 0; i < eventId.length(); i++) {
-                                if (eventId[i] < '0' || eventId[i] > '9') legacyId = false;
-                            }
-                            if (legacyId) {
-                                uint32_t hash = 2166136261UL;
-                                for (size_t i = 0; i < line.length(); i++) {
-                                    hash = (hash ^ (uint8_t)line[i]) * 16777619UL;
-                                }
-                                eventId = "legacy-" + getDeviceId() + "-" + String(hash, HEX);
-                            }
-
-                            DynamicJsonDocument doc(512);
-                            doc["event_id"] = eventId;
-                            doc["id_box"] = getDeviceId();
-                            doc["event"] = event;
-                            doc["uid"] = uid;
-                            doc["last_uid"] = uid;
-                            doc["is_tap"] = isTapEventName(event);
-                            doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
-                            doc["is_online"] = true;
-                            doc["replay"] = true;
-                            if (latitude.length() > 0 && longitude.length() > 0) {
-                                doc["lat"] = latitude.toDouble();
-                                doc["lon"] = longitude.toDouble();
-                                doc["lng"] = longitude.toDouble();
-                                doc["gps_fix"] = true;
-                            }
-                            if (doc.overflowed()) {
-                                // skip
-                            } else {
-                                String payload; serializeJson(doc, payload);
-                                // Lepas SD mutex selama request HTTP
-                                giveSd();
-                                ServerHttpClient http;
-                                http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry");
-                                http.addHeader("Content-Type", "application/json");
-                                http.addHeader("X-Device-Id", getDeviceId());
-                                http.setTimeout(3000);
-                                int httpCode = http.POST(payload);
-                                http.end();
-                                while (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) vTaskDelay(pdMS_TO_TICKS(20));
-                                if (httpCode >= 200 && httpCode < 300) {
-                                    stopped = true;
-                                    continue;
-                                }
-                            }
-                        }
-                        stopped = true;
-                    }
-
-                    if (pendingFile.print(line) != line.length() || pendingFile.write('\n') != 1) {
-                        writeOk = false;
-                        break;
-                    }
-                    pendingBytes += line.length() + 1;
+                    if (line.length() > 0) hasRecord = true;
                 }
-                pendingFile.flush();
-                pendingFile.close();
-                logFile.close();
-
-                File verifyFile = SD.open(temporary, FILE_READ);
-                bool valid = writeOk && verifyFile && verifyFile.size() == pendingBytes;
-                if (verifyFile) verifyFile.close();
-                if (valid) {
-                    if (pendingBytes == 0) {
-                        if (SD.remove(active)) SD.remove(temporary);
-                    } else {
-                        commitSdFile(active, temporary, backup);
-                    }
-                }
-            } else {
                 logFile.close();
             }
         }
+        digitalWrite(SD_CS_PIN, HIGH);
+        giveSd();
+
+        if (!readOk) {
+            Serial.println("[TELEMETRY] Offline log read failed; will retry");
+            return;
+        }
+        if (!hasRecord) {
+            // Hanya baris kosong/rusak yang tersisa.
+            dropOfflineLogPrefix(consumedBytes);
+            return;
+        }
+
+        int p1 = line.indexOf(',');
+        int p2 = p1 >= 0 ? line.indexOf(',', p1 + 1) : -1;
+        int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
+        if (p1 <= 0 || p2 <= p1 + 1) {
+            Serial.printf("[TELEMETRY] Dropped malformed offline log line: %s\n", line.c_str());
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            continue;
+        }
+        String eventId = line.substring(0, p1);
+        String event = line.substring(p1 + 1, p2);
+        String uid = line.substring(p2 + 1, p3 >= 0 ? p3 : line.length());
+        int p4 = p3 >= 0 ? line.indexOf(',', p3 + 1) : -1;
+        String latitude = p3 >= 0 ? line.substring(p3 + 1, p4 >= 0 ? p4 : line.length()) : "";
+        String longitude = p4 >= 0 ? line.substring(p4 + 1) : "";
+        uid.trim(); latitude.trim(); longitude.trim();
+
+        bool legacyId = eventId.length() > 0;
+        for (size_t i = 0; i < eventId.length(); i++) {
+            if (eventId[i] < '0' || eventId[i] > '9') legacyId = false;
+        }
+        if (legacyId) {
+            uint32_t hash = 2166136261UL;
+            for (size_t i = 0; i < line.length(); i++) {
+                hash = (hash ^ (uint8_t)line[i]) * 16777619UL;
+            }
+            eventId = "legacy-" + getDeviceId() + "-" + String(hash, HEX);
+        }
+
+        DynamicJsonDocument doc(512);
+        doc["event_id"] = eventId;
+        doc["id_box"] = getDeviceId();
+        doc["event"] = event;
+        doc["uid"] = uid;
+        doc["last_uid"] = uid;
+        doc["is_tap"] = isTapEventName(event);
+        doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
+        doc["is_online"] = true;
+        doc["replay"] = true;
+        if (latitude.length() > 0 && longitude.length() > 0) {
+            doc["lat"] = latitude.toDouble();
+            doc["lon"] = longitude.toDouble();
+            doc["lng"] = longitude.toDouble();
+            doc["gps_fix"] = true;
+        }
+        if (doc.overflowed()) {
+            Serial.printf("[TELEMETRY] Dropped offline log too large event=%s\n", event.c_str());
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            continue;
+        }
+
+        String payload; serializeJson(doc, payload);
+        int httpCode = -1;
+        {
+            ServerHttpClient http;
+            if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return;
+            http.addHeader("Content-Type", "application/json");
+            http.addHeader("X-Device-Id", getDeviceId());
+            http.setTimeout(3000);
+            httpCode = http.POST(payload);
+            http.end();
+        }
+        Serial.printf("[TELEMETRY] Offline replay event=%s uid=%s => HTTP %d\n",
+            event.c_str(), uid.c_str(), httpCode);
+
+        // 4xx selain timeout/rate-limit tidak akan pernah diterima; buang agar antrean tidak macet.
+        bool permanentReject = httpCode >= 400 && httpCode < 500 && httpCode != 408 && httpCode != 429;
+        if ((httpCode >= 200 && httpCode < 300) || permanentReject) {
+            if (permanentReject) {
+                Serial.printf("[TELEMETRY] Offline record rejected permanently HTTP %d event=%s\n",
+                    httpCode, event.c_str());
+            }
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            continue;
+        }
+        return;
     }
-    digitalWrite(SD_CS_PIN, HIGH);
-    giveSd();
 }
 
 // Simpan hasil baca SD di RAM agar tap offline berikutnya tidak perlu membuka file lagi.
@@ -3411,6 +3666,10 @@ WorkerInfo fetchCardDataAPI(String uid) {
                             Serial.printf("[SD_SYNC] Verified backend user uid=%s queued for SD cache\n",
                                 card.uid.c_str());
                         }
+                        if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                            photoDisplayRequestedUid = normalizeRfidUid(card.uid);
+                            xSemaphoreGive(photoSyncMutex);
+                        }
                         requestPhotoSync(card.uid, card.sid);
                         break;
                     }
@@ -3481,6 +3740,41 @@ WorkerInfo fetchCardDataAPI(String uid) {
         card.lookupUnavailable = lookupUnavailable || card.lookupUnavailable;
     }
     return card;
+}
+
+// Tap cepat: kartu yang ada di daftar personel hasil sinkron VPS (<= 5 menit) diproses tanpa
+// menunggu HTTPS. Kartu tak dikenal atau cache yang basi tetap diverifikasi ke backend.
+WorkerInfo lookupCardForTap(String uid) {
+    String cleanUid = normalizeRfidUid(uid);
+    bool cacheFresh = lastUserSyncOkAt != 0 &&
+        uint32_t(millis() - lastUserSyncOkAt) <= TAP_CACHE_MAX_AGE_MS;
+    if (cacheFresh) {
+        String decPadded = hexToDecStringPadded(cleanUid);
+        String decUnpadded = hexToDecStringUnpadded(cleanUid);
+        for (int i = 0; i < ramUserCount; ++i) {
+            if (ramUserCache[i].uid.equalsIgnoreCase(cleanUid) ||
+                ramUserCache[i].uid.equalsIgnoreCase(decPadded) ||
+                ramUserCache[i].uid.equalsIgnoreCase(decUnpadded)) {
+                WorkerInfo card = ramUserCache[i];
+                card.uid = cleanUid;
+                card.sid.trim();
+                card.role = normalizeUserRole(card.role);
+                card.isSpv = checkIsSupervisorRole(card.role);
+                card.isRegistered = true;
+                card.lookupUnavailable = false;
+                card.offlineFallbackAllowed = false;
+                Serial.printf("[RFID] Fast cache verification uid=%s sid=%s role=%s sync_age_ms=%lu\n",
+                    card.uid.c_str(), card.sid.c_str(), card.role.c_str(),
+                    (unsigned long)(millis() - lastUserSyncOkAt));
+                if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                    photoDisplayRequestedUid = cleanUid;
+                    xSemaphoreGive(photoSyncMutex);
+                }
+                return card;
+            }
+        }
+    }
+    return fetchCardDataAPI(uid);
 }
 
 // Kirim telemetri dan jalankan sinkronisasi jaringan.
@@ -3627,7 +3921,7 @@ void networkTaskCore0(void * pvParameters) {
             uploadOfflineLogsSDCard();
         }
         if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 &&
-            millis() - lastCommandPollTask >= 3000 && ESP.getFreeHeap() > 30000) {
+            millis() - lastCommandPollTask >= COMMAND_POLL_INTERVAL_MS && ESP.getFreeHeap() > 30000) {
             lastCommandPollTask = millis();
             if (pollSyncUsersCommand()) lastDbSyncTask = millis();
         }
@@ -3670,8 +3964,11 @@ void networkTaskCore0(void * pvParameters) {
             } else if ((startupSyncPending ||
                         millis() - lastDbSyncTask >= PERSONNEL_SYNC_INTERVAL_MS) &&
                         ESP.getFreeHeap() > 30000 && uxQueueMessagesWaiting(networkQueue) == 0) {
+                static unsigned long lastPhotoPrefetch = 0;
+                bool prefetchPhotos = startupSyncPending || lastPhotoPrefetch == 0 ||
+                    millis() - lastPhotoPrefetch >= PHOTO_PREFETCH_INTERVAL_MS;
                 lastDbSyncTask = millis();
-                syncDatabaseToSDCard();
+                if (syncDatabaseToSDCard(prefetchPhotos) && prefetchPhotos) lastPhotoPrefetch = millis();
                 startupSyncPending = false;
             }
         }
@@ -3753,7 +4050,7 @@ void processRfidLogic(String uid) {
     }
     
     int workerIdx = findWorkerIndex(uid);
-    WorkerInfo card = fetchCardDataAPI(uid);
+    WorkerInfo card = lookupCardForTap(uid);
 
     if (!card.isRegistered && card.offlineFallbackAllowed) {
         if (workerIdx != -1) {
@@ -4592,6 +4889,21 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
 }
 
 // Gambar ulang layar sesuai state sistem.
+// Isi bingkai foto selama foto diunduh; layar digambar ulang otomatis saat foto siap.
+void drawPhotoPending(int16_t boxX, int16_t boxY, uint16_t boxSize, uint16_t color) {
+    int16_t centerX = boxX + boxSize / 2;
+    int16_t centerY = boxY + boxSize / 2;
+    bool online = WiFi.status() == WL_CONNECTED;
+    drawSinglePersonIcon(centerX, online ? centerY - 10 : centerY,
+        boxSize >= 140 ? 2.0f : 1.6f, color, false);
+    if (online) {
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(9);
+        tft.setTextColor(ELOTO_MUTED, ELOTO_BG);
+        tft.drawString("MEMUAT FOTO", centerX, boxY + boxSize - 16);
+    }
+}
+
 void drawScreen() {
     needsRedraw = false;
     bool stateChanged = (currentState != lastRenderedState);
@@ -4793,11 +5105,7 @@ void drawScreen() {
         drawTftFooter("KEMBALI", "LANJUT");
         if (!photoAlreadyDrawn) {
             photoAlreadyDrawn = drawPhotoFromAPI(spvUidDisp, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, spvSidDisp);
-            if (!photoAlreadyDrawn) {
-                tft.setTextDatum(MC_DATUM);
-                setStoryFont(9);
-                tft.drawString("NO FOTO", 95, 166);
-            }
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
         }
     } 
     else if (currentState == STATE_SET_MEKANIK_COUNT) {
@@ -4829,7 +5137,7 @@ void drawScreen() {
             tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
             tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
             photoAlreadyDrawn = drawPhotoFromAPI(lastWorker.uid, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastWorker.sid);
-            if (!photoAlreadyDrawn) drawSinglePersonIcon(95, 167, 2.0, ELOTO_HEADER, false);
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -4871,7 +5179,7 @@ void drawScreen() {
             tft.fillRect(24, 96, photoSize, photoSize, ELOTO_BG);
             tft.drawRect(24, 96, photoSize, photoSize, TFT_WHITE);
             if (!drawPhotoFromAPI(lastMechanic.uid, 24, 96, photoSize, photoSize, lastMechanic.sid)) {
-                drawSinglePersonIcon(79, 151, 1.8f, ELOTO_HEADER, false);
+                drawPhotoPending(24, 96, photoSize);
             }
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
@@ -4967,12 +5275,7 @@ void drawScreen() {
             tft.fillRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
             tft.drawRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_TEXT);
             photoAlreadyDrawn = drawPhotoFromAPI(worker.uid, 296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, worker.sid);
-            if (!photoAlreadyDrawn) {
-                tft.setTextDatum(MC_DATUM);
-                setStoryFont(9);
-                tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-                tft.drawString("NO FOTO", 371, 167);
-            }
+            if (!photoAlreadyDrawn) drawPhotoPending(296, 92, PHOTO_FRAME_SIZE);
         }
         lastRenderedWorkerIndex = safeIndex;
     } 
@@ -5067,11 +5370,7 @@ void drawScreen() {
         drawTftFooter("KEMBALI", "LANJUT");
         if (!photoAlreadyDrawn) {
             photoAlreadyDrawn = drawPhotoFromAPI(supervisorUID, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
-            if (!photoAlreadyDrawn) {
-                tft.setTextDatum(MC_DATUM);
-                setStoryFont(9);
-                tft.drawString("NO FOTO", 95, 166);
-            }
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
         }
     }
     else if (currentState == STATE_MAINTENANCE_DONE) {
@@ -5305,7 +5604,7 @@ void setup() {
         Serial.println("[PHOTO_SYNC] Background photo cache unavailable");
         photoSyncQueue = NULL;
     }
-    if (xTaskCreatePinnedToCore(networkTaskCore0, "NetworkTask", 12288, NULL, 1, NULL, 0) != pdPASS) {}
+    if (xTaskCreatePinnedToCore(networkTaskCore0, "NetworkTask", 14336, NULL, 1, NULL, 0) != pdPASS) {}
     logAuditAsync("SYS_INIT", "SYSTEM");
     clearMainScreenArea();
     
@@ -5330,7 +5629,39 @@ void setup() {
 }
 
 // Jalankan layanan input, tampilan, GPS, dan status.
+// Pulihkan jaringan bila NimBLE macet saat init (library menunggu sync tanpa batas waktu).
+void serviceBleInitWatchdog() {
+    static uint32_t haltedAt = 0;
+    if (bleInitInProgress && !bleHalted &&
+        uint32_t(millis() - bleInitStartedAt) > BLE_INIT_HANG_MS) {
+        TaskHandle_t scanner = geoTaskHandle;
+        if (scanner != NULL) {
+            geoTaskHandle = NULL;
+            vTaskDelete(scanner);
+        }
+        bleInitInProgress = false;
+        bleHalted = true;
+        haltedAt = millis();
+        // Task yang dihapus masih memegang mutex lama; pakai mutex baru agar HTTPS berjalan lagi.
+        SemaphoreHandle_t fresh = xSemaphoreCreateMutex();
+        if (fresh) networkIoMutex = fresh;
+        Serial.printf("[BLE] Init hung >%lu ms; scanner halted and network lock recovered heap=%u largest=%u\n",
+            (unsigned long)BLE_INIT_HANG_MS, (unsigned int)ESP.getFreeHeap(),
+            (unsigned int)ESP.getMaxAllocHeap());
+        logAuditAsync("BLE_INIT_HUNG", "SYSTEM");
+    }
+    // Stack BLE hanya pulih lewat restart; lakukan saat tidak ada sesi LOTO aktif.
+    if (bleHalted && !isSessionActive && !relayOpen &&
+        (networkQueue == NULL || uxQueueMessagesWaiting(networkQueue) == 0) &&
+        uint32_t(millis() - haltedAt) > 15000) {
+        Serial.println("[BLE] Restarting device to recover BLE stack (no active LOTO session)");
+        delay(200);
+        ESP.restart();
+    }
+}
+
 void loop() {
+    serviceBleInitWatchdog();
     if (!gpsInitStarted) {
         gpsInitStarted = true;
         if (xTaskCreatePinnedToCore(gpsInitTask, "GPSInit", 4096,

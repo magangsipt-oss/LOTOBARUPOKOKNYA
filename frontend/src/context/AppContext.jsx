@@ -24,9 +24,13 @@ const validInitialPassword = (password, sid, allowSidMatch = false) => typeof pa
   (allowSidMatch && password.toLowerCase() === String(sid).toLowerCase() ||
     password.length >= 12 && password.toLowerCase() !== String(sid).toLowerCase());
 const deviceHost = value => String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+// Server already applies the online window with its own clock; tolerate viewer clock skew.
+const CLOCK_SKEW_TOLERANCE_MS = 120000;
+// One failed poll (e.g. ERR_NETWORK_CHANGED) must not flip the box to offline.
+const POLL_FAILURE_GRACE_MS = 15000;
 const timestampIsFresh = (value, maxAge) => {
   const age = Date.now() - Date.parse(value || '');
-  return Number.isFinite(age) && age >= 0 && age < maxAge;
+  return Number.isFinite(age) && age >= -CLOCK_SKEW_TOLERANCE_MS && age < maxAge + CLOCK_SKEW_TOLERANCE_MS;
 };
 const boxIsOnline = box => Number(box?.is_online) === 1 && timestampIsFresh(box?.last_ping, TELEMETRY_MAX_AGE_MS);
 
@@ -375,6 +379,7 @@ export function AppProvider({ children }) {
     if (!isLoggedIn) return;
     let active = true;
     let pending = false;
+    let lastPollSuccessAt = Date.now();
 
     const muatDataOperasionalMesin = async () => {
       if (pending) return;
@@ -382,6 +387,7 @@ export function AppProvider({ children }) {
       try {
         const resultAset = await boxService.getAllBoxes();
         if (!active) return;
+        lastPollSuccessAt = Date.now();
         let dataAset = resultAset.data || resultAset;
         if (Array.isArray(dataAset) && dataAset.length) {
           const probeBox = dataAset.find(box => boxKey(box.id_box || box.id) === boxKey(selectedBoxIdRef.current)) || dataAset[0];
@@ -485,7 +491,7 @@ export function AppProvider({ children }) {
           setLotoComplianceHistory([]);
         }
       } catch {
-        if (active) {
+        if (active && Date.now() - lastPollSuccessAt >= POLL_FAILURE_GRACE_MS) {
           setIsHwOnline(false);
           setLotoCompliance(prev => ({ ...prev, stale: true }));
         }

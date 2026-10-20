@@ -51,8 +51,12 @@ public:
         tls_.setX509Time(static_cast<uint32_t>(time(nullptr)));
         tls_.setBufferSizes(RX_BYTES, TX_BYTES);
         tls_.setSSLVersion(BR_TLS12, BR_TLS12);
-        tls_.setHandshakeTimeout(6000);
+        // ESP_SSLClient 3.x memakai satuan detik (6000 = 100 menit, mengunci mutex jaringan).
+        tls_.setHandshakeTimeout(8);
         tls_.setTimeout(3);
+        // NetworkClient::write mengulang select hingga 10x per timeout socket; 2 s membatasi
+        // macetnya socket di hotspot sekitar 20 s, bukan 30 s+ seperti default 3 s.
+        tcp_.setConnectionTimeout(2000);
 
         IPAddress address;
         if (address.fromString(host)) {

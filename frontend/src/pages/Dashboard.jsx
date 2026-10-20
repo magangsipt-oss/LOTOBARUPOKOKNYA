@@ -66,10 +66,29 @@ export default function Dashboard() {
   // otherwise a successful RFID tap is incorrectly hidden as "no data".
   const complianceUnavailable = lotoCompliance.stale;
   const countMismatch = !complianceUnavailable && Number(lotoCompliance.missing_count) > 0;
+  // BLE label follows tap order on the live device queue: first tap = BLE 1.
+  const liveTapQueue = (() => {
+    if (Array.isArray(hwData.queue)) return hwData.queue;
+    if (typeof hwData.queue === 'string' && hwData.queue.trim() !== '') {
+      try { const parsed = JSON.parse(hwData.queue); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+    }
+    return [];
+  })();
+  const bleLabelBySid = {};
+  const assignBleLabel = sid => {
+    if (sid && sid !== '—' && !(sid in bleLabelBySid)) bleLabelBySid[sid] = Object.keys(bleLabelBySid).length + 1;
+  };
+  liveTapQueue.forEach(item => {
+    const uid = typeof item === 'string' ? item : (item.uid || item.last_uid || '');
+    if (!uid || isAdminUid(uid)) return;
+    assignBleLabel(getUserProfile(uid).sid);
+  });
+  // Snapshot taps missing from the live queue (e.g. device offline) keep server order after it.
+  (Array.isArray(lotoCompliance.tapped_sids) ? lotoCompliance.tapped_sids : []).forEach(assignBleLabel);
   const complianceSids = [...new Set([
     ...(Array.isArray(lotoCompliance.detected_sids) ? lotoCompliance.detected_sids : []),
     ...(Array.isArray(lotoCompliance.tapped_sids) ? lotoCompliance.tapped_sids : [])
-  ])];
+  ])].sort((a, b) => (bleLabelBySid[a] ?? Infinity) - (bleLabelBySid[b] ?? Infinity));
 
   // Riwayat Refueling
   const [refuelingLogs, setRefuelingLogs] = useState([]);
@@ -350,6 +369,7 @@ export default function Dashboard() {
                   <table className="w-full text-left text-[11px] font-mono-tech">
                     <thead className="sticky top-0 bg-white">
                       <tr className="border-b border-slate-200">
+                        <th className="p-2">Label</th>
                         <th className="p-2">Status</th>
                         <th className="p-2">SID</th>
                         <th className="p-2">BLE Tag</th>
@@ -366,6 +386,11 @@ export default function Dashboard() {
                           const isMissing = hasBleTag && (!hasTapped || lotoCompliance.missing_sids?.includes(sid));
                           return (
                             <tr key={i} className={`border-b border-slate-100 ${isMissing ? 'bg-red-50' : 'bg-green-50/50'}`}>
+                              <td className="p-2 font-black whitespace-nowrap">
+                                {bleLabelBySid[sid]
+                                  ? <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px]">BLE {bleLabelBySid[sid]}</span>
+                                  : <span className="text-slate-400">—</span>}
+                              </td>
                               <td className="p-2">
                                 {hasTapped
                                   ? <span className="text-green-600 font-bold">✅ SUDAH LOTO</span>
@@ -374,7 +399,7 @@ export default function Dashboard() {
                                   : <span className="text-slate-600 font-bold">— BELUM ADA TAP</span>
                                 }
                               </td>
-                              <td className="p-2 font-bold">{sid}</td>
+                              <td className="p-2 font-bold">{sid}<span className="block text-[9px] font-normal text-slate-500 truncate max-w-[140px]">{getUserProfile(sid).nama}</span></td>
                               <td className={`p-2 ${hasBleTag ? 'text-blue-600' : 'text-slate-400'}`}>{hasBleTag ? 'BLE Active' : 'Tidak terdeteksi'}</td>
                               <td className="p-2">{hasTapped ? '✅ Tapped' : '❌ Belum'}</td>
                             </tr>
@@ -382,7 +407,7 @@ export default function Dashboard() {
                         })
                       ) : (
                         <tr>
-                          <td colSpan="4" className="p-6 text-center text-slate-400 italic">
+                          <td colSpan="5" className="p-6 text-center text-slate-400 italic">
                             {complianceUnavailable ? 'Menunggu snapshot compliance terbaru...' : 'Belum ada BLE atau LOTO tap pada snapshot ini'}
                           </td>
                         </tr>

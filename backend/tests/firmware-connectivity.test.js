@@ -107,10 +107,26 @@ test('online RFID verification uses backend first and only falls back to SD when
 
   const tapLogic = firmware.split('void processRfidLogic(String uid) {', 2)[1]
     .split('\nbool tryConnectBestWifi()', 1)[0];
-  assert.match(tapLogic, /WorkerInfo card = fetchCardDataAPI\(uid\)/);
+  assert.match(tapLogic, /WorkerInfo card = lookupCardForTap\(uid\)/);
   assert.match(tapLogic, /if \(!card\.isRegistered && card\.offlineFallbackAllowed\)/);
-  assert.ok(tapLogic.indexOf('WorkerInfo card = fetchCardDataAPI(uid)') <
+  assert.ok(tapLogic.indexOf('WorkerInfo card = lookupCardForTap(uid)') <
     tapLogic.indexOf('if (!card.isRegistered && card.offlineFallbackAllowed)'));
+});
+
+test('tap uses the VPS-synced personnel cache only while fresh, otherwise asks the backend', () => {
+  const fast = firmware.split('WorkerInfo lookupCardForTap(String uid) {', 2)[1]
+    .split('\n// Kirim telemetri dan jalankan sinkronisasi jaringan', 1)[0];
+  const syncUsers = firmware.split('bool syncDatabaseToSDCard(bool syncPhotos) {', 2)[1]
+    .split('\n// Jalankan permintaan sinkronisasi dashboard', 1)[0];
+  const registerFlow = firmware.split('if (operationalState == STATE_REGISTER_RFID) {', 2)[1]
+    .split('forceFullRedraw = true;', 1)[0];
+
+  assert.match(firmware, /const uint32_t TAP_CACHE_MAX_AGE_MS = 300000;/);
+  assert.match(fast, /lastUserSyncOkAt != 0 &&\s*uint32_t\(millis\(\) - lastUserSyncOkAt\) <= TAP_CACHE_MAX_AGE_MS/);
+  assert.match(fast, /return fetchCardDataAPI\(uid\);/);
+  assert.match(syncUsers, /sdSyncOk = true;\s*lastUserSyncOkAt = millis\(\);/);
+  // Card registration must still be checked against the backend.
+  assert.match(registerFlow, /WorkerInfo existingCard = fetchCardDataAPI\(uid\)/);
 });
 
 test('dashboard refreshes the timer from the live device even while telemetry says online', () => {

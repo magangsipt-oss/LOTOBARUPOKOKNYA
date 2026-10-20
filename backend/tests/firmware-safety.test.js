@@ -610,7 +610,8 @@ test('HTTPS releases BLE scanner stack memory and resumes scanning afterward', (
 
   assert.match(pause, /vTaskDelete\(scanner\)/);
   assert.match(pause, /NimBLEDevice::deinit\(true\)/);
-  assert.match(release, /xSemaphoreGive\(networkIoMutex\);[\s\S]*resumeBleScannerAfterTls\(\)/);
+  assert.match(release, /lastNetworkIoReleasedAt = millis\(\);[\s\S]*xSemaphoreGive\(heldMutex\);[\s\S]*resumeBleScannerAfterTls\(\)/);
+  assert.match(resume, /if \(geoTaskHandle != NULL \|\| bleHalted\) return;/);
   assert.match(resume, /BLEConfirm", 6144/);
   assert.match(resume, /bleScannerRestartedForTls = true/);
   assert.match(scanTask, /if \(!bleScannerRestartedForTls\) vTaskDelay/);
@@ -624,10 +625,15 @@ test('BLE scan yields the shared radio mutex to pending HTTPS requests', () => {
   const scanTask = source.split('void geoScanTask(void *unused) {', 2)[1]
     .split('\n// Hitung tag mekanik', 1)[0];
 
-  assert.match(begin, /registerNetworkIoWaiter\(\);[\s\S]*xSemaphoreTake\(networkIoMutex,[\s\S]*unregisterNetworkIoWaiter\(\)/);
+  assert.match(begin, /registerNetworkIoWaiter\(\);[\s\S]*xSemaphoreTake\(ioMutex,[\s\S]*unregisterNetworkIoWaiter\(\)/);
   assert.match(source, /bool begin\(const String &url, uint32_t mutexWaitMs = 3000\)/);
-  assert.match(scanTask, /networkIoRequestPending\(\)[\s\S]*xSemaphoreTake\(networkIoMutex/);
-  assert.match(scanTask, /if \(networkIoRequestPending\(\)\) \{\s*xSemaphoreGive\(networkIoMutex\);/);
+  assert.match(scanTask, /networkIoRequestPending\(\)[\s\S]*xSemaphoreTake\(ioMutex/);
+  assert.match(scanTask, /if \(networkIoRequestPending\(\)\) \{\s*xSemaphoreGive\(ioMutex\);/);
+  // NimBLE init waits for sync forever: only start after an HTTPS burst and with enough heap.
+  assert.match(scanTask, /millis\(\) - lastNetworkIoReleasedAt\) < BLE_RESUME_QUIET_MS/);
+  assert.match(scanTask, /freeHeap < BLE_INIT_MIN_FREE_HEAP \|\| largestBlock < BLE_INIT_MIN_BLOCK/);
+  assert.match(scanTask, /bleInitInProgress = true;\s*bool initialized = NimBLEDevice::init/);
+  assert.match(source, /void serviceBleInitWatchdog\(\)[\s\S]*vTaskDelete\(scanner\)[\s\S]*networkIoMutex = fresh;/);
   assert.match(source, /http\.begin\(url, 20000\)/);
 });
 
@@ -655,7 +661,7 @@ test('photo sync streams JPEGs to SD and renders the cache without a full-image 
   const source = readFileSync(firmware, 'utf8');
   const photoFetch = source.split('bool fetchPhotoFromAPI(', 2)[1]
     .split('\n// Jadwalkan cache foto', 1)[0];
-  const photoQueue = source.split('void requestPhotoSync(const String &uid, const String &sid) {', 2)[1]
+  const photoQueue = source.split('void requestPhotoSync(const String &uid, const String &sid, bool background) {', 2)[1]
     .split('\nvoid photoSyncTask', 1)[0];
   const photoDraw = source.slice(source.lastIndexOf('bool drawPhotoFromAPI('))
     .split('\n// Kenali nama event', 1)[0];
@@ -665,6 +671,9 @@ test('photo sync streams JPEGs to SD and renders the cache without a full-image 
   assert.match(source, /size_t count = stream\.readBytes\(chunk, requested\)/);
   assert.match(photoQueue, /photoDisplayUid\.equalsIgnoreCase\(cleanUid\)/);
   assert.match(photoDraw, /TJpgDec\.drawFsJpg\(renderX, renderY, paths\[i\], SD\)/);
+  // RAM downloads are persisted so two-person screens can render every photo from SD.
+  assert.match(photoFetch, /saved = cachePhotoBufferToSD\(uid, sid, jpegData, received\)/);
+  assert.match(photoDraw, /if \(!drawn \|\| invalidJpeg\) requestPhotoSync\(uid, sidHint\)/);
   assert.doesNotMatch(photoDraw, /malloc\(size\)/);
 });
 
@@ -687,8 +696,10 @@ test('personnel sync does not queue every photo ahead of the active display requ
     .split('\n// Jalankan permintaan sinkronisasi dashboard', 1)[0];
 
   assert.match(source, /bool syncDatabaseToSDCard\(bool syncPhotos = false\)/);
-  assert.match(syncUsers, /if \(syncPhotos && photoJobCount < MAX_RAM_USERS\)/);
-  assert.match(syncUsers, /if \(syncPhotos\) \{\s*for \(uint8_t i = 0; i < photoJobCount; \+\+i\)/);
+  assert.match(syncUsers, /if \(syncPhotos && photoJobCount < MAX_RAM_USERS/);
+  assert.match(syncUsers, /if \(hasCachedPhotoOnSD\(photoJobUids\[i\], photoJobSids\[i\]\)\) continue;/);
+  assert.match(syncUsers, /requestPhotoSync\(photoJobUids\[i\], photoJobSids\[i\], true\)/);
+  assert.match(source, /background \? xQueueSendToBack\(photoSyncQueue, &job, 0\)/);
 });
 
 test('offline telemetry replay yields while reading bounded SD log lines', () => {
@@ -703,8 +714,10 @@ test('offline telemetry replay yields while reading bounded SD log lines', () =>
 
   assert.doesNotMatch(replay, /readStringUntil\(/);
   assert.match(replay, /lineLength < 512/);
-  assert.match(replay, /vTaskDelay\(pdMS_TO_TICKS\(1\)\)/);
-  assert.match(replay, /stopped = true;\s*continue;/);
+  // The log file is closed before HTTPS so concurrent appends cannot corrupt the read.
+  assert.ok(replay.indexOf('logFile.close();') < replay.indexOf('ServerHttpClient http;'));
+  assert.doesNotMatch(replay, /giveSd\(\);\s*ServerHttpClient/);
+  assert.match(replay, /dropOfflineLogPrefix\(consumedBytes\)/);
   assert.match(reconnect, /logAuditAsync\("HEARTBEAT_SYNC"/);
   assert.doesNotMatch(reconnect, /syncDatabaseToSDCard|uploadOfflineLogsSDCard/);
   assert.match(networkTask, /uxQueueMessagesWaiting\(networkQueue\) == 0/);
