@@ -198,6 +198,27 @@ export default function BleTagManager() {
     }
   };
 
+  // Hapus riwayat BLE (per nomor tap atau deteksi mentah): satu baris atau semua untuk boks terpilih
+  const handleDeleteHistory = async (kind, id = null) => {
+    if (!canManageTags || !selectedBoxId) return;
+    const label = kind === 'events' ? 'riwayat BLE per nomor tap' : 'riwayat deteksi BLE';
+    const question = id == null
+      ? `Hapus SEMUA ${label} untuk boks ${selectedBoxId}? Tindakan ini tidak bisa dibatalkan.`
+      : `Hapus baris ${label} ini?`;
+    if (!window.confirm(question)) return;
+    try {
+      const result = kind === 'events'
+        ? await logService.deleteBleEvents(selectedBoxId, id)
+        : await logService.deletePresenceHistory(selectedBoxId, id);
+      if (!result.success) throw new Error(result.message);
+      const setter = kind === 'events' ? setBleEvents : setPresenceHistory;
+      setter(current => current.boxId !== selectedBoxId ? current : {
+        ...current, rows: id == null ? [] : current.rows.filter(row => row.id !== id)
+      });
+      pemicuToast(id == null ? `Semua ${label} dihapus` : 'Riwayat dihapus', 'ok');
+    } catch { pemicuToast(`Gagal menghapus ${label}`, 'fail'); }
+  };
+
   // Delete BLE tag
   const handleDeleteTag = async (id) => {
     if (!canManageTags) return;
@@ -389,9 +410,16 @@ export default function BleTagManager() {
               <p className="text-[10px] text-slate-600">BLE 1 = tap pertama; perubahan iTag untuk boks terpilih</p>
             </div>
           </div>
-          <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
-            {bleEvents.boxId === selectedBoxId && bleEvents.status === 'ready' ? bleEvents.rows.length : '—'} Riwayat
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+              {bleEvents.boxId === selectedBoxId && bleEvents.status === 'ready' ? bleEvents.rows.length : '—'} Riwayat
+            </span>
+            {canManageTags && bleEvents.boxId === selectedBoxId && bleEvents.rows.length > 0 && (
+              <button type="button" onClick={() => handleDeleteHistory('events')} className="text-[10px] font-bold text-white bg-red-600 hover:bg-red-700 px-2 py-0.5 rounded">
+                <i className="fa-solid fa-trash-can mr-1"></i>Hapus Semua
+              </button>
+            )}
+          </div>
         </div>
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
           <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
@@ -401,15 +429,16 @@ export default function BleTagManager() {
                 <th className="p-3">BLE</th>
                 <th className="p-3">Personel / iTag</th>
                 <th className="p-3">Kejadian</th>
+                {canManageTags && <th className="p-3 text-right">Aksi</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {bleEvents.boxId !== selectedBoxId || bleEvents.status === 'loading' ? (
-                <tr><td colSpan={4} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
+                <tr><td colSpan={canManageTags ? 5 : 4} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
               ) : bleEvents.status === 'error' ? (
-                <tr><td colSpan={4} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
+                <tr><td colSpan={canManageTags ? 5 : 4} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
               ) : bleEvents.rows.length === 0 ? (
-                <tr><td colSpan={4} className="p-6 text-center text-slate-400 italic">Belum ada riwayat BLE untuk boks ini.</td></tr>
+                <tr><td colSpan={canManageTags ? 5 : 4} className="p-6 text-center text-slate-400 italic">Belum ada riwayat BLE untuk boks ini.</td></tr>
               ) : bleEvents.rows.map(row => {
                 const [label, color] = BLE_EVENT_LABEL[row.event] || [row.event, 'text-slate-600'];
                 return (
@@ -418,6 +447,13 @@ export default function BleTagManager() {
                     <td className="p-3 font-black text-blue-700">{row.slot ? `BLE ${row.slot}` : '—'}</td>
                     <td className="p-3 text-slate-800">{row.sid ? (row.nama || row.sid) : 'iTag tak dikenal'}<span className="block text-[9px] text-slate-400">{row.sid ? `${row.sid}${row.ble_mac ? ` · ${row.ble_mac}` : ''}` : (row.ble_mac || '—')}</span></td>
                     <td className={`p-3 font-bold ${color}`}>{label}</td>
+                    {canManageTags && (
+                      <td className="p-3 text-right">
+                        <button type="button" onClick={() => handleDeleteHistory('events', row.id)} className="text-red-500 hover:text-red-700" title="Hapus riwayat ini">
+                          <i className="fa-solid fa-trash-can"></i>
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -436,9 +472,16 @@ export default function BleTagManager() {
               <p className="text-[10px] text-slate-600">100 deteksi terbaru untuk boks terpilih</p>
             </div>
           </div>
-          <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
-            {presenceHistory.boxId === selectedBoxId && presenceHistory.status === 'ready' ? presenceHistory.rows.length : '—'} Riwayat
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+              {presenceHistory.boxId === selectedBoxId && presenceHistory.status === 'ready' ? presenceHistory.rows.length : '—'} Riwayat
+            </span>
+            {canManageTags && presenceHistory.boxId === selectedBoxId && presenceHistory.rows.length > 0 && (
+              <button type="button" onClick={() => handleDeleteHistory('presence')} className="text-[10px] font-bold text-white bg-red-600 hover:bg-red-700 px-2 py-0.5 rounded">
+                <i className="fa-solid fa-trash-can mr-1"></i>Hapus Semua
+              </button>
+            )}
+          </div>
         </div>
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
           <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
@@ -449,15 +492,16 @@ export default function BleTagManager() {
                 <th className="p-3">Karyawan (SID)</th>
                 <th className="p-3">Role</th>
                 <th className="p-3">MAC Address</th>
+                {canManageTags && <th className="p-3 text-right">Aksi</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {presenceHistory.boxId !== selectedBoxId || presenceHistory.status === 'loading' ? (
-                <tr><td colSpan={5} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
+                <tr><td colSpan={canManageTags ? 6 : 5} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
               ) : presenceHistory.status === 'error' ? (
-                <tr><td colSpan={5} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
+                <tr><td colSpan={canManageTags ? 6 : 5} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
               ) : presenceHistory.rows.length === 0 ? (
-                <tr><td colSpan={5} className="p-6 text-center text-slate-400 italic">Belum ada riwayat deteksi BLE untuk boks ini.</td></tr>
+                <tr><td colSpan={canManageTags ? 6 : 5} className="p-6 text-center text-slate-400 italic">Belum ada riwayat deteksi BLE untuk boks ini.</td></tr>
               ) : presenceHistory.rows.map(row => (
                 <tr key={row.id} className="hover:bg-blue-50/50">
                   <td className="p-3 text-slate-600">{row.detected_at ? new Date(String(row.detected_at).replace(' ', 'T')).toLocaleString('id-ID') : '—'}</td>
@@ -465,6 +509,13 @@ export default function BleTagManager() {
                   <td className="p-3 text-slate-800">{row.nama || 'Belum dipasangkan'}<span className="block text-[9px] text-slate-400">{row.assigned_sid || '—'}</span></td>
                   <td className="p-3 text-slate-600">{row.role || '—'}</td>
                   <td className="p-3 text-slate-500">{row.ble_mac}</td>
+                  {canManageTags && (
+                    <td className="p-3 text-right">
+                      <button type="button" onClick={() => handleDeleteHistory('presence', row.id)} className="text-red-500 hover:text-red-700" title="Hapus riwayat ini">
+                        <i className="fa-solid fa-trash-can"></i>
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

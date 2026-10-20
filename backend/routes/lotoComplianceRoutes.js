@@ -15,6 +15,10 @@ router.get('/compliance/:idBox/history', lotoComplianceController.getComplianceH
 // 4. Get active BLE presence for a box (recent detections)
 router.get('/presence/:idBox/history', lotoComplianceController.getPresenceHistory);
 router.get('/presence/:idBox/events', lotoComplianceController.getBleEvents);
+router.delete('/presence/:idBox/events', lotoComplianceController.deleteBleEvents);
+router.delete('/presence/:idBox/events/:id', lotoComplianceController.deleteBleEvents);
+router.delete('/presence/:idBox/history', lotoComplianceController.deletePresenceHistory);
+router.delete('/presence/:idBox/history/:id', lotoComplianceController.deletePresenceHistory);
 router.get('/presence/:idBox', lotoComplianceController.getActivePresence);
 
 // 5. BLE Tag management

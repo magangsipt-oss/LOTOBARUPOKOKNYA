@@ -575,6 +575,35 @@ const lotoComplianceController = {
     }
   },
 
+  // Hapus riwayat BLE: satu baris (id) atau semua untuk boks terpilih.
+  deleteBleEvents: async (req, res) => {
+    try {
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
+      const id = req.params.id === undefined ? null : tagId(req.params.id);
+      const [result] = id === null
+        ? await pool.query('DELETE FROM ble_events WHERE id_box = ?', [idBox])
+        : await pool.query('DELETE FROM ble_events WHERE id = ? AND id_box = ?', [id, idBox]);
+      if (id !== null && result.affectedRows === 0) fail('Riwayat BLE tidak ditemukan', 404);
+      return res.status(200).json({ success: true, message: 'Riwayat BLE dihapus', deleted: result.affectedRows });
+    } catch (error) {
+      return errorResponse(res, error, 'Gagal menghapus riwayat BLE', 'deleteBleEvents');
+    }
+  },
+
+  deletePresenceHistory: async (req, res) => {
+    try {
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
+      const id = req.params.id === undefined ? null : tagId(req.params.id);
+      const [result] = id === null
+        ? await pool.query('DELETE FROM ble_presence_log WHERE id_box = ?', [idBox])
+        : await pool.query('DELETE FROM ble_presence_log WHERE id = ? AND id_box = ?', [id, idBox]);
+      if (id !== null && result.affectedRows === 0) fail('Riwayat deteksi BLE tidak ditemukan', 404);
+      return res.status(200).json({ success: true, message: 'Riwayat deteksi BLE dihapus', deleted: result.affectedRows });
+    } catch (error) {
+      return errorResponse(res, error, 'Gagal menghapus riwayat deteksi BLE', 'deletePresenceHistory');
+    }
+  },
+
   getPresenceHistory: async (req, res) => {
     try {
       const idBox = requiredText(req.params.idBox, 50, 'idBox');

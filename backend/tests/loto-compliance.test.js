@@ -473,3 +473,26 @@ test('BLE event history is scoped to the box and caps its limit', async () => {
   assert.match(captured[0], /FROM ble_events e/);
   assert.deepEqual(captured[1], ['BOX-1', 200]);
 });
+
+test('BLE history deletes are scoped to the box, one row or all rows', async () => {
+  const calls = [];
+  pool.query = async (sql, args) => { calls.push([sql, args]); return [{ affectedRows: sql.includes('id = ?') ? 1 : 7 }]; };
+  let res = await invoke('deleteBleEvents', undefined, { params: { idBox: 'BOX-1', id: '5' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls.at(-1), ['DELETE FROM ble_events WHERE id = ? AND id_box = ?', [5, 'BOX-1']]);
+  res = await invoke('deleteBleEvents', undefined, { params: { idBox: 'BOX-1' } });
+  assert.equal(res.body.deleted, 7);
+  assert.deepEqual(calls.at(-1), ['DELETE FROM ble_events WHERE id_box = ?', ['BOX-1']]);
+  res = await invoke('deletePresenceHistory', undefined, { params: { idBox: 'BOX-1', id: '9' } });
+  assert.deepEqual(calls.at(-1), ['DELETE FROM ble_presence_log WHERE id = ? AND id_box = ?', [9, 'BOX-1']]);
+  res = await invoke('deletePresenceHistory', undefined, { params: { idBox: 'BOX-1' } });
+  assert.deepEqual(calls.at(-1), ['DELETE FROM ble_presence_log WHERE id_box = ?', ['BOX-1']]);
+});
+
+test('BLE history deletes reject bad IDs and report missing rows', async () => {
+  pool.query = async () => [{ affectedRows: 0 }];
+  let res = await invoke('deleteBleEvents', undefined, { params: { idBox: 'BOX-1', id: 'abc' } });
+  assert.equal(res.statusCode, 400);
+  res = await invoke('deletePresenceHistory', undefined, { params: { idBox: 'BOX-1', id: '3' } });
+  assert.equal(res.statusCode, 404);
+});

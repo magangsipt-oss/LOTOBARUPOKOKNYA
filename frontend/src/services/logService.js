@@ -68,6 +68,19 @@ const logService = {
     return response.data;
   },
 
+  // Hapus riwayat BLE; tanpa id = hapus semua untuk boks tersebut
+  deleteBleEvents: async (idBox, id = null) => {
+    const path = `/loto/presence/${encodeURIComponent(idBox)}/events${id == null ? '' : `/${id}`}`;
+    const response = await api.delete(path);
+    return response.data;
+  },
+
+  deletePresenceHistory: async (idBox, id = null) => {
+    const path = `/loto/presence/${encodeURIComponent(idBox)}/history${id == null ? '' : `/${id}`}`;
+    const response = await api.delete(path);
+    return response.data;
+  },
+
   getPresenceHistory: async (idBox, limit = 100) => {
     const response = await api.get(`/loto/presence/${encodeURIComponent(idBox)}/history`, { params: { limit } });
     return response.data;
