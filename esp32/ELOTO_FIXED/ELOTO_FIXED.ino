@@ -1678,8 +1678,9 @@ void photoSyncTask(void *pvParameters) {
     PhotoSyncJob job;
     for (;;) {
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            // Prefetch latar menunggu di luar sesi LOTO: SD & jaringan diprioritaskan untuk tap dan BLE.
-            if (job.background && (bleBindingActive || isSessionActive)) {
+            // Prefetch latar ditunda saat iTag diikat dan 15 detik setelah tap: SD & jaringan untuk tap dan BLE.
+            if (job.background && (bleBindingActive ||
+                    (isSessionActive && uint32_t(millis() - lastScanTime) < 15000))) {
                 xQueueSendToBack(photoSyncQueue, &job, 0);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 continue;
@@ -3189,6 +3190,7 @@ void clearSessionFromSD() {
 bool loadSessionFromSD() {
     if (!sdCardMounted || sdMutex == NULL) return false;
     bool success = false;
+    bool discardEmptySession = false;
 
     if (takeSd(pdMS_TO_TICKS(200)) == pdTRUE) {
         recoverSdFile("/session.json", "/session.json.tmp", "/session.json.bak");
@@ -3266,9 +3268,30 @@ bool loadSessionFromSD() {
                         bool savedSessionActive = doc["is_session_active"] | false;
                         unsigned long savedElapsed = doc["session_elapsed_ms"] | 0UL;
 
-                        if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
+                        if (safetyQueue.topIndex < 0) {
+                            // Belum ada pengawas yang tap: tidak ada pekerjaan untuk dilanjutkan, mulai dari Selamat Datang.
+                            isSessionActive = false;
+                            sessionStartTime = 0;
+                            currentState = STATE_WELCOME;
+                            selectedFooterAction = 1;
+                            discardEmptySession = true;
+                        } else if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
                             isSessionActive = true;
                             sessionStartTime = millis() - savedElapsed;
+                            // Maintenance berjalan: kembali ke layar terakhir. Layar transisi (hitung mundur,
+                            // koneksi, registrasi, dll.) diganti ke Menu LOTO agar tidak terjebak.
+                            bool resumable = currentState == STATE_WAIT_SPV_IN || currentState == STATE_SUPERVISOR_VALID ||
+                                currentState == STATE_SET_MEKANIK_COUNT || currentState == STATE_MEKANIK_IN ||
+                                currentState == STATE_ALL_WORKERS_REGISTERED || currentState == STATE_WORKER_LIST ||
+                                currentState == STATE_WORKER_DETAIL || currentState == STATE_MENU ||
+                                currentState == STATE_MEKANIK_OUT || currentState == STATE_WAIT_SPV_OUT ||
+                                currentState == STATE_SPV_OUT_CONFIRM;
+                            if (!resumable) {
+                                currentState = STATE_MENU;
+                                selectedMenuIndex = 0;
+                            }
+                            Serial.printf("[SESSION] Resumed maintenance state=%s personel=%d\n",
+                                stateToString(currentState).c_str(), safetyQueue.topIndex + 1);
                         } else {
                             isSessionActive = false;
                             sessionStartTime = 0;
@@ -3284,7 +3307,7 @@ bool loadSessionFromSD() {
                                 currentLongitude = savedLon;
                             }
                         }
-                        success = true;
+                        success = !discardEmptySession;
                     } 
                 } 
             } 
@@ -3292,6 +3315,10 @@ bool loadSessionFromSD() {
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
     } 
+    if (discardEmptySession) {
+        Serial.println("[SESSION] Saved session had no personnel; starting at Welcome");
+        clearSessionFromSD();
+    }
     return success;
 }
 
@@ -3401,7 +3428,7 @@ int findWorkerIndex(String uid) {
 }
 
 // Sinkronkan personel backend ke RAM dan SD.
-// Lengkapi cache foto SD untuk SEMUA personel di users.csv (tanpa batas 50), di luar sesi LOTO.
+// Lengkapi cache foto SD untuk SEMUA personel di users.csv (tanpa batas 50); pelan saat sesi LOTO.
 // Foto yang gagal diunduh otomatis dicoba lagi di putaran berikutnya.
 void servicePhotoBackfill() {
     static uint32_t cursor = 0;
@@ -3411,7 +3438,12 @@ void servicePhotoBackfill() {
     if (int32_t(now - nextAt) < 0) return;
     nextAt = now + 3000;
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || server_host.length() == 0) return;
-    if (isSessionActive || bleBindingActive || relayPulseActive) return;
+    if (bleBindingActive || relayPulseActive) return;
+    // Saat sesi berjalan tetap dilengkapi (agar foto siap untuk tap/offline), tapi pelan dan tidak dekat waktu tap.
+    if (isSessionActive) {
+        if (uint32_t(now - lastScanTime) < 15000) return;
+        nextAt = now + 10000;
+    }
     if (!photoSyncQueue || uxQueueMessagesWaiting(photoSyncQueue) > 0 || ESP.getFreeHeap() < 30000) return;
 
     const uint8_t BATCH = 16;
