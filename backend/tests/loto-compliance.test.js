@@ -496,3 +496,14 @@ test('BLE history deletes reject bad IDs and report missing rows', async () => {
   res = await invoke('deletePresenceHistory', undefined, { params: { idBox: 'BOX-1', id: '3' } });
   assert.equal(res.statusCode, 404);
 });
+
+test('iTags outside an active LOTO session or before any tap are not violations', async () => {
+  presenceFixture({ session: null });
+  let res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [mac], ble_slots: [] });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.data.unknown_tags, [mac]);
+  assert.equal(res.body.data.unidentified_count, 0);
+  presenceFixture({ session: 7 });
+  res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [mac], ble_slots: [] });
+  assert.equal(res.body.data.unidentified_count, 0);
+});

@@ -255,8 +255,10 @@ const lotoComplianceController = {
         ]);
         const unknownMacs = slots ? macs.filter(mac => !boundMacs.has(mac)) : [];
         // Tanpa toleransi: personel yang tap tanpa iTag tidak boleh "menutupi" iTag orang yang belum tap.
+        // Hanya berlaku saat sesi LOTO berjalan dan sudah ada yang tap; di luar sesi iTag bebas berada di area.
         const bindingPending = slots ? slots.some(slot => slot.pending) : false;
-        const unidentifiedCount = bindingPending ? 0 : unknownMacs.length;
+        const sessionRunning = session != null && Boolean(slots && slots.length);
+        const unidentifiedCount = !sessionRunning || bindingPending ? 0 : unknownMacs.length;
 
         if (slots) {
           const [previousRows] = await connection.query(

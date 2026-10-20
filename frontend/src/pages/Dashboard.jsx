@@ -420,12 +420,12 @@ export default function Dashboard() {
                             </tr>
                           ))}
                           {unknownTags.map(tagMac => (
-                            <tr key={`unknown-${tagMac}`} className={`border-b border-slate-100 ${unidentifiedCount > 0 ? 'bg-red-50' : 'bg-amber-50'}`}>
+                            <tr key={`unknown-${tagMac}`} className={`border-b border-slate-100 ${unidentifiedCount > 0 ? 'bg-red-50' : bleSlots.length === 0 ? 'bg-slate-50' : 'bg-amber-50'}`}>
                               <td className="p-2 text-slate-400">?</td>
-                              <td className="p-2"><span className={`font-bold ${unidentifiedCount > 0 ? 'text-red-600' : 'text-amber-600'}`}>{unidentifiedCount > 0 ? '❌ BELUM TAP' : '⏳ MENUNGGU PENGIKATAN'}</span></td>
+                              <td className="p-2"><span className={`font-bold ${unidentifiedCount > 0 ? 'text-red-600' : bleSlots.length === 0 ? 'text-slate-500' : 'text-amber-600'}`}>{unidentifiedCount > 0 ? '❌ BELUM TAP' : bleSlots.length === 0 ? '— DI LUAR SESI' : '⏳ MENUNGGU PENGIKATAN'}</span></td>
                               <td className="p-2 font-bold">iTag tak dikenal<span className="block text-[9px] font-normal text-slate-500">{tagMac}</span></td>
                               <td className="p-2 text-blue-600">Terdeteksi</td>
-                              <td className="p-2">❌ Belum</td>
+                              <td className="p-2">{bleSlots.length === 0 ? '—' : '❌ Belum'}</td>
                             </tr>
                           ))}
                         </>
