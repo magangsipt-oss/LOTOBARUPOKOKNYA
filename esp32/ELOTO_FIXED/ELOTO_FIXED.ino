@@ -634,7 +634,7 @@ bool regLastSuccess = true;
 void processRfidLogic(String uid);
 bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
-bool syncDatabaseToSDCard(bool syncPhotos = false);
+bool syncDatabaseToSDCard(bool syncPhotos = false, bool urgentPhotos = false);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
@@ -3437,7 +3437,7 @@ void servicePhotoBackfill() {
     }
 }
 
-bool syncDatabaseToSDCard(bool syncPhotos) {
+bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
 
@@ -3544,7 +3544,8 @@ bool syncDatabaseToSDCard(bool syncPhotos) {
         for (uint8_t i = 0; i < photoJobCount; ++i) {
             // Hanya unduh foto yang belum ada di SD; foto terbaru tetap diambil saat kartu di-tap.
             if (hasCachedPhotoOnSD(photoJobUids[i], photoJobSids[i])) continue;
-            requestPhotoSync(photoJobUids[i], photoJobSids[i], true);
+            // Foto dari perintah dashboard (kartu baru) diunduh segera, juga saat sesi LOTO berjalan.
+            requestPhotoSync(photoJobUids[i], photoJobSids[i], !urgentPhotos);
             ++queuedPhotos;
         }
         Serial.printf("[SD_SYNC] Photo prefetch queued=%u of %u\n", queuedPhotos, photoJobCount);
@@ -3575,7 +3576,7 @@ bool pollSyncUsersCommand() {
     String commandId = response["data"]["id"] | "";
     String parameter = response["data"]["cmd_param"] | "";
     // Perintah dari dashboard (kartu baru/diubah) ikut mengunduh foto yang belum ada di SD.
-    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true)) return false;
+    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true, true)) return false;
 
     DynamicJsonDocument body(128);
     body["commandId"] = commandId;
