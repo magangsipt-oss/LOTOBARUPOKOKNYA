@@ -616,6 +616,17 @@ double gpsLastSerialLongitude = 0;
 String lastScannedRfidUID = "";
 bool rfidTapArmed = true;
 unsigned long lastRfidFrameMillis = 0;
+// Kartu lain yang ditempel saat notifikasi tap masih tampil; diproses segera setelah notifikasi ditutup.
+String pendingRfidUid = "";
+
+String checkRfidSensor();
+// Selama notifikasi tampil: kartu yang sama diabaikan, kartu berbeda menutup notifikasi agar langsung diproses.
+bool notificationCardInterrupt(const String &currentUid) {
+    String next = checkRfidSensor();
+    if (next.length() == 0 || next.equalsIgnoreCase(currentUid)) return false;
+    pendingRfidUid = next;
+    return true;
+}
 const uint32_t RFID_REMOVAL_GAP_MS = 250;
 // Tap memakai daftar personel hasil sinkron VPS bila sinkron terakhir masih sesegar ini.
 volatile uint32_t lastUserSyncOkAt = 0;
@@ -634,7 +645,7 @@ bool regLastSuccess = true;
 void processRfidLogic(String uid);
 bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
-bool syncDatabaseToSDCard(bool syncPhotos = false, bool urgentPhotos = false);
+bool syncDatabaseToSDCard(bool syncPhotos = false);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
@@ -1780,7 +1791,8 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
     bool invalidJpeg = false;
     bool sdChecked = !sdCardMounted;
 
-    if (sdCardMounted && takeSd(pdMS_TO_TICKS(800)) == pdTRUE) {
+    // Tunggu SD singkat saja agar layar dan tap tidak tertahan; layar mencoba lagi bila SD sibuk.
+    if (sdCardMounted && takeSd(pdMS_TO_TICKS(300)) == pdTRUE) {
         sdChecked = true;
         for (uint8_t i = 0; i < 5 && !drawn && !invalidJpeg; ++i) {
             File photo = SD.open(paths[i], FILE_READ);
@@ -2892,7 +2904,7 @@ void displayCardNotification(String uid, String name, String role, String status
     while (millis() - startNotify < displayDuration) {
         server.handleClient();
         feedGPS();
-        clearRfidBuffer();  
+        if (notificationCardInterrupt(uid)) break;
         if (millis() - startNotify > 200 && readADKeypadRaw() != KEY_NONE) break;
         if (waitingPhoto && photoKnownMissing(uid)) {
             waitingPhoto = false;
@@ -2920,7 +2932,7 @@ void displayCardNotification(String uid, String name, String role, String status
         }
         delay(5);
     }
-    clearRfidBuffer();
+    if (pendingRfidUid.length() == 0) clearRfidBuffer();
     digitalWrite(PIN_BUZZER, LOW);
     // Cooldown tetap aktif agar tidak berulang membaca kartu
     lastRenderedState = STATE_SYSTEM_ERROR;
@@ -2978,11 +2990,11 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
     while (millis() - startNotify < NOTIFICATION_ERROR_DURATION) {
         server.handleClient();
         feedGPS();
-        clearRfidBuffer(); 
+        if (notificationCardInterrupt(uid)) break;
         if (millis() - startNotify > 200 && readADKeypadRaw() != KEY_NONE) break;
         delay(5);
     }
-    clearRfidBuffer();
+    if (pendingRfidUid.length() == 0) clearRfidBuffer();
     digitalWrite(PIN_BUZZER, LOW);
     lastRenderedState = STATE_SYSTEM_ERROR;
     needsRedraw = true;
@@ -3028,9 +3040,10 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     while (millis() - startNotify < 1200) {
         server.handleClient();
         feedGPS();
+        if (notificationCardInterrupt(uid)) break;
         delay(5);
     }
-    clearRfidBuffer();
+    if (pendingRfidUid.length() == 0) clearRfidBuffer();
     digitalWrite(PIN_BUZZER, LOW);
     lastRenderedState = STATE_SYSTEM_ERROR;
     needsRedraw = true;
@@ -3437,7 +3450,7 @@ void servicePhotoBackfill() {
     }
 }
 
-bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
+bool syncDatabaseToSDCard(bool syncPhotos) {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
 
@@ -3544,8 +3557,7 @@ bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
         for (uint8_t i = 0; i < photoJobCount; ++i) {
             // Hanya unduh foto yang belum ada di SD; foto terbaru tetap diambil saat kartu di-tap.
             if (hasCachedPhotoOnSD(photoJobUids[i], photoJobSids[i])) continue;
-            // Foto dari perintah dashboard (kartu baru) diunduh segera, juga saat sesi LOTO berjalan.
-            requestPhotoSync(photoJobUids[i], photoJobSids[i], !urgentPhotos);
+            requestPhotoSync(photoJobUids[i], photoJobSids[i], true);
             ++queuedPhotos;
         }
         Serial.printf("[SD_SYNC] Photo prefetch queued=%u of %u\n", queuedPhotos, photoJobCount);
@@ -3576,7 +3588,7 @@ bool pollSyncUsersCommand() {
     String commandId = response["data"]["id"] | "";
     String parameter = response["data"]["cmd_param"] | "";
     // Perintah dari dashboard (kartu baru/diubah) ikut mengunduh foto yang belum ada di SD.
-    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true, true)) return false;
+    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true)) return false;
 
     DynamicJsonDocument body(128);
     body["commandId"] = commandId;
@@ -5870,7 +5882,51 @@ void serviceBleInitWatchdog() {
     }
 }
 
+// Baca kartu RFID dan proses tap. Dipanggil di awal dan akhir loop agar tap tidak menunggu layar.
+void serviceRfidInput() {
+    // Semua layar menerima kartu (refueling di mana saja); processRfidLogic membatasi pengawas/mekanik.
+    bool rfidInputEnabled = currentState != STATE_COUNTDOWN && currentState != STATE_MAINTENANCE_DONE;
+
+    // Pembacaan RFID dengan Debounce & Cooldown Anti-Spam
+    String authUID = checkRfidSensor();
+    if (pendingRfidUid.length() > 0) {
+        // Kartu berbeda yang ditempel saat notifikasi: proses langsung tanpa menunggu kartu dilepas.
+        authUID = pendingRfidUid;
+        pendingRfidUid = "";
+        rfidTapArmed = true;
+    }
+    if (authUID != "") {
+        lastRfidFrameMillis = millis();
+        if (!rfidTapArmed) return;
+        rfidTapArmed = false;
+        if (!rfidInputEnabled) {
+            // Abaikan tap jika berada di luar menu tapping (misal: di layar Selamat Datang)
+            return;
+        } else {
+            unsigned long now = millis();
+            bool sameCard = authUID.equalsIgnoreCase(lastScannedRfidUID);
+
+            // The removal gap blocks repeats; keep only a brief debounce for different cards.
+            if (!sameCard && (now - lastScanTime < 100)) {
+                return;
+            }
+
+            lastScannedRfidUID = authUID;
+            lastScanTime = now;
+
+            uint32_t tapStartedAt = millis();
+            processRfidLogic(authUID);
+            Serial.printf("[RFID] Tap handled uid=%s in %lu ms\n", authUID.c_str(),
+                (unsigned long)(millis() - tapStartedAt));
+            if (pendingRfidUid.length() == 0) clearRfidBuffer();
+        }
+    } else if (!rfidTapArmed && millis() - lastRfidFrameMillis >= RFID_REMOVAL_GAP_MS) {
+        rfidTapArmed = true;
+    }
+}
+
 void loop() {
+    serviceRfidInput();
     serviceBleInitWatchdog();
     if (!gpsInitStarted) {
         gpsInitStarted = true;
@@ -6021,36 +6077,7 @@ void loop() {
         }
     }
     
-    // Semua layar menerima kartu (refueling di mana saja); processRfidLogic membatasi pengawas/mekanik.
-    bool rfidInputEnabled = currentState != STATE_COUNTDOWN && currentState != STATE_MAINTENANCE_DONE;
-
-    // Pembacaan RFID dengan Debounce & Cooldown Anti-Spam
-    String authUID = checkRfidSensor();
-    if (authUID != "") {
-        lastRfidFrameMillis = millis();
-        if (!rfidTapArmed) return;
-        rfidTapArmed = false;
-        if (!rfidInputEnabled) {
-            // Abaikan tap jika berada di luar menu tapping (misal: di layar Selamat Datang)
-            return;
-        } else {
-            unsigned long now = millis();
-            bool sameCard = authUID.equalsIgnoreCase(lastScannedRfidUID);
-
-            // The removal gap blocks repeats; keep only a brief debounce for different cards.
-            if (!sameCard && (now - lastScanTime < 100)) {
-                return;
-            }
-
-            lastScannedRfidUID = authUID;
-            lastScanTime = now;
-
-            processRfidLogic(authUID);
-            clearRfidBuffer();
-        }
-    } else if (!rfidTapArmed && millis() - lastRfidFrameMillis >= RFID_REMOVAL_GAP_MS) {
-        rfidTapArmed = true;
-    }
+    serviceRfidInput();
 }
 
 // Susun dua baris status untuk LCD atau telemetri.
