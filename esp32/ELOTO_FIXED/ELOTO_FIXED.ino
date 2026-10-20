@@ -680,6 +680,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
 void requestPhotoSync(const String &uid, const String &sid, bool background = false);
 void photoSyncTask(void *pvParameters);
 extern volatile bool bleBindingActive;
+extern volatile bool photoRetrySoon;
 void clearMainScreenArea();
 void executeFooterChoice();
 void parseGpsResponse(const String &response);
@@ -1849,7 +1850,10 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
     }
     // Unduh hanya bila foto belum ada di RAM/SD; tap kartu tetap memicu pembaruan dari VPS.
     if ((!drawn && sdChecked) || invalidJpeg) requestPhotoSync(uid, sidHint);
-    else if (!drawn) Serial.printf("[PHOTO] SD busy; retry draw uid=%s\n", uid.c_str());
+    else if (!drawn) {
+        photoRetrySoon = true;
+        Serial.printf("[PHOTO] SD busy; retry draw uid=%s\n", uid.c_str());
+    }
     return drawn;
 }
 
@@ -5216,6 +5220,19 @@ void drawPhotoPending(int16_t boxX, int16_t boxY, uint16_t boxSize, uint16_t col
     }
 }
 
+// Kotak foto personel untuk semua layar. Aturan: kotak hanya dikosongkan bila saat itu juga foto
+// (atau ikon pengganti) digambar ulang. Redraw sebagian tidak lagi menyisakan kotak kosong.
+String photoDrawnUid = "";
+volatile bool photoRetrySoon = false;
+void drawPersonPhotoBox(const String &uid, const String &sid, int16_t x, int16_t y, uint16_t borderColor) {
+    if (photoAlreadyDrawn && photoDrawnUid.equalsIgnoreCase(uid)) return;
+    tft.fillRect(x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
+    tft.drawRect(x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, borderColor);
+    photoAlreadyDrawn = drawPhotoFromAPI(uid, x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, sid);
+    photoDrawnUid = photoAlreadyDrawn ? uid : String();
+    if (!photoAlreadyDrawn) drawPhotoPending(x, y, PHOTO_FRAME_SIZE);
+}
+
 void drawScreen() {
     needsRedraw = false;
     bool stateChanged = (currentState != lastRenderedState);
@@ -5402,8 +5419,6 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
         tft.drawString("SUPERVISOR VALID", 240, 70);
-        tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-        tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
         tft.setTextDatum(TL_DATUM);
         setStoryFont(9);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
@@ -5415,10 +5430,7 @@ void drawScreen() {
         drawTextFit("SID      : " + formatSid(spvSidDisp), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : PENGAWAS", 190, 180, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        if (!photoAlreadyDrawn) {
-            photoAlreadyDrawn = drawPhotoFromAPI(spvUidDisp, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, spvSidDisp);
-            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
-        }
+        drawPersonPhotoBox(spvUidDisp, spvSidDisp, 20, 92, TFT_WHITE);
     } 
     else if (currentState == STATE_SET_MEKANIK_COUNT) {
         tft.setTextDatum(MC_DATUM);
@@ -5446,10 +5458,7 @@ void drawScreen() {
         int lastWorkerIndex = safetyQueue.topIndex;
         if (lastWorkerIndex > 0 && !isQueueSupervisor(lastWorkerIndex)) {
             WorkerInfo &lastWorker = safetyQueue.workers[lastWorkerIndex];
-            tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-            tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
-            photoAlreadyDrawn = drawPhotoFromAPI(lastWorker.uid, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastWorker.sid);
-            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
+            drawPersonPhotoBox(lastWorker.uid, lastWorker.sid, 20, 92, TFT_WHITE);
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -5546,12 +5555,7 @@ void drawScreen() {
         drawTextFit("SID      : " + formatSid(worker.sid), 26, 150, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : " + worker.role, 26, 186, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        if (!photoAlreadyDrawn) {
-            tft.fillRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-            tft.drawRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_TEXT);
-            photoAlreadyDrawn = drawPhotoFromAPI(worker.uid, 296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, worker.sid);
-            if (!photoAlreadyDrawn) drawPhotoPending(296, 92, PHOTO_FRAME_SIZE);
-        }
+        drawPersonPhotoBox(worker.uid, worker.sid, 296, 92, ELOTO_TEXT);
         lastRenderedWorkerIndex = safeIndex;
     } 
     else if (currentState == STATE_GEOFENCE) {
@@ -5623,21 +5627,17 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
         tft.drawString("SUPERVISOR VALID", 240, 70);
-        tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-        tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
         tft.setTextDatum(TL_DATUM);
         setStoryFont(9);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+        String outSpvSid = safetyQueue.topIndex >= 0 ? safetyQueue.workers[0].sid : lastScannedSID;
         drawTextFit(supervisorName, 190, 112, 260, ELOTO_HEADER, ELOTO_BG, 9);
         tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-        drawTextFit("SID      : " + formatSid(lastScannedSID), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        drawTextFit("SID      : " + formatSid(outSpvSid), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : PENGAWAS", 190, 180, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("STATUS   : KONFIRMASI SELESAI", 190, 212, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        if (!photoAlreadyDrawn) {
-            photoAlreadyDrawn = drawPhotoFromAPI(supervisorUID, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
-            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
-        }
+        drawPersonPhotoBox(supervisorUID, outSpvSid, 20, 92, TFT_WHITE);
     }
     else if (currentState == STATE_MAINTENANCE_DONE) {
         drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
@@ -6065,8 +6065,9 @@ void loop() {
         currentState == STATE_MEKANIK_IN || currentState == STATE_ALL_WORKERS_REGISTERED ||
         currentState == STATE_WORKER_DETAIL || currentState == STATE_SPV_OUT_CONFIRM;
     if (photoScreen && !photoAlreadyDrawn &&
-        uint32_t(millis() - lastPhotoRetryAt) >= PHOTO_SYNC_RETRY_MS) {
+        uint32_t(millis() - lastPhotoRetryAt) >= (photoRetrySoon ? 300 : PHOTO_SYNC_RETRY_MS)) {
         lastPhotoRetryAt = millis();
+        photoRetrySoon = false;
         needsRedraw = true;
     }
 
