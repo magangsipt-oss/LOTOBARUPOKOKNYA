@@ -71,6 +71,9 @@ export default function Dashboard() {
   const unidentifiedCount = complianceUnavailable ? 0 : (Number(lotoCompliance.unidentified_count) || 0);
   const missingTotal = (Number(lotoCompliance.missing_count) || 0) + unidentifiedCount;
   const countMismatch = !complianceUnavailable && missingTotal > 0;
+  // Personel yang tap tanpa iTag terikat: bukan pelanggaran, tapi pengawas perlu memverifikasi.
+  const untaggedCount = complianceUnavailable ? 0 : (bleSlots || []).filter(slot => !slot.mac && !slot.pending).length;
+  const needsVerification = !complianceUnavailable && !countMismatch && untaggedCount > 0;
   // BLE label follows tap order on the live device queue: first tap = BLE 1.
   const liveTapQueue = (() => {
     if (Array.isArray(hwData.queue)) return hwData.queue;
@@ -308,7 +311,7 @@ export default function Dashboard() {
               <tbody>{lotoComplianceHistory.map((row, index) => { const belum = (row.missing_count || 0) + (row.unidentified_count || 0); return <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.ble_detected_count}</td><td>{row.loto_tapped_count}</td><td className={belum > 0 ? 'font-bold text-red-600' : ''}>{belum}</td></tr>; })}</tbody>
             </table>
           </div>);
-        }} className={`bg-white border p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98] ${countMismatch ? 'border-red-500 bg-red-50' : 'border-gray-200'}`}>
+        }} className={`bg-white border p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98] ${countMismatch ? 'border-red-500 bg-red-50' : needsVerification ? 'border-amber-400 bg-amber-50' : 'border-gray-200'}`}>
           <div>
             <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">BLE LOTO Compliance <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p>
             <h3 className="text-lg font-black font-mono-tech mt-1">
@@ -318,9 +321,10 @@ export default function Dashboard() {
             </h3>
             <p className="text-[9px] text-slate-400">BLE Detected / Sudah LOTO</p>
             {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ {missingTotal} personel belum apply LOTO!</p>}
+            {needsVerification && <p className="mt-1 text-[10px] font-black text-amber-600">⚠ {untaggedCount} personel tap tanpa iTag — perlu verifikasi</p>}
           </div>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${complianceUnavailable ? 'bg-slate-100' : countMismatch ? 'bg-red-100' : 'bg-green-100'}`}>
-            <i className={`fa-solid fa-shield-halved text-lg ${complianceUnavailable ? 'text-slate-500' : countMismatch ? 'text-red-600' : 'text-green-600'}`}></i>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${complianceUnavailable ? 'bg-slate-100' : countMismatch ? 'bg-red-100' : needsVerification ? 'bg-amber-100' : 'bg-green-100'}`}>
+            <i className={`fa-solid fa-shield-halved text-lg ${complianceUnavailable ? 'text-slate-500' : countMismatch ? 'text-red-600' : needsVerification ? 'text-amber-600' : 'text-green-600'}`}></i>
           </div>
         </div>
       </div>
@@ -354,11 +358,11 @@ export default function Dashboard() {
             <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech">
               <i className="fa-solid fa-shield-halved"></i> BLE LOTO Compliance
               {selectedBox && <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">{selectedBox.id}</span>}
-              <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${complianceUnavailable ? 'bg-slate-100 text-slate-600' : countMismatch ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                {complianceUnavailable ? 'DATA BELUM TERSEDIA' : (countMismatch ? 'ADA PELANGGARAN' : 'COMPLIANT')}
+              <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${complianceUnavailable ? 'bg-slate-100 text-slate-600' : countMismatch ? 'bg-red-100 text-red-700' : needsVerification ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                {complianceUnavailable ? 'DATA BELUM TERSEDIA' : countMismatch ? 'ADA PELANGGARAN' : needsVerification ? 'PERLU VERIFIKASI' : 'COMPLIANT'}
               </span>
             </div>
-            <div className={`relative rounded-2xl border shadow-lg overflow-hidden ${complianceUnavailable ? 'border-slate-300 bg-slate-50' : countMismatch ? 'border-red-400 bg-red-50' : 'border-green-300 bg-green-50'}`} style={{ minHeight: '200px' }}>
+            <div className={`relative rounded-2xl border shadow-lg overflow-hidden ${complianceUnavailable ? 'border-slate-300 bg-slate-50' : countMismatch ? 'border-red-400 bg-red-50' : needsVerification ? 'border-amber-400 bg-amber-50' : 'border-green-300 bg-green-50'}`} style={{ minHeight: '200px' }}>
               {/* Summary metrics */}
               <div className="grid grid-cols-3 gap-2 p-4 border-b border-slate-200">
                 <div className="text-center p-3 rounded-xl bg-white border border-slate-200">
@@ -393,11 +397,11 @@ export default function Dashboard() {
                         <>
                           {bleSlots.map(slot => {
                             const bleStatus = slot.pending ? ['Menunggu iTag', 'text-amber-600']
-                              : !slot.mac ? ['Tanpa iTag', 'text-slate-400']
+                              : !slot.mac ? ['Tanpa iTag — tempel iTag ke box', 'text-amber-600 font-bold']
                               : slot.present ? [`Terdeteksi${slot.rssi != null ? ` (${slot.rssi} dBm)` : ''}`, 'text-blue-600']
                               : ['Tidak terdeteksi', 'text-slate-400'];
                             return (
-                              <tr key={`slot-${slot.slot}`} className="border-b border-slate-100 bg-green-50/50">
+                              <tr key={`slot-${slot.slot}`} className={`border-b border-slate-100 ${!slot.mac && !slot.pending ? 'bg-amber-50' : 'bg-green-50/50'}`}>
                                 <td className="p-2 font-black whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px]">BLE {slot.slot}</span></td>
                                 <td className="p-2"><span className="text-green-600 font-bold">✅ SUDAH LOTO</span></td>
                                 <td className="p-2 font-bold">{slot.sid || slot.uid || '—'}<span className="block text-[9px] font-normal text-slate-500 truncate max-w-[140px]">{getUserProfile(slot.sid || slot.uid).nama}</span></td>
@@ -418,7 +422,7 @@ export default function Dashboard() {
                           {unknownTags.map(tagMac => (
                             <tr key={`unknown-${tagMac}`} className={`border-b border-slate-100 ${unidentifiedCount > 0 ? 'bg-red-50' : 'bg-amber-50'}`}>
                               <td className="p-2 text-slate-400">?</td>
-                              <td className="p-2"><span className={`font-bold ${unidentifiedCount > 0 ? 'text-red-600' : 'text-amber-600'}`}>{unidentifiedCount > 0 ? '❌ BELUM TAP' : '⚠ CEK MANUAL'}</span></td>
+                              <td className="p-2"><span className={`font-bold ${unidentifiedCount > 0 ? 'text-red-600' : 'text-amber-600'}`}>{unidentifiedCount > 0 ? '❌ BELUM TAP' : '⏳ MENUNGGU PENGIKATAN'}</span></td>
                               <td className="p-2 font-bold">iTag tak dikenal<span className="block text-[9px] font-normal text-slate-500">{tagMac}</span></td>
                               <td className="p-2 text-blue-600">Terdeteksi</td>
                               <td className="p-2">❌ Belum</td>
@@ -465,6 +469,12 @@ export default function Dashboard() {
                 </div>
               </div>
               {/* Alert bar */}
+              {needsVerification && (
+                <div className="bg-amber-500 text-white px-4 py-2 text-xs font-bold flex items-center gap-2">
+                  <i className="fa-solid fa-circle-exclamation"></i>
+                  PERLU VERIFIKASI: {untaggedCount} personel tap tanpa iTag. Minta tempelkan iTag ke box atau cek langsung di lokasi.
+                </div>
+              )}
               {countMismatch && (
                 <div className="bg-red-600 text-white px-4 py-2 text-xs font-bold flex items-center gap-2">
                   <i className="fa-solid fa-triangle-exclamation"></i>

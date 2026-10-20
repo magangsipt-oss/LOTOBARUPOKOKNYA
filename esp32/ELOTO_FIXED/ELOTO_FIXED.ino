@@ -1927,6 +1927,8 @@ const uint32_t GEO_TAG_SCAN_TIMEOUT_MS = 30000;
 const int GEO_BIND_MIN_RSSI = -65;
 const uint32_t GEO_BIND_WINDOW_MS = 30000;
 const uint32_t GEO_BIND_FRESH_MS = 3000;
+// Pengikatan susulan untuk personel "TANPA iTAG": iTag harus ditempel sangat dekat ke box.
+const int GEO_LATE_BIND_MIN_RSSI = -55;
 struct GeoTag { char mac[18]; int rssi; uint32_t seen; uint32_t seenScanMs; };
 GeoTag geoTags[GEO_MAX_TAGS] = {};
 uint8_t geoTagCount = 0;
@@ -2223,12 +2225,15 @@ void serviceGeofence() {
     int taps = geoMechanicsTapped();
 
     // Nomor BLE = urutan tap. iTag terkuat yang belum dipakai diikat ke personel yang baru tap.
+    // Personel "TANPA iTAG" bisa menyusul selama sesi dengan menempelkan iTag ke box.
     bool queueChanged = false;
     bool boundThisPass = false;
     for (int i = 0; i <= safetyQueue.topIndex; ++i) {
         WorkerInfo &worker = safetyQueue.workers[i];
-        if (worker.bleMac[0] || worker.bleBindSince == 0 || boundThisPass) continue;
-        if (uint32_t(now - worker.bleBindSince) > GEO_BIND_WINDOW_MS) {
+        if (worker.bleMac[0] || boundThisPass) continue;
+        bool lateBinding = worker.bleBindSince == 0;
+        if (lateBinding && !isSessionActive) continue;
+        if (!lateBinding && uint32_t(now - worker.bleBindSince) > GEO_BIND_WINDOW_MS) {
             worker.bleBindSince = 0;
             queueChanged = true;
             Serial.printf("[BLE] BLE %d %s: iTag tidak ditemukan saat tap\n", i + 1, worker.name.c_str());
@@ -2237,7 +2242,8 @@ void serviceGeofence() {
         }
         int best = -1;
         for (int t = 0; t < count; ++t) {
-            if (tags[t].rssi < GEO_BIND_MIN_RSSI || uint32_t(now - tags[t].seen) > GEO_BIND_FRESH_MS) continue;
+            int minRssi = lateBinding ? GEO_LATE_BIND_MIN_RSSI : GEO_BIND_MIN_RSSI;
+            if (tags[t].rssi < minRssi || uint32_t(now - tags[t].seen) > GEO_BIND_FRESH_MS) continue;
             if (geoMacBoundInQueue(tags[t].mac)) continue;
             if (best < 0 || tags[t].rssi > tags[best].rssi) best = t;
         }
@@ -2246,8 +2252,8 @@ void serviceGeofence() {
             worker.bleBindSince = 0;
             queueChanged = true;
             boundThisPass = true;
-            Serial.printf("[BLE] BLE %d %s terikat ke iTag %s rssi=%d\n",
-                i + 1, worker.name.c_str(), worker.bleMac, tags[best].rssi);
+            Serial.printf("[BLE] BLE %d %s terikat ke iTag %s rssi=%d%s\n",
+                i + 1, worker.name.c_str(), worker.bleMac, tags[best].rssi, lateBinding ? " (susulan)" : "");
             logAuditAsync("BLE_TAG_BOUND", worker.uid);
         }
     }
@@ -2299,8 +2305,8 @@ void serviceGeofence() {
         if (currentState == STATE_GEOFENCE) needsRedraw = true;
     }
 
-    // Peringatan: ada iTag yang tidak terikat ke siapa pun melebihi personel tanpa iTag.
-    bool excess = isSessionActive && healthy && !anyPending && unknown > untagged;
+    // Peringatan: setiap iTag yang tidak terikat ke tap mana pun, tanpa toleransi untuk personel tanpa iTag.
+    bool excess = isSessionActive && healthy && !anyPending && unknown > 0;
     if (excess) {
         if (!geoPending) { geoPending = true; geoPendingSince = now; }
     } else geoPending = false;
@@ -2420,7 +2426,7 @@ void drawGeofencePage() {
         String status;
         uint16_t statusColor = ELOTO_HEADER;
         if (slots[i].pending) status = "DEKATKAN iTAG";
-        else if (!slots[i].mac[0]) { status = "TANPA iTAG"; statusColor = ELOTO_MUTED; }
+        else if (!slots[i].mac[0]) status = "TANPA iTAG - TEMPEL";
         else if (!geoHealthy) { status = "MEMINDAI..."; statusColor = ELOTO_MUTED; }
         else if (slots[i].present) { status = "TERDETEKSI"; statusColor = ELOTO_TEXT; }
         else status = "TIDAK TERDETEKSI";
@@ -2437,6 +2443,7 @@ void drawGeofencePage() {
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     String summary = !geoHealthy ? "BLE BELUM SIAP / DATA TIDAK VALID" :
         geoUnknownCount > 0 ? "iTAG TANPA TAP KARTU: " + String(geoUnknownCount) :
+        geoUntaggedCount > 0 ? "PERLU VERIFIKASI: " + String(geoUntaggedCount) + " TANPA iTAG" :
         "SEMUA iTAG SESUAI TAP KARTU";
     tft.drawString(summary, 240, 254);
     drawTftFooterSingle("KEMBALI");

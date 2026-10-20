@@ -429,13 +429,13 @@ test('tap-order BLE slots count bound iTags as tapped and flag tags nobody tappe
   assert.deepEqual(res.body.data.tapped_sids, ['SPV1', 'MEK1']);
   assert.equal(res.body.data.missing_count, 0);
   assert.deepEqual(res.body.data.unknown_tags, [secondMac]);
-  // MEK1 tapped without an iTag, so one unknown tag may be theirs: not yet a violation.
-  assert.equal(res.body.data.unidentified_count, 0);
+  // MEK1 tapped without an iTag; that must not hide an iTag whose owner never tapped.
+  assert.equal(res.body.data.unidentified_count, 1);
   assert.deepEqual(state.events.map(row => row.slice(2)), [[1, 'SPV1', mac, 'TAG_BOUND'], [2, 'MEK1', null, 'TAG_NOT_FOUND'], [null, null, secondMac, 'UNKNOWN_TAG']]);
   assert.equal(JSON.parse(state.snapshot[8])[0].slot, 1);
 });
 
-test('an extra iTag beyond untagged taps is unidentified, and only changes are logged', async () => {
+test('an unbound iTag is unidentified, and only changes are logged', async () => {
   const slots = [{ slot: 1, sid: 'SPV1', uid: 'U1', mac, present: true, pending: false, rssi: -50 }];
   const state = presenceFixture({ previous: { session_id: 7, slots: JSON.stringify(slots), unknown_tags: '[]' } });
   const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [mac, secondMac], ble_slots: slots });

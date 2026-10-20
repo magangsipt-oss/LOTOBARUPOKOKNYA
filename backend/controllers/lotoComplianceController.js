@@ -254,9 +254,9 @@ const lotoComplianceController = {
           ...tagRows.map(r => r.mac_address)
         ]);
         const unknownMacs = slots ? macs.filter(mac => !boundMacs.has(mac)) : [];
-        const untaggedCount = slots ? slots.filter(slot => !slot.mac && !slot.pending).length : 0;
+        // Tanpa toleransi: personel yang tap tanpa iTag tidak boleh "menutupi" iTag orang yang belum tap.
         const bindingPending = slots ? slots.some(slot => slot.pending) : false;
-        const unidentifiedCount = bindingPending ? 0 : Math.max(0, unknownMacs.length - untaggedCount);
+        const unidentifiedCount = bindingPending ? 0 : unknownMacs.length;
 
         if (slots) {
           const [previousRows] = await connection.query(
