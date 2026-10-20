@@ -993,6 +993,20 @@ void drawTextFit(const String &text, int32_t x, int32_t y, uint16_t maxWidth, ui
     tft.drawString(truncated + "...", x, y);
 }
 
+// Tulis teks badge GPS. "GPS LAST" (sinyal hilang, pakai lokasi terakhir) terlalu lebar untuk font 9pt
+// dan menimpa badge SD, jadi teks yang tidak muat memakai font kecil bawaan.
+void drawGpsBadgeText(const String &text, uint16_t background) {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_BLACK, background);
+    setStoryFont(9);
+    if (tft.textWidth(text) > 56) {
+        tft.setFreeFont(NULL);
+        tft.setTextFont(2);
+    }
+    tft.drawString(text, 342, 21);
+    setStoryFont(9);
+}
+
 // Gambar ikon satu personel pada TFT.
 void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, bool withOutline, uint16_t outlineColor) {
     int16_t headR = (int16_t)(10 * scale);
@@ -1173,10 +1187,7 @@ void drawTftHeader() {
     String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
 
     tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_BLACK, gpsColor);
-    setStoryFont(9);
-    tft.drawString(gpsText, 342, 21);
+    drawGpsBadgeText(gpsText, gpsColor);
     
     // 3. Badge SD (X: 378)
     tft.fillRoundRect(378, 8, 60, 25, 4, sdCardMounted ? TFT_GREEN : TFT_RED);
@@ -2322,7 +2333,8 @@ void serviceGeofence() {
     }
 
     // Peringatan: setiap iTag yang tidak terikat ke tap mana pun, tanpa toleransi untuk personel tanpa iTag.
-    bool excess = isSessionActive && healthy && !anyPending && unknown > 0;
+    // Baru dinilai setelah ada yang tap (sebelum pengawas tap, belum ada nomor BLE untuk dicocokkan).
+    bool excess = isSessionActive && slotCount > 0 && healthy && !anyPending && unknown > 0;
     if (excess) {
         if (!geoPending) { geoPending = true; geoPendingSince = now; }
     } else geoPending = false;
@@ -6000,11 +6012,8 @@ void loop() {
             // 2. Badge GPS
             uint16_t gpsColor = gpsNow ? TFT_GREEN : (gpsHasHistory ? TFT_YELLOW : TFT_RED);
             tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
-            tft.setTextDatum(MC_DATUM);
-            tft.setTextColor(TFT_BLACK, gpsColor);
-            setStoryFont(9);
             String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
-            tft.drawString(gpsText, 342, 21);
+            drawGpsBadgeText(gpsText, gpsColor);
 
             // 3. Badge SD
             tft.fillRoundRect(378, 8, 60, 25, 4, sdNow ? TFT_GREEN : TFT_RED);
