@@ -1499,6 +1499,13 @@ bool hasFlashPhoto(const String &uid, const String &sid) {
 
 bool saveFlashPhoto(const String &uid, const String &sid, const uint8_t *data, size_t size) {
     if (!flashFsReady || !isValidJpeg(data, size)) return false;
+    // Sisakan ruang untuk users.csv (ditulis via berkas sementara); foto lain tetap ke SD/server.
+    const size_t FLASH_PHOTO_RESERVE_BYTES = 128 * 1024;
+    if (LittleFS.usedBytes() + size + FLASH_PHOTO_RESERVE_BYTES > LittleFS.totalBytes()) {
+        Serial.printf("[PHOTO_FLASH] Cache full, skip uid=%s used=%u/%u\n", uid.c_str(),
+            (unsigned int)LittleFS.usedBytes(), (unsigned int)LittleFS.totalBytes());
+        return false;
+    }
     if (!LittleFS.exists("/p")) LittleFS.mkdir("/p");
     String path = flashPhotoPath(uid, sid);
     bool saved = writeFlashFile(path.c_str(), data, size);
