@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "../ServerDefaults.h"
 #include "../FirmwareSafety.h"
+#include "../PhotoCacheIO.h"
 #include <NimBLEDevice.h>
 #include <freertos/queue.h>
 #include <utility>
@@ -444,8 +445,14 @@ uint8_t photoSyncAttemptIndex = 0;
 uint8_t *photoDisplayData = NULL;
 size_t photoDisplaySize = 0;
 String photoDisplayUid = "";
+String photoDisplaySid = "";
 String photoDisplayRequestedUid = "";
 bool photoDisplayOnSd = false;
+bool photoDisplayRendered = false;
+bool photoDisplayCachePending = false;
+uint8_t photoDisplayCacheAttempts = 0;
+uint32_t photoDisplayReadyAt = 0;
+uint32_t photoDisplayCacheAttemptAt = 0;
 String photoMissingUid = "";
 
 unsigned long sessionStartTime = 0;
@@ -678,6 +685,7 @@ void displayCardNotification(String uid, String name, String role, String status
 void displayErrorCardPopup(String uid, String title, String name, String role, String sid, String bottomHint);
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, const String &sidHint = "");
 void requestPhotoSync(const String &uid, const String &sid, bool background = false);
+void servicePhotoDisplayCache();
 void photoSyncTask(void *pvParameters);
 extern volatile bool bleBindingActive;
 void clearMainScreenArea();
@@ -1282,9 +1290,14 @@ bool hasCachedPhotoOnSD(const String &uid, const String &sid) {
     for (uint8_t i = 0; i < 5 && !valid; ++i) {
         File photo = SD.open(paths[i], FILE_READ);
         if (!photo) continue;
-        uint8_t signature[2] = { 0, 0 };
-        valid = photo.size() > 100 && photo.read(signature, sizeof(signature)) == sizeof(signature) &&
-            signature[0] == 0xFF && signature[1] == 0xD8;
+        size_t size = photo.size();
+        uint8_t signature[2] = {};
+        valid = size > 100 && size <= 60000 &&
+            photo.read(signature, sizeof(signature)) == sizeof(signature) &&
+            signature[0] == 0xFF && signature[1] == 0xD8 &&
+            photo.seek(size - sizeof(signature)) &&
+            photo.read(signature, sizeof(signature)) == sizeof(signature) &&
+            signature[0] == 0xFF && signature[1] == 0xD9;
         photo.close();
     }
     digitalWrite(SD_CS_PIN, HIGH);
@@ -1456,32 +1469,65 @@ bool cachePhotoBufferToSD(const String &uid, const String &sid, const uint8_t *d
     String backup = base + ".BAK";
     bool saved = false;
     const char *reason = "cache_setup";
-    size_t verifiedSize = 0;
+    eloto::photo::WriteResult result;
     bool directoryReady = SD.exists("/foto") || SD.mkdir("/foto");
+    if (directoryReady) {
+        File directory = SD.open("/foto", FILE_READ);
+        directoryReady = directory && directory.isDirectory();
+        if (directory) directory.close();
+    }
     if (directoryReady && recoverSdFile(active.c_str(), temporary.c_str(), backup.c_str())) {
-        File photo = SD.open(temporary, FILE_WRITE);
-        reason = "open_write";
-        if (photo) {
-            bool written = photo.write(data, size) == size;
-            photo.flush();
-            photo.close();
-            reason = written ? "open_verify" : "sd_write";
-            File verify = SD.open(temporary, FILE_READ);
-            if (verify) {
-                verifiedSize = verify.size();
-                verify.close();
-                if (written) reason = verifiedSize == size ? "commit_failed" : "size_mismatch";
-            }
-            bool valid = written && verifiedSize == size;
-            saved = valid && commitSdFile(active.c_str(), temporary.c_str(), backup.c_str());
-            if (!saved && SD.exists(temporary)) SD.remove(temporary);
-        }
+        // SD dipasang di /sd. Tulis tanpa buffer stdio dan periksa fsync/close,
+        // lalu bandingkan SEMUA byte hasil baca; File.size() saja tidak cukup.
+        String mountedPath = "/sd" + temporary;
+        bool valid = eloto::photo::writeVerifiedJpeg(mountedPath.c_str(), data, size, result);
+        reason = valid ? "commit_failed" : result.stage;
+        saved = valid && commitSdFile(active.c_str(), temporary.c_str(), backup.c_str());
+        if (!saved && SD.exists(temporary)) SD.remove(temporary);
     }
     digitalWrite(SD_CS_PIN, HIGH);
     giveSd();
-    if (!saved) Serial.printf("[PHOTO_SYNC] SD buffer cache failed uid=%s bytes=%u on_card=%u reason=%s\n",
-        uid.c_str(), (unsigned int)size, (unsigned int)verifiedSize, reason);
+    if (!saved) Serial.printf("[PHOTO_SYNC] SD buffer cache failed uid=%s bytes=%u written=%u on_card=%u reason=%s errno=%d\n",
+        uid.c_str(), (unsigned int)size, (unsigned int)result.written,
+        (unsigned int)result.verified, reason, result.error);
+    else Serial.printf("[PHOTO_SYNC] SD cache verified uid=%s bytes=%u\n",
+        uid.c_str(), (unsigned int)result.verified);
     return saved;
+}
+
+// Hanya PhotoSync yang mengganti buffer RAM. Selama penulisan, onSd tetap false,
+// sehingga layar tidak membebaskan buffer yang sedang dipakai penulis SD.
+void servicePhotoDisplayCache() {
+    if (!photoSyncMutex || !sdCardMounted || relayPulseActive) return;
+    if (xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    uint32_t now = millis();
+    bool ready = photoDisplayCachePending && photoDisplayData && !photoDisplayOnSd &&
+        (photoDisplayRendered || !photoDisplayRequestedUid.equalsIgnoreCase(photoDisplayUid) ||
+            uint32_t(now - photoDisplayReadyAt) >= PHOTO_SYNC_RETRY_MS);
+    bool retryAllowed = photoDisplayCacheAttempts < PHOTO_PREFETCH_MAX_RETRIES &&
+        (photoDisplayCacheAttempts == 0 || uint32_t(now - photoDisplayCacheAttemptAt) >= PHOTO_SYNC_RETRY_MS);
+    if (!ready || !retryAllowed) {
+        xSemaphoreGive(photoSyncMutex);
+        return;
+    }
+    uint8_t *data = photoDisplayData;
+    size_t size = photoDisplaySize;
+    String uid = photoDisplayUid;
+    String sid = photoDisplaySid;
+    photoDisplayCacheAttemptAt = now;
+    ++photoDisplayCacheAttempts;
+    xSemaphoreGive(photoSyncMutex);
+
+    // Jangan pegang mutex foto saat menunggu SD/SPI: layar harus bisa memakai RAM.
+    bool saved = cachePhotoBufferToSD(uid, sid, data, size);
+    if (xSemaphoreTake(photoSyncMutex, portMAX_DELAY) == pdTRUE) {
+        if (photoDisplayData == data && photoDisplayUid.equalsIgnoreCase(uid)) {
+            photoDisplayOnSd = saved;
+            photoDisplayCachePending = !saved;
+        }
+        xSemaphoreGive(photoSyncMutex);
+    }
+    // Setelah onSd=true, layar boleh membebaskan data; jangan akses pointer lagi.
 }
 
 // Ambil foto backend di task terpisah supaya proses tapping tetap responsif.
@@ -1552,24 +1598,55 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                     size_t received = stream ?
                         readPhotoBody(*stream, jpegData, (size_t)length, 15000) : 0;
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
-                        // Simpan juga ke SD: layar dengan dua orang (SPV + mekanik) tetap punya foto.
-                        saved = cachePhotoBufferToSD(uid, sid, jpegData, received);
+                        // Lepaskan TLS lebih dulu. Foto layar tidak boleh menunggu flush SD.
+                        http.end();
+                        uint8_t *retiredData = NULL;
+                        size_t retiredSize = 0;
+                        String retiredUid, retiredSid;
+                        bool retiredCachePending = false;
                         if (photoSyncMutex &&
                             xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                             if (photoDisplayRequestedUid.equalsIgnoreCase(normalizeRfidUid(uid))) {
-                                free(photoDisplayData);
+                                // Lepaskan kepemilikan buffer lama tanpa menahan foto yang baru.
+                                retiredData = photoDisplayData;
+                                retiredSize = photoDisplaySize;
+                                retiredUid = photoDisplayUid;
+                                retiredSid = photoDisplaySid;
+                                retiredCachePending = photoDisplayCachePending && !photoDisplayOnSd;
                                 photoDisplayData = jpegData;
                                 photoDisplaySize = received;
                                 photoDisplayUid = normalizeRfidUid(uid);
-                                photoDisplayOnSd = saved;
+                                photoDisplaySid = sid;
+                                photoDisplayOnSd = false;
+                                photoDisplayRendered = false;
+                                photoDisplayCachePending = true;
+                                photoDisplayCacheAttempts = 0;
+                                photoDisplayReadyAt = millis();
+                                photoDisplayCacheAttemptAt = 0;
                                 if (photoMissingUid.equalsIgnoreCase(photoDisplayUid)) photoMissingUid = "";
                                 jpegData = NULL;
                                 displayReady = true;
                             }
                             xSemaphoreGive(photoSyncMutex);
                         }
+                        if (displayReady) {
+                            photoAlreadyDrawn = false;
+                            forceFullRedraw = true;
+                            needsRedraw = true;
+                        } else {
+                            // Prefetch tanpa layar aktif tetap disimpan ke SD saat itu juga.
+                            saved = cachePhotoBufferToSD(uid, sid, jpegData, received);
+                        }
                         Serial.printf("[PHOTO_SYNC] Display buffer uid=%s ready=%d heap=%lu\n",
                             uid.c_str(), displayReady ? 1 : 0, (unsigned long)ESP.getFreeHeap());
+                        if (retiredData) {
+                            // Buffer lama milik task ini; layar sekarang hanya mengakses buffer baru.
+                            if (retiredCachePending) {
+                                vTaskDelay(pdMS_TO_TICKS(20));
+                                cachePhotoBufferToSD(retiredUid, retiredSid, retiredData, retiredSize);
+                            }
+                            free(retiredData);
+                        }
                     } else {
                         Serial.printf("[PHOTO_SYNC] Invalid/truncated JPEG uid=%s received=%u expected=%d start=%02X%02X end=%02X%02X\n",
                             uid.c_str(), (unsigned int)received, length,
@@ -1590,8 +1667,9 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                     uid.c_str(), length, (unsigned long)availableHeap, (unsigned long)largestBlock);
             }
         }
-        Serial.printf("[PHOTO_SYNC] GET lookup=%s HTTP=%d type=%s content=%d SD_saved=%d display_ready=%d heap=%lu\n",
+        Serial.printf("[PHOTO_SYNC] GET lookup=%s HTTP=%d type=%s content=%d SD_saved=%d display_ready=%d cache_pending=%d heap=%lu\n",
             lookupId.c_str(), code, contentType.c_str(), length, saved ? 1 : 0, displayReady ? 1 : 0,
+            displayReady && sdCardMounted ? 1 : 0,
             (unsigned long)ESP.getFreeHeap());
         http.end();
         if (saved || displayReady) return true;
@@ -1666,6 +1744,7 @@ void photoSyncTask(void *pvParameters) {
     (void)pvParameters;
     PhotoSyncJob job;
     for (;;) {
+        servicePhotoDisplayCache();
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
             // Prefetch latar menunggu di luar sesi LOTO: SD & jaringan diprioritaskan untuk tap dan BLE.
             if (job.background && (bleBindingActive || isSessionActive)) {
@@ -1769,13 +1848,17 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
                         uid.c_str(), drawn ? 1 : 0, (unsigned int)photoDisplaySize);
                 }
             }
+            if (drawn) photoDisplayRendered = true;
             // Salinan SD sudah ada: lepas buffer agar heap tidak terfragmentasi untuk TLS/BLE.
             if (drawn && photoDisplayOnSd) {
                 free(photoDisplayData);
                 photoDisplayData = NULL;
                 photoDisplaySize = 0;
                 photoDisplayUid = "";
+                photoDisplaySid = "";
                 photoDisplayOnSd = false;
+                photoDisplayRendered = false;
+                photoDisplayCachePending = false;
             }
         }
         xSemaphoreGive(photoSyncMutex);
@@ -1794,7 +1877,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
     // Tunggu SD singkat saja agar layar dan tap tidak tertahan; layar mencoba lagi bila SD sibuk.
     if (sdCardMounted && takeSd(pdMS_TO_TICKS(300)) == pdTRUE) {
         sdChecked = true;
-        for (uint8_t i = 0; i < 5 && !drawn && !invalidJpeg; ++i) {
+        for (uint8_t i = 0; i < 5 && !drawn; ++i) {
             File photo = SD.open(paths[i], FILE_READ);
             if (!photo) continue;
             size_t size = photo.size();
