@@ -452,6 +452,10 @@ String photoDisplayUid = "";
 String photoDisplayRequestedUid = "";
 bool photoDisplayOnSd = false;
 String photoMissingUid = "";
+// UID yang fotonya sudah diunduh dari server sejak tap terakhir (online: foto selalu dari backend).
+String photoServerFreshUid = "";
+unsigned long photoServerWaitStartedAt = 0;
+const unsigned long PHOTO_SERVER_WAIT_MS = 4000;
 
 unsigned long sessionStartTime = 0;
 bool isSessionActive = false;
@@ -1587,6 +1591,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                                 photoDisplaySize = received;
                                 photoDisplayUid = normalizeRfidUid(uid);
                                 photoDisplayOnSd = saved;
+                                photoServerFreshUid = photoDisplayUid;
                                 if (photoMissingUid.equalsIgnoreCase(photoDisplayUid)) photoMissingUid = "";
                                 jpegData = NULL;
                                 displayReady = true;
@@ -1807,6 +1812,26 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         xSemaphoreGive(photoSyncMutex);
     }
     if (drawn) return true;
+
+    // Online: tunggu foto terbaru dari backend (maks 4 detik); SD hanya dipakai bila server
+    // tidak menjawab tepat waktu atau box offline.
+    if (WiFi.status() == WL_CONNECTED && server_host.length() > 0) {
+        bool fresh = false, missing = false, waiting = false;
+        if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            fresh = photoServerFreshUid.equalsIgnoreCase(cleanUid);
+            missing = photoMissingUid.equalsIgnoreCase(cleanUid);
+            if (!fresh && !missing && photoServerWaitStartedAt == 0) photoServerWaitStartedAt = millis();
+            waiting = !fresh && !missing && millis() - photoServerWaitStartedAt < PHOTO_SERVER_WAIT_MS;
+            xSemaphoreGive(photoSyncMutex);
+        }
+        if (missing) return false;  // backend tidak punya foto personel ini
+        if (waiting) {
+            requestPhotoSync(uid, sidHint);
+            photoRetrySoon = true;
+            return false;
+        }
+    }
+
     String paths[5] = {
         "/foto/" + photoCacheBaseName(uid, sidHint) + ".jpg",
         "/foto/" + photoCacheUidBaseName(uid) + ".jpg",
@@ -4270,6 +4295,28 @@ WorkerInfo fetchCardDataAPI(String uid) {
 // menunggu HTTPS. Kartu tak dikenal atau cache yang basi tetap diverifikasi ke backend.
 WorkerInfo lookupCardForTap(String uid) {
     String cleanUid = normalizeRfidUid(uid);
+    // Tap baru: foto harus diambil ulang dari backend.
+    if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        photoServerFreshUid = "";
+        photoServerWaitStartedAt = 0;
+        if (photoMissingUid.equalsIgnoreCase(cleanUid)) photoMissingUid = "";
+        if (photoDisplayUid.equalsIgnoreCase(cleanUid)) {
+            free(photoDisplayData);
+            photoDisplayData = NULL;
+            photoDisplaySize = 0;
+            photoDisplayUid = "";
+            photoDisplayOnSd = false;
+        }
+        xSemaphoreGive(photoSyncMutex);
+    }
+    // Online: data personel selalu dari backend; cache lokal hanya cadangan bila server tidak menjawab.
+    bool online = deviceHasNetwork() && server_host.length() > 0;
+    WorkerInfo apiCard;
+    if (online) {
+        apiCard = fetchCardDataAPI(uid);
+        if (apiCard.isRegistered || !apiCard.offlineFallbackAllowed) return apiCard;
+        Serial.println("[RFID] Backend unavailable; falling back to local user cache");
+    }
     // Kartu yang sudah dikenal langsung diterima dari cache lokal (sinkron tiap 60 detik + perintah dashboard),
     // agar tap tidak menunggu HTTPS. Backend hanya dipakai untuk kartu yang belum ada di cache.
     {
@@ -4351,7 +4398,7 @@ WorkerInfo lookupCardForTap(String uid) {
             return sdCard;
         }
     }
-    return fetchCardDataAPI(uid);
+    return online ? apiCard : fetchCardDataAPI(uid);
 }
 
 // Kirim telemetri dan jalankan sinkronisasi jaringan.
