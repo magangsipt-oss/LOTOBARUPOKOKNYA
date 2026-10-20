@@ -296,6 +296,8 @@ const uint32_t PHOTO_SYNC_REQUEST_COOLDOWN_MS = 15000;
 // Setiap HTTPS mematikan BLE sementara; polling jarang menjaga BLE dan heap tetap stabil.
 const uint32_t PERSONNEL_SYNC_INTERVAL_MS     = 60000;
 const uint32_t COMMAND_POLL_INTERVAL_MS       = 10000;
+// Selama sesi LOTO, polling dijarangkan agar BLE lebih lama memindai (tiap HTTPS menjeda BLE).
+const uint32_t COMMAND_POLL_SESSION_INTERVAL_MS = 30000;
 const uint32_t PHOTO_PREFETCH_INTERVAL_MS     = 600000;
 const uint32_t MIN_HEAP_TO_VERIFY_CARD        = 12000;
 const uint32_t MIN_HEAP_TO_POST_TELEMETRY     = 14000;
@@ -1918,8 +1920,9 @@ const uint32_t GEO_WARNING_DELAY_MS = 3000;
 // HTTPS pauses the scanner; keep health valid across one TLS request.
 const uint32_t GEO_SCANNER_STALE_MS = 30000;
 const uint8_t GEO_MAX_TAGS = 20;
-// Tag hilang bila tidak terlihat selama 12 detik pemindaian aktif; jeda HTTPS tidak ikut dihitung.
-const uint32_t GEO_TAG_SCAN_TIMEOUT_MS = 12000;
+// Tag hilang bila tidak terlihat selama 30 detik pemindaian aktif; jeda HTTPS tidak ikut dihitung.
+// iTag murah memancar tiap 1-3 detik dan kadang terlewat, jadi batas pendek membuat tag berkedip.
+const uint32_t GEO_TAG_SCAN_TIMEOUT_MS = 30000;
 // iTag yang didekatkan ke box saat tap kartu diikat ke nomor BLE personel tersebut.
 const int GEO_BIND_MIN_RSSI = -65;
 const uint32_t GEO_BIND_WINDOW_MS = 30000;
@@ -2121,8 +2124,9 @@ void geoScanTask(void *unused) {
                 // Refresh known tags on repeated advertisements so presence does not expire.
                 scan->setScanCallbacks(&callbacks, true);
                 scan->setActiveScan(true);
+                // Window = interval: radio mendengar 100% selama slice scan (Wi-Fi sedang diam karena mutex).
                 scan->setInterval(160);
-                scan->setWindow(80);
+                scan->setWindow(160);
                 scan->setMaxResults(0);
                 bleStackInitialized = true;
             }
@@ -4134,7 +4138,8 @@ void networkTaskCore0(void * pvParameters) {
             uploadOfflineLogsSDCard();
         }
         if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 &&
-            millis() - lastCommandPollTask >= COMMAND_POLL_INTERVAL_MS && ESP.getFreeHeap() > 30000) {
+            millis() - lastCommandPollTask >= (isSessionActive ? COMMAND_POLL_SESSION_INTERVAL_MS : COMMAND_POLL_INTERVAL_MS) &&
+            ESP.getFreeHeap() > 30000) {
             lastCommandPollTask = millis();
             if (pollSyncUsersCommand()) lastDbSyncTask = millis();
         }
