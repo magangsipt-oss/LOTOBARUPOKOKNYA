@@ -2,6 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/useApp';
 import logService from '../services/logService';
 
+const BLE_EVENT_LABEL = {
+  TAG_BOUND: ['iTag diikat saat tap', 'text-blue-600'],
+  TAG_DETECTED: ['Terdeteksi kembali', 'text-green-600'],
+  TAG_LOST: ['Tidak terdeteksi', 'text-amber-600'],
+  TAG_NOT_FOUND: ['Tap tanpa iTag', 'text-slate-500'],
+  UNKNOWN_TAG: ['iTag tanpa tap muncul', 'text-red-600'],
+  UNKNOWN_TAG_GONE: ['iTag tanpa tap hilang', 'text-slate-500']
+};
+
 /**
  * Halaman Manajemen BLE Tag untuk LOTO Compliance Monitoring
  */
@@ -12,6 +21,7 @@ export default function BleTagManager() {
   const [bleTags, setBleTags] = useState([]);
   const [presenceResult, setPresenceResult] = useState({ boxId: '', status: 'loading', rows: [] });
   const [presenceHistory, setPresenceHistory] = useState({ boxId: '', status: 'loading', rows: [] });
+  const [bleEvents, setBleEvents] = useState({ boxId: '', status: 'loading', rows: [] });
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formTag, setFormTag] = useState({ mac_address: '', tag_name: '', assigned_sid: '' });
@@ -85,6 +95,28 @@ export default function BleTagManager() {
     setPresenceHistory({ boxId: selectedBoxId, status: 'loading', rows: [] });
     loadHistory();
     const interval = setInterval(loadHistory, 5000);
+    return () => { active = false; clearInterval(interval); };
+  }, [isLoggedIn, activeTab, selectedBoxId]);
+
+  // Riwayat perubahan BLE per nomor tap (diikat, terdeteksi, hilang, iTag tanpa tap)
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'ble-tags' || !selectedBoxId) return;
+    let active = true;
+    let pending = false;
+    const loadEvents = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await logService.getBleEvents(selectedBoxId, 100);
+        const data = result.data ?? result;
+        if (!Array.isArray(data)) throw new Error('Data riwayat BLE tidak valid.');
+        if (active) setBleEvents({ boxId: selectedBoxId, status: 'ready', rows: data });
+      } catch {
+        if (active) setBleEvents({ boxId: selectedBoxId, status: 'error', rows: [] });
+      } finally { pending = false; }
+    };
+    loadEvents();
+    const interval = setInterval(loadEvents, 5000);
     return () => { active = false; clearInterval(interval); };
   }, [isLoggedIn, activeTab, selectedBoxId]);
 
@@ -342,6 +374,53 @@ export default function BleTagManager() {
               )) : (
                 <tr><td colSpan={canManageTags ? 7 : 6} className="p-8 text-center text-slate-400 italic">Tidak ada BLE tag yang terdeteksi aktif</td></tr>
               )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* BLE History per tap number */}
+      <div className="bg-white border border-blue-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-blue-50 px-4 py-3 border-b border-blue-200 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-list-ol text-blue-600"></i>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-wider text-blue-700 font-mono-tech">Riwayat BLE per Nomor Tap</h3>
+              <p className="text-[10px] text-slate-600">BLE 1 = tap pertama; perubahan iTag untuk boks terpilih</p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+            {bleEvents.boxId === selectedBoxId && bleEvents.status === 'ready' ? bleEvents.rows.length : '—'} Riwayat
+          </span>
+        </div>
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
+            <thead className="sticky top-0 bg-gray-100 border-b border-gray-200">
+              <tr>
+                <th className="p-3">Waktu</th>
+                <th className="p-3">BLE</th>
+                <th className="p-3">Personel / iTag</th>
+                <th className="p-3">Kejadian</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {bleEvents.boxId !== selectedBoxId || bleEvents.status === 'loading' ? (
+                <tr><td colSpan={4} className="p-6 text-center text-slate-400 italic">Memuat riwayat BLE…</td></tr>
+              ) : bleEvents.status === 'error' ? (
+                <tr><td colSpan={4} className="p-6 text-center text-red-500">Riwayat BLE gagal dimuat.</td></tr>
+              ) : bleEvents.rows.length === 0 ? (
+                <tr><td colSpan={4} className="p-6 text-center text-slate-400 italic">Belum ada riwayat BLE untuk boks ini.</td></tr>
+              ) : bleEvents.rows.map(row => {
+                const [label, color] = BLE_EVENT_LABEL[row.event] || [row.event, 'text-slate-600'];
+                return (
+                  <tr key={row.id} className="hover:bg-blue-50/50">
+                    <td className="p-3 text-slate-600">{row.created_at ? new Date(String(row.created_at).replace(' ', 'T')).toLocaleString('id-ID') : '—'}</td>
+                    <td className="p-3 font-black text-blue-700">{row.slot ? `BLE ${row.slot}` : '—'}</td>
+                    <td className="p-3 text-slate-800">{row.sid ? (row.nama || row.sid) : 'iTag tak dikenal'}<span className="block text-[9px] text-slate-400">{row.sid ? `${row.sid}${row.ble_mac ? ` · ${row.ble_mac}` : ''}` : (row.ble_mac || '—')}</span></td>
+                    <td className={`p-3 font-bold ${color}`}>{label}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
