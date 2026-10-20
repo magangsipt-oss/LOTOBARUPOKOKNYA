@@ -22,11 +22,6 @@
 #include <SD.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
-#include <LittleFS.h>
-
-// Flash internal (partisi 896 KB pada skema Huge APP) menyimpan foto & daftar personel.
-// Tidak memakai bus SPI yang sama dengan TFT/SD, sehingga tetap terbaca walau SD bermasalah.
-bool flashFsReady = false;
 
 // ============================================================================
 // DEFINISI WARNA TEMA E-LOTO
@@ -452,10 +447,6 @@ String photoDisplayUid = "";
 String photoDisplayRequestedUid = "";
 bool photoDisplayOnSd = false;
 String photoMissingUid = "";
-// UID yang fotonya sudah diunduh dari server sejak tap terakhir (online: foto selalu dari backend).
-String photoServerFreshUid = "";
-unsigned long photoServerWaitStartedAt = 0;
-const unsigned long PHOTO_SERVER_WAIT_MS = 4000;
 
 unsigned long sessionStartTime = 0;
 bool isSessionActive = false;
@@ -654,7 +645,7 @@ bool regLastSuccess = true;
 void processRfidLogic(String uid);
 bool handleFuelmanTap(const String &uid, WorkerInfo &card);
 String checkRfidSensor();
-bool syncDatabaseToSDCard(bool syncPhotos = false, bool urgentPhotos = false);
+bool syncDatabaseToSDCard(bool syncPhotos = false);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
@@ -689,7 +680,6 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
 void requestPhotoSync(const String &uid, const String &sid, bool background = false);
 void photoSyncTask(void *pvParameters);
 extern volatile bool bleBindingActive;
-extern volatile bool photoRetrySoon;
 void clearMainScreenArea();
 void executeFooterChoice();
 void parseGpsResponse(const String &response);
@@ -758,43 +748,35 @@ uint8_t getDebouncedKey() {
     return stableKey;
 }
 
-// Pulihkan berkas (SD/flash) dari transaksi yang terputus.
-bool recoverFile(fs::FS &fs, const char *active, const char *temporary, const char *backup) {
-    if (fs.exists(backup)) {
-        if (!fs.exists(active)) {
-            if (!fs.rename(backup, active)) {
+// Pulihkan berkas SD dari transaksi yang terputus.
+bool recoverSdFile(const char *active, const char *temporary, const char *backup) {
+    if (SD.exists(backup)) {
+        if (!SD.exists(active)) {
+            if (!SD.rename(backup, active)) {
                 return false;
             }
-        } else if (!fs.remove(backup)) {
+        } else if (!SD.remove(backup)) {
             return false;
         }
     }
-    if (fs.exists(temporary) && !fs.remove(temporary)) {
+    if (SD.exists(temporary) && !SD.remove(temporary)) {
         return false;
     }
     return true;
 }
 
-// Ganti berkas (SD/flash) secara aman melalui berkas cadangan.
-bool commitFile(fs::FS &fs, const char *active, const char *temporary, const char *backup) {
-    bool hadOldFile = fs.exists(active);
-    if (hadOldFile && !fs.rename(active, backup)) {
-        return false;
-    }
-    if (!fs.rename(temporary, active)) {
-        if (hadOldFile && !fs.rename(backup, active)) {}
-        return false;
-    }
-    if (hadOldFile && !fs.remove(backup)) {}
-    return true;
-}
-
-bool recoverSdFile(const char *active, const char *temporary, const char *backup) {
-    return recoverFile(SD, active, temporary, backup);
-}
-
+// Ganti berkas SD secara aman melalui berkas cadangan.
 bool commitSdFile(const char *active, const char *temporary, const char *backup) {
-    return commitFile(SD, active, temporary, backup);
+    bool hadOldFile = SD.exists(active);
+    if (hadOldFile && !SD.rename(active, backup)) {
+        return false;
+    }
+    if (!SD.rename(temporary, active)) {
+        if (hadOldFile && !SD.rename(backup, active)) {}
+        return false;
+    }
+    if (hadOldFile && !SD.remove(backup)) {}
+    return true;
 }
 
 // Pasang SD dan pulihkan berkas sistem yang diperlukan.
@@ -1011,20 +993,6 @@ void drawTextFit(const String &text, int32_t x, int32_t y, uint16_t maxWidth, ui
     tft.drawString(truncated + "...", x, y);
 }
 
-// Tulis teks badge GPS. "GPS LAST" (sinyal hilang, pakai lokasi terakhir) terlalu lebar untuk font 9pt
-// dan menimpa badge SD, jadi teks yang tidak muat memakai font kecil bawaan.
-void drawGpsBadgeText(const String &text, uint16_t background) {
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_BLACK, background);
-    setStoryFont(9);
-    if (tft.textWidth(text) > 56) {
-        tft.setFreeFont(NULL);
-        tft.setTextFont(2);
-    }
-    tft.drawString(text, 342, 21);
-    setStoryFont(9);
-}
-
 // Gambar ikon satu personel pada TFT.
 void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, bool withOutline, uint16_t outlineColor) {
     int16_t headR = (int16_t)(10 * scale);
@@ -1205,7 +1173,10 @@ void drawTftHeader() {
     String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
 
     tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
-    drawGpsBadgeText(gpsText, gpsColor);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_BLACK, gpsColor);
+    setStoryFont(9);
+    tft.drawString(gpsText, 342, 21);
     
     // 3. Badge SD (X: 378)
     tft.fillRoundRect(378, 8, 60, 25, 4, sdCardMounted ? TFT_GREEN : TFT_RED);
@@ -1581,7 +1552,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                     size_t received = stream ?
                         readPhotoBody(*stream, jpegData, (size_t)length, 15000) : 0;
                     if (received == (size_t)length && isValidJpeg(jpegData, received)) {
-                        // Foto hanya disimpan di SD (flash ESP tidak dipakai untuk foto).
+                        // Simpan juga ke SD: layar dengan dua orang (SPV + mekanik) tetap punya foto.
                         saved = cachePhotoBufferToSD(uid, sid, jpegData, received);
                         if (photoSyncMutex &&
                             xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -1591,7 +1562,6 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
                                 photoDisplaySize = received;
                                 photoDisplayUid = normalizeRfidUid(uid);
                                 photoDisplayOnSd = saved;
-                                photoServerFreshUid = photoDisplayUid;
                                 if (photoMissingUid.equalsIgnoreCase(photoDisplayUid)) photoMissingUid = "";
                                 jpegData = NULL;
                                 displayReady = true;
@@ -1697,9 +1667,8 @@ void photoSyncTask(void *pvParameters) {
     PhotoSyncJob job;
     for (;;) {
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            // Prefetch latar ditunda saat iTag diikat dan 15 detik setelah tap: SD & jaringan untuk tap dan BLE.
-            if (job.background && (bleBindingActive ||
-                    (isSessionActive && uint32_t(millis() - lastScanTime) < 15000))) {
+            // Prefetch latar menunggu di luar sesi LOTO: SD & jaringan diprioritaskan untuk tap dan BLE.
+            if (job.background && (bleBindingActive || isSessionActive)) {
                 xQueueSendToBack(photoSyncQueue, &job, 0);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 continue;
@@ -1812,26 +1781,6 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         xSemaphoreGive(photoSyncMutex);
     }
     if (drawn) return true;
-
-    // Online: tunggu foto terbaru dari backend (maks 4 detik); SD hanya dipakai bila server
-    // tidak menjawab tepat waktu atau box offline.
-    if (WiFi.status() == WL_CONNECTED && server_host.length() > 0) {
-        bool fresh = false, missing = false, waiting = false;
-        if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            fresh = photoServerFreshUid.equalsIgnoreCase(cleanUid);
-            missing = photoMissingUid.equalsIgnoreCase(cleanUid);
-            if (!fresh && !missing && photoServerWaitStartedAt == 0) photoServerWaitStartedAt = millis();
-            waiting = !fresh && !missing && millis() - photoServerWaitStartedAt < PHOTO_SERVER_WAIT_MS;
-            xSemaphoreGive(photoSyncMutex);
-        }
-        if (missing) return false;  // backend tidak punya foto personel ini
-        if (waiting) {
-            requestPhotoSync(uid, sidHint);
-            photoRetrySoon = true;
-            return false;
-        }
-    }
-
     String paths[5] = {
         "/foto/" + photoCacheBaseName(uid, sidHint) + ".jpg",
         "/foto/" + photoCacheUidBaseName(uid) + ".jpg",
@@ -1888,10 +1837,7 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
     }
     // Unduh hanya bila foto belum ada di RAM/SD; tap kartu tetap memicu pembaruan dari VPS.
     if ((!drawn && sdChecked) || invalidJpeg) requestPhotoSync(uid, sidHint);
-    else if (!drawn) {
-        photoRetrySoon = true;
-        Serial.printf("[PHOTO] SD busy; retry draw uid=%s\n", uid.c_str());
-    }
+    else if (!drawn) Serial.printf("[PHOTO] SD busy; retry draw uid=%s\n", uid.c_str());
     return drawn;
 }
 
@@ -2376,8 +2322,7 @@ void serviceGeofence() {
     }
 
     // Peringatan: setiap iTag yang tidak terikat ke tap mana pun, tanpa toleransi untuk personel tanpa iTag.
-    // Baru dinilai setelah ada yang tap (sebelum pengawas tap, belum ada nomor BLE untuk dicocokkan).
-    bool excess = isSessionActive && slotCount > 0 && healthy && !anyPending && unknown > 0;
+    bool excess = isSessionActive && healthy && !anyPending && unknown > 0;
     if (excess) {
         if (!geoPending) { geoPending = true; geoPendingSince = now; }
     } else geoPending = false;
@@ -3232,7 +3177,6 @@ void clearSessionFromSD() {
 bool loadSessionFromSD() {
     if (!sdCardMounted || sdMutex == NULL) return false;
     bool success = false;
-    bool discardEmptySession = false;
 
     if (takeSd(pdMS_TO_TICKS(200)) == pdTRUE) {
         recoverSdFile("/session.json", "/session.json.tmp", "/session.json.bak");
@@ -3310,30 +3254,9 @@ bool loadSessionFromSD() {
                         bool savedSessionActive = doc["is_session_active"] | false;
                         unsigned long savedElapsed = doc["session_elapsed_ms"] | 0UL;
 
-                        if (safetyQueue.topIndex < 0) {
-                            // Belum ada pengawas yang tap: tidak ada pekerjaan untuk dilanjutkan, mulai dari Selamat Datang.
-                            isSessionActive = false;
-                            sessionStartTime = 0;
-                            currentState = STATE_WELCOME;
-                            selectedFooterAction = 1;
-                            discardEmptySession = true;
-                        } else if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
+                        if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
                             isSessionActive = true;
                             sessionStartTime = millis() - savedElapsed;
-                            // Maintenance berjalan: kembali ke layar terakhir. Layar transisi (hitung mundur,
-                            // koneksi, registrasi, dll.) diganti ke Menu LOTO agar tidak terjebak.
-                            bool resumable = currentState == STATE_WAIT_SPV_IN || currentState == STATE_SUPERVISOR_VALID ||
-                                currentState == STATE_SET_MEKANIK_COUNT || currentState == STATE_MEKANIK_IN ||
-                                currentState == STATE_ALL_WORKERS_REGISTERED || currentState == STATE_WORKER_LIST ||
-                                currentState == STATE_WORKER_DETAIL || currentState == STATE_MENU ||
-                                currentState == STATE_MEKANIK_OUT || currentState == STATE_WAIT_SPV_OUT ||
-                                currentState == STATE_SPV_OUT_CONFIRM;
-                            if (!resumable) {
-                                currentState = STATE_MENU;
-                                selectedMenuIndex = 0;
-                            }
-                            Serial.printf("[SESSION] Resumed maintenance state=%s personel=%d\n",
-                                stateToString(currentState).c_str(), safetyQueue.topIndex + 1);
                         } else {
                             isSessionActive = false;
                             sessionStartTime = 0;
@@ -3349,7 +3272,7 @@ bool loadSessionFromSD() {
                                 currentLongitude = savedLon;
                             }
                         }
-                        success = !discardEmptySession;
+                        success = true;
                     } 
                 } 
             } 
@@ -3357,16 +3280,18 @@ bool loadSessionFromSD() {
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
     } 
-    if (discardEmptySession) {
-        Serial.println("[SESSION] Saved session had no personnel; starting at Welcome");
-        clearSessionFromSD();
-    }
     return success;
 }
 
 // Muat daftar personel SD ke cache RAM.
-// Isi cache RAM dari berkas CSV personel (flash atau SD).
-void parseUsersIntoRam(File &userFile) {
+void loadUsersToRAM() {
+    if (!sdCardMounted || sdMutex == NULL) return;
+    if (takeSd(pdMS_TO_TICKS(200)) == pdTRUE) {
+        bool usersReady = recoverSdFile("/users.csv", "/users.csv.tmp", "/users.csv.bak");
+        if (usersReady && !SD.exists("/users.csv")) ramUserCount = 0;
+        if (usersReady && SD.exists("/users.csv")) {
+            File userFile = SD.open("/users.csv", FILE_READ);
+            if (userFile) {
                 ramUserCount = 0;
                 while (userFile.available() && ramUserCount < MAX_RAM_USERS) {
                     String line = userFile.readStringUntil('\n');
@@ -3390,27 +3315,6 @@ void parseUsersIntoRam(File &userFile) {
                         }
                     }
                 }
-}
-
-// Muat daftar personel ke cache RAM: flash dulu (andal), SD sebagai cadangan.
-void loadUsersToRAM() {
-    if (flashFsReady && LittleFS.exists("/users.csv")) {
-        File userFile = LittleFS.open("/users.csv", "r");
-        if (userFile) {
-            parseUsersIntoRam(userFile);
-            userFile.close();
-            sdUserCount = ramUserCount;
-            return;
-        }
-    }
-    if (!sdCardMounted || sdMutex == NULL) return;
-    if (takeSd(pdMS_TO_TICKS(200)) == pdTRUE) {
-        bool usersReady = recoverSdFile("/users.csv", "/users.csv.tmp", "/users.csv.bak");
-        if (usersReady && !SD.exists("/users.csv")) ramUserCount = 0;
-        if (usersReady && SD.exists("/users.csv")) {
-            File userFile = SD.open("/users.csv", FILE_READ);
-            if (userFile) {
-                parseUsersIntoRam(userFile);
                 userFile.close();
             }
         }
@@ -3485,7 +3389,7 @@ int findWorkerIndex(String uid) {
 }
 
 // Sinkronkan personel backend ke RAM dan SD.
-// Lengkapi cache foto SD untuk SEMUA personel di users.csv (tanpa batas 50); pelan saat sesi LOTO.
+// Lengkapi cache foto SD untuk SEMUA personel di users.csv (tanpa batas 50), di luar sesi LOTO.
 // Foto yang gagal diunduh otomatis dicoba lagi di putaran berikutnya.
 void servicePhotoBackfill() {
     static uint32_t cursor = 0;
@@ -3495,12 +3399,7 @@ void servicePhotoBackfill() {
     if (int32_t(now - nextAt) < 0) return;
     nextAt = now + 3000;
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || server_host.length() == 0) return;
-    if (bleBindingActive || relayPulseActive) return;
-    // Saat sesi berjalan tetap dilengkapi (agar foto siap untuk tap/offline), tapi pelan dan tidak dekat waktu tap.
-    if (isSessionActive) {
-        if (uint32_t(now - lastScanTime) < 15000) return;
-        nextAt = now + 10000;
-    }
+    if (isSessionActive || bleBindingActive || relayPulseActive) return;
     if (!photoSyncQueue || uxQueueMessagesWaiting(photoSyncQueue) > 0 || ESP.getFreeHeap() < 30000) return;
 
     const uint8_t BATCH = 16;
@@ -3509,9 +3408,8 @@ void servicePhotoBackfill() {
     uint8_t lineCount = 0;
     bool reachedEnd = false;
     bool fileOpened = false;
-    bool useFlash = flashFsReady && LittleFS.exists("/users.csv");
-    if (!useFlash && takeSd(pdMS_TO_TICKS(100)) != pdTRUE) return;
-    File users = useFlash ? LittleFS.open("/users.csv", "r") : SD.open("/users.csv", FILE_READ);
+    if (takeSd(pdMS_TO_TICKS(100)) != pdTRUE) return;
+    File users = SD.open("/users.csv", FILE_READ);
     if (users) {
         fileOpened = true;
         if (cursor > users.size()) cursor = 0;
@@ -3531,10 +3429,8 @@ void servicePhotoBackfill() {
         if (lineCount == 0) cursor = users.position();
         users.close();
     }
-    if (!useFlash) {
-        digitalWrite(SD_CS_PIN, HIGH);
-        giveSd();
-    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
     if (!fileOpened) { nextAt = now + 60000; return; }
 
     for (uint8_t i = 0; i < lineCount; ++i) {
@@ -3554,54 +3450,8 @@ void servicePhotoBackfill() {
     }
 }
 
-// Lewati spasi/koma pada aliran JSON lalu intip karakter berikutnya (-1 bila habis waktu).
-int peekJsonToken(Stream &stream, uint32_t timeoutMs) {
-    uint32_t started = millis();
-    while (millis() - started < timeoutMs) {
-        if (!stream.available()) { delay(2); continue; }
-        int c = stream.peek();
-        if (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == ',') { stream.read(); continue; }
-        return c;
-    }
-    return -1;
-}
-
-// Salin users.csv dari flash ke SD (cadangan) per potongan 512 byte.
-bool copyFlashUsersToSd() {
-    if (!sdCardMounted || sdMutex == NULL || takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return false;
-    const char *active = "/users.csv";
-    const char *temporary = "/users.csv.tmp";
-    const char *backup = "/users.csv.bak";
-    bool ok = false;
-    File source = LittleFS.open(active, "r");
-    if (source && recoverSdFile(active, temporary, backup)) {
-        File target = SD.open(temporary, FILE_WRITE);
-        if (target) {
-            uint8_t buffer[512];
-            size_t total = 0;
-            ok = true;
-            while (ok && source.available()) {
-                size_t count = source.read(buffer, sizeof(buffer));
-                ok = count > 0 && target.write(buffer, count) == count;
-                total += count;
-            }
-            target.flush();
-            target.close();
-            File verify = SD.open(temporary, FILE_READ);
-            ok = ok && verify && verify.size() == total && total == source.size();
-            if (verify) verify.close();
-            if (ok) ok = commitSdFile(active, temporary, backup);
-            else SD.remove(temporary);
-        }
-    }
-    if (source) source.close();
-    digitalWrite(SD_CS_PIN, HIGH);
-    giveSd();
-    return ok;
-}
-
-bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
-    if ((!sdCardMounted && !flashFsReady) || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
+bool syncDatabaseToSDCard(bool syncPhotos) {
+    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
 
     ServerHttpClient http;
@@ -3618,108 +3468,66 @@ bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
     bool retainedEmpty = false;
     int httpCode = http.GET();
     if (httpCode == HTTP_CODE_OK) {
-        // Personel dibaca satu per satu dari aliran HTTP dan langsung ditulis ke berkas,
-        // jadi RAM tetap kecil walau jumlahnya ribuan.
-        const char *active = "/users.csv";
-        const char *temporary = "/users.csv.tmp";
-        const char *backup = "/users.csv.bak";
-        NetworkClient *stream = http.getStreamPtr();
-        bool listFound = stream && stream->find("\"success\":true") && stream->find("\"data\"") &&
-            stream->find("[");
-        bool toFlash = false;
-        bool sdLocked = false;
-        File out;
-        if (listFound && flashFsReady) {
-            out = LittleFS.open(temporary, "w");
-            toFlash = (bool)out;
-        }
-        if (listFound && !out && sdCardMounted && takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
-            sdLocked = true;
-            if (recoverSdFile(active, temporary, backup)) out = SD.open(temporary, FILE_WRITE);
-        }
+        DynamicJsonDocument doc(12288);
+        DeserializationError err = deserializeJson(doc, http.getStream());
+        JsonArray arr = !err && doc["success"] == true && doc["data"].is<JsonArray>()
+            ? doc["data"].as<JsonArray>() : JsonArray();
+        
+        if (!err && !arr.isNull()) {
+            bool synced = false;
+            if (takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
+                const char *active = "/users.csv";
+                const char *temporary = "/users.csv.tmp";
+                const char *backup = "/users.csv.bak";
+                if (arr.size() == 0 && SD.exists(active)) {
+                    synced = true;
+                    retainedEmpty = true;
+                } else if (recoverSdFile(active, temporary, backup)) {
+                    File userFile = SD.open(temporary, FILE_WRITE);
+                    if (userFile) {
+                        bool writeOk = true;
+                        size_t expectedBytes = 0;
+                        for (JsonObject u : arr) {
+                            String uid = "";
+                            if (u.containsKey("rfidUid") && !u["rfidUid"].isNull()) uid = u["rfidUid"].as<String>();
+                            else if (u.containsKey("rfid_uid") && !u["rfid_uid"].isNull()) uid = u["rfid_uid"].as<String>();
+                            uid.trim(); uid.toUpperCase();
+                            String name = u.containsKey("nama") ? u["nama"].as<String>() : "UNKNOWN";
+                            String role = u.containsKey("role") ? u["role"].as<String>() : "MEKANIK";
+                            name.replace(",", " ");
+                            role.replace(",", " ");
+                            role.toUpperCase();
+                            bool isSpv = checkIsSupervisorRole(role);
 
-        bool complete = false;
-        bool writeOk = (bool)out;
-        size_t written = 0;
-        int itemCount = 0;
-        DeserializationError err;
-        JsonDocument u;
-        while (writeOk) {
-            int next = peekJsonToken(*stream, 3000);
-            if (next == ']') { complete = true; break; }
-            if (next != '{') break;
-            err = deserializeJson(u, *stream);
-            if (err) break;
-            ++itemCount;
-            String uid = "";
-            if (u["rfidUid"].is<const char *>()) uid = u["rfidUid"].as<String>();
-            else if (u["rfid_uid"].is<const char *>()) uid = u["rfid_uid"].as<String>();
-            uid.trim(); uid.toUpperCase();
-            if (uid == "" || uid == "NULL") continue;
-            String name = u["nama"] | "UNKNOWN";
-            String role = u["role"] | "MEKANIK";
-            name.replace(",", " ");
-            role.replace(",", " ");
-            role.toUpperCase();
-            bool isSpv = checkIsSupervisorRole(role);
-            String sid = u["sid"] | "";
-            sid.trim();
-            String line = uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0) + "," + sid + "\n";
-            writeOk = out.print(line) == line.length();
-            written += line.length();
-            syncCount++;
-            if (syncPhotos && photoJobCount < MAX_RAM_USERS && (u["has_photo"] | true)) {
-                uid.toCharArray(photoJobUids[photoJobCount], sizeof(photoJobUids[0]));
-                sid.toCharArray(photoJobSids[photoJobCount], sizeof(photoJobSids[0]));
-                photoJobCount++;
-            }
-            if ((itemCount & 31) == 0) yield();
-        }
-        if (out) {
-            out.flush();
-            out.close();
-        }
+                            if (uid != "" && uid != "NULL") {
+                                String sid = u.containsKey("sid") ? u["sid"].as<String>() : "";
+                                sid.trim();
+                                String line = uid + "," + name + "," + role + "," + String(isSpv ? 1 : 0) + "," + sid;
+                                if (userFile.print(line) != line.length() || userFile.write('\n') != 1) {
+                                    writeOk = false;
+                                    break;
+                                }
+                                expectedBytes += line.length() + 1;
+                                syncCount++;
+                                if (syncPhotos && photoJobCount < MAX_RAM_USERS && (u["has_photo"] | true)) {
+                                    uid.toCharArray(photoJobUids[photoJobCount], sizeof(photoJobUids[0]));
+                                    sid.toCharArray(photoJobSids[photoJobCount], sizeof(photoJobSids[0]));
+                                    photoJobCount++;
+                                }
+                            }
+                        }
+                        userFile.flush();
+                        userFile.close();
 
-        bool emptyList = complete && itemCount == 0;
-        bool sdSynced = false;
-        bool flashSynced = false;
-        bool listValid = complete && writeOk;
-        if (toFlash) {
-            File verify = LittleFS.open(temporary, "r");
-            listValid = listValid && verify && verify.size() == written;
-            if (verify) verify.close();
-            if (listValid && emptyList && LittleFS.exists(active)) {
-                flashSynced = true;
-                retainedEmpty = true;
-            } else if (listValid) {
-                if (LittleFS.exists(active)) LittleFS.remove(active);
-                flashSynced = LittleFS.rename(temporary, active);
+                        File verifyFile = SD.open(temporary, FILE_READ);
+                        bool valid = writeOk && verifyFile && verifyFile.size() == expectedBytes;
+                        if (verifyFile) verifyFile.close();
+                        if (valid) synced = commitSdFile(active, temporary, backup);
+                    }
+                }
+                digitalWrite(SD_CS_PIN, HIGH);
+                giveSd();
             }
-            LittleFS.remove(temporary);
-            // Cadangan SD disalin dari flash per potongan (tidak menahan kunci SD selama unduhan).
-            if (flashSynced && !retainedEmpty) sdSynced = copyFlashUsersToSd();
-        } else if (sdLocked) {
-            File verify = SD.open(temporary, FILE_READ);
-            listValid = listValid && verify && verify.size() == written;
-            if (verify) verify.close();
-            if (listValid && emptyList && SD.exists(active)) {
-                sdSynced = true;
-                retainedEmpty = true;
-            } else if (listValid) {
-                sdSynced = commitSdFile(active, temporary, backup);
-            }
-            if (!sdSynced) SD.remove(temporary);
-        }
-        if (sdLocked) {
-            digitalWrite(SD_CS_PIN, HIGH);
-            giveSd();
-        }
-
-        if (listValid) {
-            if (!sdSynced && sdCardMounted) Serial.println("[SD_SYNC] SD user cache write failed");
-            Serial.printf("[SD_SYNC] User cache flash=%d sd=%d bytes=%u\n", flashSynced ? 1 : 0,
-                sdSynced ? 1 : 0, (unsigned int)written);
-            bool synced = sdSynced || flashSynced;
             if (!synced) {
                 http.end();
                 return false;
@@ -3734,8 +3542,7 @@ bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
         } else if (err) {
             Serial.printf("[SD_SYNC] JSON parse failed: %s\n", err.c_str());
         } else {
-            Serial.printf("[SD_SYNC] User list incomplete (found=%d write=%d items=%d); retaining existing cache\n",
-                listFound ? 1 : 0, writeOk ? 1 : 0, itemCount);
+            Serial.println("[SD_SYNC] Invalid user response; retaining existing cache");
         }
     }
     http.end();
@@ -3750,8 +3557,7 @@ bool syncDatabaseToSDCard(bool syncPhotos, bool urgentPhotos) {
         for (uint8_t i = 0; i < photoJobCount; ++i) {
             // Hanya unduh foto yang belum ada di SD; foto terbaru tetap diambil saat kartu di-tap.
             if (hasCachedPhotoOnSD(photoJobUids[i], photoJobSids[i])) continue;
-            // Foto dari perintah dashboard (kartu baru) diunduh segera, juga saat sesi LOTO berjalan.
-            requestPhotoSync(photoJobUids[i], photoJobSids[i], !urgentPhotos);
+            requestPhotoSync(photoJobUids[i], photoJobSids[i], true);
             ++queuedPhotos;
         }
         Serial.printf("[SD_SYNC] Photo prefetch queued=%u of %u\n", queuedPhotos, photoJobCount);
@@ -3782,7 +3588,7 @@ bool pollSyncUsersCommand() {
     String commandId = response["data"]["id"] | "";
     String parameter = response["data"]["cmd_param"] | "";
     // Perintah dari dashboard (kartu baru/diubah) ikut mengunduh foto yang belum ada di SD.
-    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true, true)) return false;
+    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true)) return false;
 
     DynamicJsonDocument body(128);
     body["commandId"] = commandId;
@@ -3856,78 +3662,40 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-// Antrean event offline: flash ESP (utama, teks saja, maks 256 KB) lalu SD sebagai cadangan.
-const size_t OFFLINE_FLASH_LOG_MAX_BYTES = 256 * 1024;
-SemaphoreHandle_t offlineFlashMutex = NULL;
-
-bool takeOfflineStore(bool useSd, TickType_t timeout) {
-    if (useSd) return sdMutex != NULL && takeSd(timeout) == pdTRUE;
-    return offlineFlashMutex != NULL && xSemaphoreTake(offlineFlashMutex, timeout) == pdTRUE;
-}
-
-void giveOfflineStore(bool useSd) {
-    if (useSd) {
-        digitalWrite(SD_CS_PIN, HIGH);
-        giveSd();
-    } else {
-        xSemaphoreGive(offlineFlashMutex);
-    }
-}
-
-bool appendOfflineLog(fs::FS &fs, bool useSd, const String &record) {
-    if (!takeOfflineStore(useSd, pdMS_TO_TICKS(1500))) return false;
-    bool ok = false;
-    const char *active = "/offline_logs.csv";
-    if (recoverFile(fs, active, "/offline_logs.csv.tmp", "/offline_logs.csv.bak")) {
-        size_t currentSize = 0;
-        if (!useSd && fs.exists(active)) {
-            File current = fs.open(active, FILE_READ);
-            if (current) { currentSize = current.size(); current.close(); }
-        }
-        if (useSd || currentSize + record.length() <= OFFLINE_FLASH_LOG_MAX_BYTES) {
-            File logFile = fs.open(active, FILE_APPEND);
-            if (logFile) {
-                ok = logFile.print(record) == record.length();
-                logFile.close();
-            }
-        }
-    }
-    giveOfflineStore(useSd);
-    return ok;
-}
-
 // Simpan event yang belum terkirim agar dapat dicoba ulang.
 void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
-    String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
-    String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-    String stableId = eventId.length() > 0 ? eventId :
-                        "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
-    String record = stableId + "," + event + "," + uid + "," + latitude + "," + longitude + "\n";
-    if (flashFsReady && appendOfflineLog(LittleFS, false, record)) return;
-    if (sdCardMounted && appendOfflineLog(SD, true, record)) {
-        Serial.printf("[TELEMETRY] Offline event stored on SD event=%s\n", event.c_str());
-        return;
+    if (!sdCardMounted || sdMutex == NULL) return;
+    if (takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
+        File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
+        if (logFile) {
+            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
+            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
+            String stableId = eventId.length() > 0 ? eventId :
+                                "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
+            logFile.println(stableId + "," + event + "," + uid + "," + latitude + "," + longitude);
+            logFile.close();
+        } 
+        digitalWrite(SD_CS_PIN, HIGH);
+        giveSd();
     }
-    Serial.printf("[TELEMETRY] OFFLINE EVENT LOST (flash & SD unavailable) event=%s uid=%s\n",
-        event.c_str(), uid.c_str());
 }
 
 // Buang bagian awal antrean offline yang sudah terkirim; baris baru di akhir berkas tetap aman.
-bool dropOfflineLogPrefix(fs::FS &fs, bool useSd, size_t consumedBytes) {
+bool dropOfflineLogPrefix(size_t consumedBytes) {
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
     if (consumedBytes == 0) return true;
-    if (!takeOfflineStore(useSd, pdMS_TO_TICKS(500))) return false;
+    if (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return false;
     bool committed = false;
-    File source = fs.open(active, FILE_READ);
+    File source = SD.open(active, FILE_READ);
     if (source) {
         size_t total = source.size();
         if (consumedBytes >= total) {
             source.close();
-            committed = fs.remove(active);
+            committed = SD.remove(active);
         } else if (source.seek(consumedBytes)) {
-            File pending = fs.open(temporary, FILE_WRITE);
+            File pending = SD.open(temporary, FILE_WRITE);
             if (pending) {
                 uint8_t chunk[256];
                 size_t copied = 0;
@@ -3941,11 +3709,11 @@ bool dropOfflineLogPrefix(fs::FS &fs, bool useSd, size_t consumedBytes) {
                 pending.flush();
                 pending.close();
                 source.close();
-                File verify = fs.open(temporary, FILE_READ);
+                File verify = SD.open(temporary, FILE_READ);
                 ok = ok && verify && verify.size() == copied && copied == total - consumedBytes;
                 if (verify) verify.close();
-                committed = ok && commitFile(fs, active, temporary, backup);
-                if (!committed && fs.exists(temporary)) fs.remove(temporary);
+                committed = ok && commitSdFile(active, temporary, backup);
+                if (!committed && SD.exists(temporary)) SD.remove(temporary);
             } else {
                 source.close();
             }
@@ -3953,29 +3721,30 @@ bool dropOfflineLogPrefix(fs::FS &fs, bool useSd, size_t consumedBytes) {
             source.close();
         }
     }
-    giveOfflineStore(useSd);
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
     if (!committed) Serial.println("[TELEMETRY] Offline log trim failed; record will be retried");
     return committed;
 }
 
 // Kirim ulang antrean event offline ke backend.
 // Berkas hanya dibuka singkat untuk membaca satu baris; tidak ada berkas terbuka selama HTTPS.
-// Hasil true = antrean di penyimpanan ini sudah kosong.
-bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
+void uploadOfflineLogsSDCard() {
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
 
     for (uint8_t sent = 0; sent < 3; ++sent) {
-        if (WiFi.status() != WL_CONNECTED || ESP.getFreeHeap() < 30000) return false;
-        if (!takeOfflineStore(useSd, pdMS_TO_TICKS(300))) return false;
+        if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
+        if (ESP.getFreeHeap() < 30000) return;
+        if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
 
         String line;
         size_t consumedBytes = 0;
         bool readOk = true;
         bool hasRecord = false;
-        if (recoverFile(fs, active, temporary, backup) && fs.exists(active)) {
-            File logFile = fs.open(active, FILE_READ);
+        if (recoverSdFile(active, temporary, backup) && SD.exists(active)) {
+            File logFile = SD.open(active, FILE_READ);
             if (logFile) {
                 while (!hasRecord && logFile.available()) {
                     line = "";
@@ -4006,15 +3775,17 @@ bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
                 logFile.close();
             }
         }
-        giveOfflineStore(useSd);
+        digitalWrite(SD_CS_PIN, HIGH);
+        giveSd();
 
         if (!readOk) {
             Serial.println("[TELEMETRY] Offline log read failed; will retry");
-            return false;
+            return;
         }
         if (!hasRecord) {
             // Hanya baris kosong/rusak yang tersisa.
-            return dropOfflineLogPrefix(fs, useSd, consumedBytes);
+            dropOfflineLogPrefix(consumedBytes);
+            return;
         }
 
         int p1 = line.indexOf(',');
@@ -4022,7 +3793,7 @@ bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
         int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
         if (p1 <= 0 || p2 <= p1 + 1) {
             Serial.printf("[TELEMETRY] Dropped malformed offline log line: %s\n", line.c_str());
-            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
             continue;
         }
         String eventId = line.substring(0, p1);
@@ -4063,7 +3834,7 @@ bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
         }
         if (doc.overflowed()) {
             Serial.printf("[TELEMETRY] Dropped offline log too large event=%s\n", event.c_str());
-            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
             continue;
         }
 
@@ -4071,7 +3842,7 @@ bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
         int httpCode = -1;
         {
             ServerHttpClient http;
-            if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return false;
+            if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return;
             http.addHeader("Content-Type", "application/json");
             http.addHeader("X-Device-Id", getDeviceId());
             http.setTimeout(3000);
@@ -4088,17 +3859,11 @@ bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
                 Serial.printf("[TELEMETRY] Offline record rejected permanently HTTP %d event=%s\n",
                     httpCode, event.c_str());
             }
-            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
+            if (!dropOfflineLogPrefix(consumedBytes)) return;
             continue;
         }
-        return false;
+        return;
     }
-    return false;
-}
-
-void uploadOfflineLogsSDCard() {
-    if (flashFsReady && !uploadOfflineQueue(LittleFS, false)) return;
-    if (sdCardMounted && sdMutex != NULL) uploadOfflineQueue(SD, true);
 }
 
 // Simpan hasil baca SD di RAM agar tap offline berikutnya tidak perlu membuka file lagi.
@@ -4295,28 +4060,6 @@ WorkerInfo fetchCardDataAPI(String uid) {
 // menunggu HTTPS. Kartu tak dikenal atau cache yang basi tetap diverifikasi ke backend.
 WorkerInfo lookupCardForTap(String uid) {
     String cleanUid = normalizeRfidUid(uid);
-    // Tap baru: foto harus diambil ulang dari backend.
-    if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        photoServerFreshUid = "";
-        photoServerWaitStartedAt = 0;
-        if (photoMissingUid.equalsIgnoreCase(cleanUid)) photoMissingUid = "";
-        if (photoDisplayUid.equalsIgnoreCase(cleanUid)) {
-            free(photoDisplayData);
-            photoDisplayData = NULL;
-            photoDisplaySize = 0;
-            photoDisplayUid = "";
-            photoDisplayOnSd = false;
-        }
-        xSemaphoreGive(photoSyncMutex);
-    }
-    // Online: data personel selalu dari backend; cache lokal hanya cadangan bila server tidak menjawab.
-    bool online = deviceHasNetwork() && server_host.length() > 0;
-    WorkerInfo apiCard;
-    if (online) {
-        apiCard = fetchCardDataAPI(uid);
-        if (apiCard.isRegistered || !apiCard.offlineFallbackAllowed) return apiCard;
-        Serial.println("[RFID] Backend unavailable; falling back to local user cache");
-    }
     // Kartu yang sudah dikenal langsung diterima dari cache lokal (sinkron tiap 60 detik + perintah dashboard),
     // agar tap tidak menunggu HTTPS. Backend hanya dipakai untuk kartu yang belum ada di cache.
     {
@@ -4345,42 +4088,6 @@ WorkerInfo lookupCardForTap(String uid) {
             }
         }
     }
-    if (flashFsReady && LittleFS.exists("/users.csv")) {
-        File userFile = LittleFS.open("/users.csv", "r");
-        String decPadded = hexToDecStringPadded(cleanUid);
-        String decUnpadded = hexToDecStringUnpadded(cleanUid);
-        while (userFile && userFile.available()) {
-            String line = userFile.readStringUntil('\n');
-            line.trim();
-            int p1 = line.indexOf(','), p2 = line.indexOf(',', p1 + 1), p3 = line.indexOf(',', p2 + 1);
-            if (p1 <= 0 || p2 < 0 || p3 < 0) continue;
-            String fileUid = line.substring(0, p1);
-            if (!fileUid.equalsIgnoreCase(cleanUid) && !fileUid.equalsIgnoreCase(decPadded) &&
-                !fileUid.equalsIgnoreCase(decUnpadded)) continue;
-            WorkerInfo card;
-            card.uid = cleanUid;
-            card.name = line.substring(p1 + 1, p2);
-            card.role = normalizeUserRole(line.substring(p2 + 1, p3));
-            int p4 = line.indexOf(',', p3 + 1);
-            card.sid = p4 != -1 ? line.substring(p4 + 1) : "";
-            card.sid.trim();
-            card.isSpv = checkIsSupervisorRole(card.role);
-            card.isRegistered = card.name != "UNKNOWN" && card.name != "Tidak Terdaftar";
-            card.isAssigned = true;
-            card.lookupUnavailable = false;
-            card.offlineFallbackAllowed = false;
-            userFile.close();
-            if (!card.isRegistered) break;
-            Serial.printf("[RFID] Flash cache verification uid=%s sid=%s role=%s\n",
-                card.uid.c_str(), card.sid.c_str(), card.role.c_str());
-            if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-                photoDisplayRequestedUid = cleanUid;
-                xSemaphoreGive(photoSyncMutex);
-            }
-            return card;
-        }
-        if (userFile) userFile.close();
-    }
     if (sdCardMounted) {
         WorkerInfo sdCard = searchUserFromSDCard(cleanUid);
         if (sdCard.isRegistered) {
@@ -4398,7 +4105,7 @@ WorkerInfo lookupCardForTap(String uid) {
             return sdCard;
         }
     }
-    return online ? apiCard : fetchCardDataAPI(uid);
+    return fetchCardDataAPI(uid);
 }
 
 // Kirim telemetri dan jalankan sinkronisasi jaringan.
@@ -4539,7 +4246,7 @@ void networkTaskCore0(void * pvParameters) {
             discoverServer();
         }
 
-        if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && (sdCardMounted || flashFsReady) &&
+        if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && sdCardMounted &&
             millis() - lastOfflineUploadTask >= 5000 && ESP.getFreeHeap() > 30000) {
             lastOfflineUploadTask = millis();
             uploadOfflineLogsSDCard();
@@ -5465,19 +5172,6 @@ void drawPhotoPending(int16_t boxX, int16_t boxY, uint16_t boxSize, uint16_t col
     }
 }
 
-// Kotak foto personel untuk semua layar. Aturan: kotak hanya dikosongkan bila saat itu juga foto
-// (atau ikon pengganti) digambar ulang. Redraw sebagian tidak lagi menyisakan kotak kosong.
-String photoDrawnUid = "";
-volatile bool photoRetrySoon = false;
-void drawPersonPhotoBox(const String &uid, const String &sid, int16_t x, int16_t y, uint16_t borderColor) {
-    if (photoAlreadyDrawn && photoDrawnUid.equalsIgnoreCase(uid)) return;
-    tft.fillRect(x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
-    tft.drawRect(x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, borderColor);
-    photoAlreadyDrawn = drawPhotoFromAPI(uid, x, y, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, sid);
-    photoDrawnUid = photoAlreadyDrawn ? uid : String();
-    if (!photoAlreadyDrawn) drawPhotoPending(x, y, PHOTO_FRAME_SIZE);
-}
-
 void drawScreen() {
     needsRedraw = false;
     bool stateChanged = (currentState != lastRenderedState);
@@ -5664,6 +5358,8 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
         tft.drawString("SUPERVISOR VALID", 240, 70);
+        tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
+        tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
         tft.setTextDatum(TL_DATUM);
         setStoryFont(9);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
@@ -5675,7 +5371,10 @@ void drawScreen() {
         drawTextFit("SID      : " + formatSid(spvSidDisp), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : PENGAWAS", 190, 180, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        drawPersonPhotoBox(spvUidDisp, spvSidDisp, 20, 92, TFT_WHITE);
+        if (!photoAlreadyDrawn) {
+            photoAlreadyDrawn = drawPhotoFromAPI(spvUidDisp, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, spvSidDisp);
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
+        }
     } 
     else if (currentState == STATE_SET_MEKANIK_COUNT) {
         tft.setTextDatum(MC_DATUM);
@@ -5703,7 +5402,10 @@ void drawScreen() {
         int lastWorkerIndex = safetyQueue.topIndex;
         if (lastWorkerIndex > 0 && !isQueueSupervisor(lastWorkerIndex)) {
             WorkerInfo &lastWorker = safetyQueue.workers[lastWorkerIndex];
-            drawPersonPhotoBox(lastWorker.uid, lastWorker.sid, 20, 92, TFT_WHITE);
+            tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
+            tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
+            photoAlreadyDrawn = drawPhotoFromAPI(lastWorker.uid, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastWorker.sid);
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
             tft.setTextDatum(TL_DATUM);
             setStoryFont(9);
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -5800,7 +5502,12 @@ void drawScreen() {
         drawTextFit("SID      : " + formatSid(worker.sid), 26, 150, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : " + worker.role, 26, 186, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        drawPersonPhotoBox(worker.uid, worker.sid, 296, 92, ELOTO_TEXT);
+        if (!photoAlreadyDrawn) {
+            tft.fillRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
+            tft.drawRect(296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_TEXT);
+            photoAlreadyDrawn = drawPhotoFromAPI(worker.uid, 296, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, worker.sid);
+            if (!photoAlreadyDrawn) drawPhotoPending(296, 92, PHOTO_FRAME_SIZE);
+        }
         lastRenderedWorkerIndex = safeIndex;
     } 
     else if (currentState == STATE_GEOFENCE) {
@@ -5872,17 +5579,21 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
         tft.drawString("SUPERVISOR VALID", 240, 70);
+        tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
+        tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
         tft.setTextDatum(TL_DATUM);
         setStoryFont(9);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        String outSpvSid = safetyQueue.topIndex >= 0 ? safetyQueue.workers[0].sid : lastScannedSID;
         drawTextFit(supervisorName, 190, 112, 260, ELOTO_HEADER, ELOTO_BG, 9);
         tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-        drawTextFit("SID      : " + formatSid(outSpvSid), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
+        drawTextFit("SID      : " + formatSid(lastScannedSID), 190, 148, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("JABATAN  : PENGAWAS", 190, 180, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTextFit("STATUS   : KONFIRMASI SELESAI", 190, 212, 260, ELOTO_TEXT, ELOTO_BG, 9);
         drawTftFooter("KEMBALI", "LANJUT");
-        drawPersonPhotoBox(supervisorUID, outSpvSid, 20, 92, TFT_WHITE);
+        if (!photoAlreadyDrawn) {
+            photoAlreadyDrawn = drawPhotoFromAPI(supervisorUID, 20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
+            if (!photoAlreadyDrawn) drawPhotoPending(20, 92, PHOTO_FRAME_SIZE);
+        }
     }
     else if (currentState == STATE_MAINTENANCE_DONE) {
         drawCornerAccents(15, 55, 450, 208, ELOTO_DARK_RED);
@@ -6049,26 +5760,6 @@ void setup() {
     if (!spiBusMutex || !sdMutex || !gpsMutex || !networkIoMutex || !networkQueue) {
         while (true) delay(1000);
     }
-
-    // "spiffs" partition (Huge APP) diformat LittleFS sekali saat pertama dipakai.
-    flashFsReady = LittleFS.begin(true);
-    // Flash hanya untuk daftar personel; hapus sisa foto dari firmware lama.
-    if (flashFsReady) {
-        File photoDir = LittleFS.open("/p");
-        if (photoDir && photoDir.isDirectory()) {
-            for (File f = photoDir.openNextFile(); f; f = photoDir.openNextFile()) {
-                String path = f.path();
-                f.close();
-                LittleFS.remove(path);
-            }
-        }
-        if (photoDir) photoDir.close();
-        LittleFS.rmdir("/p");
-        recoverFile(LittleFS, "/offline_logs.csv", "/offline_logs.csv.tmp", "/offline_logs.csv.bak");
-    }
-    offlineFlashMutex = xSemaphoreCreateMutex();
-    Serial.printf("[FLASH] Cache %s used=%u total=%u\n", flashFsReady ? "ready" : "unavailable",
-        flashFsReady ? (unsigned int)LittleFS.usedBytes() : 0, flashFsReady ? (unsigned int)LittleFS.totalBytes() : 0);
 
     if (initializeSDCard()) {
         sdCardMounted = true;
@@ -6309,8 +6000,11 @@ void loop() {
             // 2. Badge GPS
             uint16_t gpsColor = gpsNow ? TFT_GREEN : (gpsHasHistory ? TFT_YELLOW : TFT_RED);
             tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(TFT_BLACK, gpsColor);
+            setStoryFont(9);
             String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
-            drawGpsBadgeText(gpsText, gpsColor);
+            tft.drawString(gpsText, 342, 21);
 
             // 3. Badge SD
             tft.fillRoundRect(378, 8, 60, 25, 4, sdNow ? TFT_GREEN : TFT_RED);
@@ -6330,9 +6024,8 @@ void loop() {
         currentState == STATE_MEKANIK_IN || currentState == STATE_ALL_WORKERS_REGISTERED ||
         currentState == STATE_WORKER_DETAIL || currentState == STATE_SPV_OUT_CONFIRM;
     if (photoScreen && !photoAlreadyDrawn &&
-        uint32_t(millis() - lastPhotoRetryAt) >= (photoRetrySoon ? 300 : PHOTO_SYNC_RETRY_MS)) {
+        uint32_t(millis() - lastPhotoRetryAt) >= PHOTO_SYNC_RETRY_MS) {
         lastPhotoRetryAt = millis();
-        photoRetrySoon = false;
         needsRedraw = true;
     }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, lazy, Suspense } from 'react';
+import React, { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import 'cropperjs/dist/cropper.css';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
@@ -148,6 +148,9 @@ function LoginForm() {
 function AppContent() {
   const { isLoggedIn, activeTab, sessionUser } = useAuth();
   const [dopPlanVisited, setDopPlanVisited] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+  const mainRef = useRef(null);
   const {
     toast, modalInfo, setModalInfo,
     showRadarModal, setShowRadarModal,
@@ -166,11 +169,15 @@ function AppContent() {
     return () => window.removeEventListener('eloto-open-dop-plan', markDOPPlanVisited);
   }, []);
 
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [activeTab]);
+
   if (!isLoggedIn) return <LoginForm />;
 
   return (
     <React.Fragment>
-      <div className="print-hidden h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row overflow-hidden">
+      <div className="app-shell print-hidden bg-slate-50 text-slate-900">
         <Toast toast={toast} />
         <ModalUmum modalInfo={modalInfo} onClose={() => setModalInfo({ ...modalInfo, open: false })} />
         <ModalRadar
@@ -198,9 +205,9 @@ function AppContent() {
           onUploadPhoto={handleProfilePhotoUpload}
         />
 
-        <Sidebar />
+        <Sidebar isOpen={mobileNavOpen} onOpen={() => setMobileNavOpen(true)} onClose={closeMobileNav} />
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <main ref={mainRef} id="main-content" inert={mobileNavOpen ? true : undefined} className="app-main flex-1 overflow-y-auto p-4 sm:p-6">
           <Suspense fallback={<p role="status">Memuat halaman…</p>}>
           {/* TAB: PROFIL SAYA */}
           {activeTab === 'profil-tab' && <Profile />}

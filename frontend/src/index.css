@@ -1,7 +1,157 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Barlow', sans-serif;
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
+html,
+body,
+#root {
+  min-width: 0;
+  min-height: 100%;
+}
+
 body {
   font-family: 'Barlow', sans-serif;
   background-image: radial-gradient(circle at 10% 0%, rgba(255, 178, 56, 0.03), transparent 40%),
                     radial-gradient(circle at 90% 100%, rgba(77, 169, 247, 0.03), transparent 40%);
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app-main {
+  min-width: 0;
+  min-height: 0;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+
+.mobile-app-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 4.5rem;
+  padding: max(0.75rem, env(safe-area-inset-top)) 1rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.mobile-menu-button {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.875rem;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 1rem;
+}
+
+.app-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 60;
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  width: min(85vw, 20rem);
+  height: 100vh;
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+  border-right: 1px solid #e2e8f0;
+  background: #fff;
+  visibility: hidden;
+  transform: translateX(-100%);
+  transition: transform 180ms ease;
+}
+
+.app-sidebar.is-open {
+  visibility: visible;
+  transform: translateX(0);
+}
+
+.sidebar-footer {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.app-toast {
+  position: fixed;
+  z-index: 70;
+  right: 1rem;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  left: 1rem;
+  max-width: 26rem;
+  margin-inline: auto;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible {
+  outline: 3px solid #ef4444;
+  outline-offset: 3px;
+}
+
+@media (min-width: 768px) {
+  .app-shell { flex-direction: row; }
+  .mobile-app-header,
+  .mobile-menu-button { display: none; }
+  .app-sidebar {
+    position: static;
+    z-index: auto;
+    width: 16rem;
+    height: 100%;
+    padding-top: 0;
+    visibility: visible;
+    transform: none;
+    transition: none;
+  }
+  .app-toast {
+    top: 1.5rem;
+    bottom: auto;
+    left: calc(16rem + 1.5rem);
+    right: 1.5rem;
+    margin-inline: 0;
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .app-main select,
+  .app-main textarea {
+    min-width: 0;
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+  .dashboard-metrics > div { min-width: 0; min-height: 5.5rem; }
+  .dashboard-metrics h3 { font-size: 1.375rem; }
+  .dashboard-metrics p { font-size: 0.625rem; }
+  .dashboard-layout > div { min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar { transition: none; }
 }
 
 button,

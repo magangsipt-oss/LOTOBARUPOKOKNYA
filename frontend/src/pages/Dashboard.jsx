@@ -262,9 +262,20 @@ export default function Dashboard() {
   if (activeTab !== 'dashboard' || !(sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas')) return null;
 
   return (
-    <div className="space-y-6">
-      {/* 5 KARTU METRIK */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+    <div className="space-y-5 sm:space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-red-600">Monitoring keselamatan</p>
+          <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-500">Pantau boks, personel, dan status penguncian.</p>
+        </div>
+        <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
+          <i className="fa-solid fa-box text-red-500" aria-hidden="true"></i>
+          {boxes.length} boks terdaftar
+        </span>
+      </div>
+      {/* KARTU METRIK */}
+      <div className="dashboard-metrics grid grid-cols-2 sm:grid-cols-3 2xl:grid-cols-6 gap-3">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">
           <div><p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">Waktu Kunci <i className="fa-solid fa-arrow-up-right-from-square text-[8px] text-slate-400"></i></p><h3 className={`text-lg font-black font-mono-tech mt-1 ${isTrackingDowntime ? 'text-amber-600 animate-pulse' : 'text-slate-500'}`}>{formatWaktuDowntime(downtimeSeconds)}</h3></div>
           <i className="fa-solid fa-stopwatch text-lg text-slate-400"></i>
@@ -346,11 +357,11 @@ export default function Dashboard() {
       </div>
 
       {/* PETA SATELIT & MONITORING */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 space-y-6">
+      <div className="dashboard-layout grid grid-cols-1 xl:grid-cols-3 gap-5 sm:gap-6">
+        <div className="min-w-0 xl:col-span-2 space-y-6">
           <div className="space-y-2">
             <div className="text-xs font-bold uppercase tracking-wider text-red-600 flex items-center gap-2 font-mono-tech"><i className="fa-solid fa-map-location-dot"></i> Peta Lokasi Alat Berat (Satelit)</div>
-            <div ref={mapContainerRef} className="w-full h-[240px] sm:h-[350px] rounded-2xl border border-red-200 shadow-lg z-10" style={{ background: '#e5e7eb', minHeight: '240px' }} />
+            <div ref={mapContainerRef} className="relative isolate z-0 w-full h-[260px] sm:h-[350px] rounded-2xl border border-red-200 shadow-sm" style={{ background: '#e5e7eb', minHeight: '240px' }} />
           </div>
 
           {/* BLE LOTO COMPLIANCE PANEL */}
@@ -595,7 +606,7 @@ export default function Dashboard() {
                 <input type="text" required disabled={Boolean(editingBoxId)} placeholder="ID Boks (Contoh: BOX ELOTO 1)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none disabled:bg-gray-100 disabled:text-slate-500" value={formAlatBerat.id} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, id: e.target.value })} />
                 <input type="text" required placeholder="Nama Alat / Mesin (Contoh: HD-785 DUMP TRUCK)" className="w-full bg-white border border-red-200 rounded-lg p-2 focus:outline-none" value={formAlatBerat.unit} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, unit: e.target.value })} />
                 <div className="flex gap-2">
-                  <input type="text" required placeholder="IP Address ESP32 (192.168.1.100)" className="flex-1 bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.ip} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, ip: e.target.value })} />
+                  <input type="text" required placeholder="IP Address ESP32 (192.168.1.100)" className="min-w-0 flex-1 bg-white border border-red-200 rounded-lg p-2 focus:outline-none font-mono text-slate-900 text-[11px]" value={formAlatBerat.ip} onChange={(e) => setFormAlatBerat({ ...formAlatBerat, ip: e.target.value })} />
                   <button type="button" onClick={handleAutoGps} disabled={isSyncing} className="bg-red-600 hover:bg-red-700 text-white px-4 rounded-lg font-bold text-xs shadow-sm flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50 whitespace-nowrap">
                     <i className={`fa-solid ${isSyncing ? 'fa-spinner animate-spin' : 'fa-satellite-dish'}`}></i> Sync
                   </button>
