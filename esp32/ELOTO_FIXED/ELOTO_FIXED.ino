@@ -1501,7 +1501,7 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             (attempt > 0 && lookupId.equalsIgnoreCase(lookupIds[0]))) continue;
 
         String photoUrl = getApiUrl("users/photo/") + lookupId + "?size=" +
-            String(PHOTO_DISPLAY_SIZE) + "&quality=60&fit=cover";
+            String(PHOTO_DISPLAY_SIZE) + "&quality=40&fit=cover";
         ServerHttpClient http;
         // Task foto sendiri: boleh menunggu kunci HTTPS lebih lama daripada gagal lalu menunggu cooldown.
         if (!http.begin(photoUrl, 10000)) {
@@ -3360,6 +3360,67 @@ int findWorkerIndex(String uid) {
 }
 
 // Sinkronkan personel backend ke RAM dan SD.
+// Lengkapi cache foto SD untuk SEMUA personel di users.csv (tanpa batas 50), di luar sesi LOTO.
+// Foto yang gagal diunduh otomatis dicoba lagi di putaran berikutnya.
+void servicePhotoBackfill() {
+    static uint32_t cursor = 0;
+    static uint32_t nextAt = 0;
+    static uint16_t queuedThisPass = 0;
+    uint32_t now = millis();
+    if (int32_t(now - nextAt) < 0) return;
+    nextAt = now + 3000;
+    if (!sdCardMounted || WiFi.status() != WL_CONNECTED || server_host.length() == 0) return;
+    if (isSessionActive || bleBindingActive || relayPulseActive) return;
+    if (!photoSyncQueue || uxQueueMessagesWaiting(photoSyncQueue) > 0 || ESP.getFreeHeap() < 30000) return;
+
+    const uint8_t BATCH = 16;
+    String uids[BATCH], sids[BATCH];
+    uint32_t lineEnds[BATCH];
+    uint8_t lineCount = 0;
+    bool reachedEnd = false;
+    bool fileOpened = false;
+    if (takeSd(pdMS_TO_TICKS(100)) != pdTRUE) return;
+    File users = SD.open("/users.csv", FILE_READ);
+    if (users) {
+        fileOpened = true;
+        if (cursor > users.size()) cursor = 0;
+        users.seek(cursor);
+        while (users.available() && lineCount < BATCH) {
+            String line = users.readStringUntil('\n');
+            line.trim();
+            int first = line.indexOf(',');
+            int last = line.lastIndexOf(',');
+            if (first <= 0) continue;
+            uids[lineCount] = line.substring(0, first);
+            sids[lineCount] = last > first ? line.substring(last + 1) : "";
+            sids[lineCount].trim();
+            lineEnds[lineCount++] = users.position();
+        }
+        reachedEnd = !users.available();
+        if (lineCount == 0) cursor = users.position();
+        users.close();
+    }
+    digitalWrite(SD_CS_PIN, HIGH);
+    giveSd();
+    if (!fileOpened) { nextAt = now + 60000; return; }
+
+    for (uint8_t i = 0; i < lineCount; ++i) {
+        if (hasCachedPhotoOnSD(uids[i], sids[i])) continue;
+        requestPhotoSync(uids[i], sids[i], true);
+        cursor = lineEnds[i];
+        ++queuedThisPass;
+        return;
+    }
+    if (lineCount) cursor = lineEnds[lineCount - 1];
+    if (reachedEnd) {
+        Serial.printf("[PHOTO_BACKFILL] Pass complete queued=%u\n", (unsigned int)queuedThisPass);
+        cursor = 0;
+        // Ada foto yang baru diantrekan: cek ulang 1 menit lagi; semua lengkap: cek tiap 10 menit.
+        nextAt = now + (queuedThisPass ? 60000 : 600000);
+        queuedThisPass = 0;
+    }
+}
+
 bool syncDatabaseToSDCard(bool syncPhotos) {
     if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL ||
         ESP.getFreeHeap() < 30000) return false;
@@ -4150,6 +4211,7 @@ void networkTaskCore0(void * pvParameters) {
             lastCommandPollTask = millis();
             if (pollSyncUsersCommand()) lastDbSyncTask = millis();
         }
+        servicePhotoBackfill();
 
         static unsigned long lastRegisteredSyncAttempt = 0;
         if (registeredUserSyncPending && WiFi.status() == WL_CONNECTED &&
