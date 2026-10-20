@@ -1531,8 +1531,10 @@ bool fetchPhotoFromAPI(const String &uid, const String &sid) {
             } else if (length <= 100 || length > 60000) {
                 Serial.printf("[PHOTO_SYNC] Invalid JPEG size uid=%s content=%d type=%s\n",
                     uid.c_str(), length, contentType.c_str());
-            } else if ((wantDisplay || !sdCardMounted) &&
+            } else if ((wantDisplay || !sdCardMounted || length <= 16384) &&
                        availableHeap > (uint32_t)length + 12000 && largestBlock >= (uint32_t)length) {
+                // Foto kecil diunduh ke RAM dulu lalu ditulis sekaligus: kunci SD tidak ditahan
+                // selama HTTPS berjalan, jadi tap kartu tetap bisa langsung membaca foto dari SD.
                 uint8_t *jpegData = static_cast<uint8_t *>(malloc((size_t)length));
                 if (jpegData != NULL) {
                     NetworkClient *stream = http.getStreamPtr();
@@ -1654,8 +1656,8 @@ void photoSyncTask(void *pvParameters) {
     PhotoSyncJob job;
     for (;;) {
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            // Prefetch latar menunggu sampai iTag personel yang baru tap terikat.
-            if (job.background && bleBindingActive) {
+            // Prefetch latar menunggu di luar sesi LOTO: SD & jaringan diprioritaskan untuk tap dan BLE.
+            if (job.background && (bleBindingActive || isSessionActive)) {
                 xQueueSendToBack(photoSyncQueue, &job, 0);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 continue;
@@ -1776,8 +1778,10 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         "/foto/" + uid + ".jpg"
     };
     bool invalidJpeg = false;
+    bool sdChecked = !sdCardMounted;
 
-    if (sdCardMounted && takeSd(pdMS_TO_TICKS(500)) == pdTRUE) {
+    if (sdCardMounted && takeSd(pdMS_TO_TICKS(800)) == pdTRUE) {
+        sdChecked = true;
         for (uint8_t i = 0; i < 5 && !drawn && !invalidJpeg; ++i) {
             File photo = SD.open(paths[i], FILE_READ);
             if (!photo) continue;
@@ -1820,7 +1824,8 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
         giveSd();
     }
     // Unduh hanya bila foto belum ada di RAM/SD; tap kartu tetap memicu pembaruan dari VPS.
-    if (!drawn || invalidJpeg) requestPhotoSync(uid, sidHint);
+    if ((!drawn && sdChecked) || invalidJpeg) requestPhotoSync(uid, sidHint);
+    else if (!drawn) Serial.printf("[PHOTO] SD busy; retry draw uid=%s\n", uid.c_str());
     return drawn;
 }
 
@@ -2892,6 +2897,18 @@ void displayCardNotification(String uid, String name, String role, String status
         if (waitingPhoto && photoKnownMissing(uid)) {
             waitingPhoto = false;
             displayDuration = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
+        }
+        static uint32_t lastSdRetryAt = 0;
+        if (!photoShown && uint32_t(millis() - lastSdRetryAt) >= 300) {
+            lastSdRetryAt = millis();
+            photoShown = drawPhotoFromAPI(uid, 25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, lastScannedSID);
+            if (photoShown) {
+                waitingPhoto = false;
+                uint32_t elapsed = millis() - startNotify;
+                uint32_t minimum = isSuccess ? NOTIFICATION_SUCCESS_DURATION : NOTIFICATION_ERROR_DURATION;
+                uint32_t untilShown = elapsed + NOTIFICATION_PHOTO_SHOW_MS;
+                displayDuration = untilShown > minimum ? untilShown : minimum;
+            }
         }
         if (waitingPhoto && photoReadyInRam(uid)) {
             waitingPhoto = false;
