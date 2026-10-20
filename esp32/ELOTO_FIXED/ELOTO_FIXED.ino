@@ -754,35 +754,43 @@ uint8_t getDebouncedKey() {
     return stableKey;
 }
 
-// Pulihkan berkas SD dari transaksi yang terputus.
-bool recoverSdFile(const char *active, const char *temporary, const char *backup) {
-    if (SD.exists(backup)) {
-        if (!SD.exists(active)) {
-            if (!SD.rename(backup, active)) {
+// Pulihkan berkas (SD/flash) dari transaksi yang terputus.
+bool recoverFile(fs::FS &fs, const char *active, const char *temporary, const char *backup) {
+    if (fs.exists(backup)) {
+        if (!fs.exists(active)) {
+            if (!fs.rename(backup, active)) {
                 return false;
             }
-        } else if (!SD.remove(backup)) {
+        } else if (!fs.remove(backup)) {
             return false;
         }
     }
-    if (SD.exists(temporary) && !SD.remove(temporary)) {
+    if (fs.exists(temporary) && !fs.remove(temporary)) {
         return false;
     }
     return true;
 }
 
-// Ganti berkas SD secara aman melalui berkas cadangan.
-bool commitSdFile(const char *active, const char *temporary, const char *backup) {
-    bool hadOldFile = SD.exists(active);
-    if (hadOldFile && !SD.rename(active, backup)) {
+// Ganti berkas (SD/flash) secara aman melalui berkas cadangan.
+bool commitFile(fs::FS &fs, const char *active, const char *temporary, const char *backup) {
+    bool hadOldFile = fs.exists(active);
+    if (hadOldFile && !fs.rename(active, backup)) {
         return false;
     }
-    if (!SD.rename(temporary, active)) {
-        if (hadOldFile && !SD.rename(backup, active)) {}
+    if (!fs.rename(temporary, active)) {
+        if (hadOldFile && !fs.rename(backup, active)) {}
         return false;
     }
-    if (hadOldFile && !SD.remove(backup)) {}
+    if (hadOldFile && !fs.remove(backup)) {}
     return true;
+}
+
+bool recoverSdFile(const char *active, const char *temporary, const char *backup) {
+    return recoverFile(SD, active, temporary, backup);
+}
+
+bool commitSdFile(const char *active, const char *temporary, const char *backup) {
+    return commitFile(SD, active, temporary, backup);
 }
 
 // Pasang SD dan pulihkan berkas sistem yang diperlukan.
@@ -3823,40 +3831,78 @@ WorkerInfo searchUserFromSDCard(String uid) {
     return card;
 }
 
-// Simpan event yang belum terkirim agar dapat dicoba ulang.
-void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
-    if (!sdCardMounted || sdMutex == NULL) return;
-    if (takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
-        File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
-        if (logFile) {
-            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
-            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-            String stableId = eventId.length() > 0 ? eventId :
-                                "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
-            logFile.println(stableId + "," + event + "," + uid + "," + latitude + "," + longitude);
-            logFile.close();
-        } 
+// Antrean event offline: flash ESP (utama, teks saja, maks 256 KB) lalu SD sebagai cadangan.
+const size_t OFFLINE_FLASH_LOG_MAX_BYTES = 256 * 1024;
+SemaphoreHandle_t offlineFlashMutex = NULL;
+
+bool takeOfflineStore(bool useSd, TickType_t timeout) {
+    if (useSd) return sdMutex != NULL && takeSd(timeout) == pdTRUE;
+    return offlineFlashMutex != NULL && xSemaphoreTake(offlineFlashMutex, timeout) == pdTRUE;
+}
+
+void giveOfflineStore(bool useSd) {
+    if (useSd) {
         digitalWrite(SD_CS_PIN, HIGH);
         giveSd();
+    } else {
+        xSemaphoreGive(offlineFlashMutex);
     }
 }
 
+bool appendOfflineLog(fs::FS &fs, bool useSd, const String &record) {
+    if (!takeOfflineStore(useSd, pdMS_TO_TICKS(1500))) return false;
+    bool ok = false;
+    const char *active = "/offline_logs.csv";
+    if (recoverFile(fs, active, "/offline_logs.csv.tmp", "/offline_logs.csv.bak")) {
+        size_t currentSize = 0;
+        if (!useSd && fs.exists(active)) {
+            File current = fs.open(active, FILE_READ);
+            if (current) { currentSize = current.size(); current.close(); }
+        }
+        if (useSd || currentSize + record.length() <= OFFLINE_FLASH_LOG_MAX_BYTES) {
+            File logFile = fs.open(active, FILE_APPEND);
+            if (logFile) {
+                ok = logFile.print(record) == record.length();
+                logFile.close();
+            }
+        }
+    }
+    giveOfflineStore(useSd);
+    return ok;
+}
+
+// Simpan event yang belum terkirim agar dapat dicoba ulang.
+void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
+    String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
+    String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
+    String stableId = eventId.length() > 0 ? eventId :
+                        "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
+    String record = stableId + "," + event + "," + uid + "," + latitude + "," + longitude + "\n";
+    if (flashFsReady && appendOfflineLog(LittleFS, false, record)) return;
+    if (sdCardMounted && appendOfflineLog(SD, true, record)) {
+        Serial.printf("[TELEMETRY] Offline event stored on SD event=%s\n", event.c_str());
+        return;
+    }
+    Serial.printf("[TELEMETRY] OFFLINE EVENT LOST (flash & SD unavailable) event=%s uid=%s\n",
+        event.c_str(), uid.c_str());
+}
+
 // Buang bagian awal antrean offline yang sudah terkirim; baris baru di akhir berkas tetap aman.
-bool dropOfflineLogPrefix(size_t consumedBytes) {
+bool dropOfflineLogPrefix(fs::FS &fs, bool useSd, size_t consumedBytes) {
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
     if (consumedBytes == 0) return true;
-    if (takeSd(pdMS_TO_TICKS(500)) != pdTRUE) return false;
+    if (!takeOfflineStore(useSd, pdMS_TO_TICKS(500))) return false;
     bool committed = false;
-    File source = SD.open(active, FILE_READ);
+    File source = fs.open(active, FILE_READ);
     if (source) {
         size_t total = source.size();
         if (consumedBytes >= total) {
             source.close();
-            committed = SD.remove(active);
+            committed = fs.remove(active);
         } else if (source.seek(consumedBytes)) {
-            File pending = SD.open(temporary, FILE_WRITE);
+            File pending = fs.open(temporary, FILE_WRITE);
             if (pending) {
                 uint8_t chunk[256];
                 size_t copied = 0;
@@ -3870,11 +3916,11 @@ bool dropOfflineLogPrefix(size_t consumedBytes) {
                 pending.flush();
                 pending.close();
                 source.close();
-                File verify = SD.open(temporary, FILE_READ);
+                File verify = fs.open(temporary, FILE_READ);
                 ok = ok && verify && verify.size() == copied && copied == total - consumedBytes;
                 if (verify) verify.close();
-                committed = ok && commitSdFile(active, temporary, backup);
-                if (!committed && SD.exists(temporary)) SD.remove(temporary);
+                committed = ok && commitFile(fs, active, temporary, backup);
+                if (!committed && fs.exists(temporary)) fs.remove(temporary);
             } else {
                 source.close();
             }
@@ -3882,30 +3928,29 @@ bool dropOfflineLogPrefix(size_t consumedBytes) {
             source.close();
         }
     }
-    digitalWrite(SD_CS_PIN, HIGH);
-    giveSd();
+    giveOfflineStore(useSd);
     if (!committed) Serial.println("[TELEMETRY] Offline log trim failed; record will be retried");
     return committed;
 }
 
 // Kirim ulang antrean event offline ke backend.
 // Berkas hanya dibuka singkat untuk membaca satu baris; tidak ada berkas terbuka selama HTTPS.
-void uploadOfflineLogsSDCard() {
+// Hasil true = antrean di penyimpanan ini sudah kosong.
+bool uploadOfflineQueue(fs::FS &fs, bool useSd) {
     const char *active = "/offline_logs.csv";
     const char *temporary = "/offline_logs.csv.tmp";
     const char *backup = "/offline_logs.csv.bak";
 
     for (uint8_t sent = 0; sent < 3; ++sent) {
-        if (!sdCardMounted || WiFi.status() != WL_CONNECTED || sdMutex == NULL) return;
-        if (ESP.getFreeHeap() < 30000) return;
-        if (takeSd(pdMS_TO_TICKS(300)) != pdTRUE) return;
+        if (WiFi.status() != WL_CONNECTED || ESP.getFreeHeap() < 30000) return false;
+        if (!takeOfflineStore(useSd, pdMS_TO_TICKS(300))) return false;
 
         String line;
         size_t consumedBytes = 0;
         bool readOk = true;
         bool hasRecord = false;
-        if (recoverSdFile(active, temporary, backup) && SD.exists(active)) {
-            File logFile = SD.open(active, FILE_READ);
+        if (recoverFile(fs, active, temporary, backup) && fs.exists(active)) {
+            File logFile = fs.open(active, FILE_READ);
             if (logFile) {
                 while (!hasRecord && logFile.available()) {
                     line = "";
@@ -3936,17 +3981,15 @@ void uploadOfflineLogsSDCard() {
                 logFile.close();
             }
         }
-        digitalWrite(SD_CS_PIN, HIGH);
-        giveSd();
+        giveOfflineStore(useSd);
 
         if (!readOk) {
             Serial.println("[TELEMETRY] Offline log read failed; will retry");
-            return;
+            return false;
         }
         if (!hasRecord) {
             // Hanya baris kosong/rusak yang tersisa.
-            dropOfflineLogPrefix(consumedBytes);
-            return;
+            return dropOfflineLogPrefix(fs, useSd, consumedBytes);
         }
 
         int p1 = line.indexOf(',');
@@ -3954,7 +3997,7 @@ void uploadOfflineLogsSDCard() {
         int p3 = p2 >= 0 ? line.indexOf(',', p2 + 1) : -1;
         if (p1 <= 0 || p2 <= p1 + 1) {
             Serial.printf("[TELEMETRY] Dropped malformed offline log line: %s\n", line.c_str());
-            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
             continue;
         }
         String eventId = line.substring(0, p1);
@@ -3995,7 +4038,7 @@ void uploadOfflineLogsSDCard() {
         }
         if (doc.overflowed()) {
             Serial.printf("[TELEMETRY] Dropped offline log too large event=%s\n", event.c_str());
-            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
             continue;
         }
 
@@ -4003,7 +4046,7 @@ void uploadOfflineLogsSDCard() {
         int httpCode = -1;
         {
             ServerHttpClient http;
-            if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return;
+            if (!http.begin(getApiUrl("boxes/") + getDeviceIdPath() + "/telemetry")) return false;
             http.addHeader("Content-Type", "application/json");
             http.addHeader("X-Device-Id", getDeviceId());
             http.setTimeout(3000);
@@ -4020,11 +4063,17 @@ void uploadOfflineLogsSDCard() {
                 Serial.printf("[TELEMETRY] Offline record rejected permanently HTTP %d event=%s\n",
                     httpCode, event.c_str());
             }
-            if (!dropOfflineLogPrefix(consumedBytes)) return;
+            if (!dropOfflineLogPrefix(fs, useSd, consumedBytes)) return false;
             continue;
         }
-        return;
+        return false;
     }
+    return false;
+}
+
+void uploadOfflineLogsSDCard() {
+    if (flashFsReady && !uploadOfflineQueue(LittleFS, false)) return;
+    if (sdCardMounted && sdMutex != NULL) uploadOfflineQueue(SD, true);
 }
 
 // Simpan hasil baca SD di RAM agar tap offline berikutnya tidak perlu membuka file lagi.
@@ -4443,7 +4492,7 @@ void networkTaskCore0(void * pvParameters) {
             discoverServer();
         }
 
-        if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && sdCardMounted &&
+        if (WiFi.status() == WL_CONNECTED && server_host.length() > 0 && (sdCardMounted || flashFsReady) &&
             millis() - lastOfflineUploadTask >= 5000 && ESP.getFreeHeap() > 30000) {
             lastOfflineUploadTask = millis();
             uploadOfflineLogsSDCard();
@@ -5968,7 +6017,9 @@ void setup() {
         }
         if (photoDir) photoDir.close();
         LittleFS.rmdir("/p");
+        recoverFile(LittleFS, "/offline_logs.csv", "/offline_logs.csv.tmp", "/offline_logs.csv.bak");
     }
+    offlineFlashMutex = xSemaphoreCreateMutex();
     Serial.printf("[FLASH] Cache %s used=%u total=%u\n", flashFsReady ? "ready" : "unavailable",
         flashFsReady ? (unsigned int)LittleFS.usedBytes() : 0, flashFsReady ? (unsigned int)LittleFS.totalBytes() : 0);
 
