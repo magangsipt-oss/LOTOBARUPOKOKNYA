@@ -62,6 +62,12 @@ const logService = {
     return response.data;
   },
 
+  // Riwayat perubahan BLE per nomor slot (urutan tap)
+  getBleEvents: async (idBox, limit = 50) => {
+    const response = await api.get(`/loto/presence/${encodeURIComponent(idBox)}/events`, { params: { limit } });
+    return response.data;
+  },
+
   getPresenceHistory: async (idBox, limit = 100) => {
     const response = await api.get(`/loto/presence/${encodeURIComponent(idBox)}/history`, { params: { limit } });
     return response.data;

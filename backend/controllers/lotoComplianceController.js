@@ -25,6 +25,62 @@ function normalizeMac(value) {
   return mac;
 }
 
+// Nomor BLE per personel dari box: slot = urutan tap, mac = iTag yang diikat saat tap.
+function parseSlots(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 20) fail('ble_slots harus berupa array maksimal 20 slot');
+  const seen = new Set();
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('Slot BLE tidak valid');
+    const slot = item.slot;
+    if (!Number.isSafeInteger(slot) || slot < 1 || slot > 20 || seen.has(slot)) fail('Nomor slot BLE tidak valid');
+    seen.add(slot);
+    for (const key of ['present', 'pending']) {
+      if (item[key] !== undefined && typeof item[key] !== 'boolean') fail(`${key} slot BLE tidak valid`);
+    }
+    if (item.rssi != null && (!Number.isSafeInteger(item.rssi) || item.rssi < -127 || item.rssi > 20)) fail('RSSI slot BLE tidak valid');
+    const sid = optionalText(item.sid, 50, 'SID slot BLE');
+    const mac = item.mac == null || item.mac === '' ? null : normalizeMac(item.mac);
+    const present = Boolean(mac && item.present);
+    return {
+      slot,
+      sid: sid && !/^-+$/.test(sid) ? sid : null,
+      uid: optionalText(item.uid, 50, 'UID slot BLE'),
+      mac,
+      present,
+      pending: !mac && item.pending === true,
+      rssi: present && item.rssi != null ? item.rssi : null
+    };
+  });
+}
+
+function parseJsonArray(value) {
+  try { const parsed = JSON.parse(value || '[]'); return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
+}
+
+// Bandingkan snapshot sebelumnya agar riwayat hanya mencatat perubahan.
+function diffBleEvents(previous, slots, unknownMacs) {
+  const events = [];
+  const previousSlots = new Map(previous.slots.map(slot => [slot.slot, slot]));
+  for (const slot of slots) {
+    let before = previousSlots.get(slot.slot);
+    if (before && before.sid !== slot.sid) before = null;
+    if (slot.mac) {
+      const newlyBound = !before || before.mac !== slot.mac;
+      if (newlyBound) events.push([slot.slot, slot.sid, slot.mac, 'TAG_BOUND']);
+      else if (slot.present && !before.present) events.push([slot.slot, slot.sid, slot.mac, 'TAG_DETECTED']);
+      else if (!slot.present && before.present) events.push([slot.slot, slot.sid, slot.mac, 'TAG_LOST']);
+    } else if (!slot.pending && (!before || before.pending)) {
+      events.push([slot.slot, slot.sid, null, 'TAG_NOT_FOUND']);
+    }
+  }
+  const previousUnknown = new Set(previous.unknownTags);
+  for (const mac of unknownMacs) if (!previousUnknown.has(mac)) events.push([null, null, mac, 'UNKNOWN_TAG']);
+  for (const mac of previousUnknown) if (!unknownMacs.includes(mac)) events.push([null, null, mac, 'UNKNOWN_TAG_GONE']);
+  return events;
+}
+
 function tagId(value) {
   if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) fail('ID tag tidak valid');
   return Number(value);
@@ -141,6 +197,7 @@ const lotoComplianceController = {
       if (!Array.isArray(body.ble_tags) || body.ble_tags.length > 100) fail('ble_tags harus berupa array maksimal 100 MAC');
       const macs = [...new Set(body.ble_tags.map(normalizeMac))];
       if (has(body, 'session_id') && body.session_id !== null && (!Number.isSafeInteger(body.session_id) || body.session_id < 1)) fail('session_id tidak valid');
+      const slots = parseSlots(body.ble_slots);
 
       const connection = await pool.getConnection();
       try {
@@ -167,7 +224,12 @@ const lotoComplianceController = {
            WHERE bt.mac_address IN (?) AND bt.is_active = 1`,
           [macs]
         ) : [[]];
-        const detectedSids = [...new Set(tagRows.map(r => r.assigned_sid).filter(Boolean))];
+        // iTag yang diikat saat tap mewakili personel pada slot tersebut.
+        const slotSids = slots ? slots.map(slot => slot.sid).filter(Boolean) : [];
+        const detectedSids = [...new Set([
+          ...tagRows.map(r => r.assigned_sid).filter(Boolean),
+          ...(slots ? slots.filter(slot => slot.present && slot.sid).map(slot => slot.sid) : [])
+        ])];
 
         // The live LOTO queue excludes fuel-only taps, old sessions and offline replay.
         // Prefer the RFID owner; a SID fallback supports cards carrying the SID itself.
@@ -180,23 +242,57 @@ const lotoComplianceController = {
           [id_box, session]
         );
 
-        const tappedSids = [...new Set(tappedRows.map(r => r.sid).filter(Boolean))];
+        // Slot di box sudah berarti tap berhasil, walau antrean server belum tersinkron.
+        const tappedSids = [...new Set([...tappedRows.map(r => r.sid).filter(Boolean), ...slotSids])];
 
         // Find SIDs that are missing (present via BLE but haven't tapped)
         const missingSids = detectedSids.filter(sid => !tappedSids.includes(sid));
 
+        // iTag yang tidak terikat ke tap mana pun dan tidak terdaftar ke karyawan.
+        const boundMacs = new Set([
+          ...(slots ? slots.map(slot => slot.mac).filter(Boolean) : []),
+          ...tagRows.map(r => r.mac_address)
+        ]);
+        const unknownMacs = slots ? macs.filter(mac => !boundMacs.has(mac)) : [];
+        const untaggedCount = slots ? slots.filter(slot => !slot.mac && !slot.pending).length : 0;
+        const bindingPending = slots ? slots.some(slot => slot.pending) : false;
+        const unidentifiedCount = bindingPending ? 0 : Math.max(0, unknownMacs.length - untaggedCount);
+
+        if (slots) {
+          const [previousRows] = await connection.query(
+            'SELECT session_id, slots, unknown_tags FROM loto_compliance WHERE id_box = ? AND slots IS NOT NULL ORDER BY id DESC LIMIT 1',
+            [id_box]
+          );
+          const previousRow = previousRows[0];
+          const previous = previousRow && previousRow.session_id === session
+            ? { slots: parseJsonArray(previousRow.slots), unknownTags: parseJsonArray(previousRow.unknown_tags) }
+            : { slots: [], unknownTags: [] };
+          const events = diffBleEvents(previous, slots, unknownMacs);
+          if (events.length) {
+            await connection.query(
+              'INSERT INTO ble_events (id_box, session_id, slot, sid, ble_mac, event) VALUES ?',
+              [events.map(([slot, sid, mac, event]) => [id_box, session, slot, sid, mac, event])]
+            );
+          }
+        }
+
         // Append a snapshot for the compliance history.
         await connection.query(
-          `INSERT INTO loto_compliance (id_box, ble_detected_count, loto_tapped_count, missing_count, detected_sids, tapped_sids, missing_sids, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+          `INSERT INTO loto_compliance (id_box, session_id, ble_detected_count, loto_tapped_count, missing_count, detected_sids, tapped_sids, missing_sids, slots, unknown_tags, unknown_tag_count, unidentified_count, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
           [
             id_box,
+            session,
             detectedSids.length,
             tappedSids.length,
             missingSids.length,
             JSON.stringify(detectedSids),
             JSON.stringify(tappedSids),
-            JSON.stringify(missingSids)
+            JSON.stringify(missingSids),
+            slots ? JSON.stringify(slots) : null,
+            JSON.stringify(unknownMacs),
+            unknownMacs.length,
+            unidentifiedCount
           ]
         );
 
@@ -214,7 +310,11 @@ const lotoComplianceController = {
             missing_count: missingSids.length,
             detected_sids: detectedSids,
             tapped_sids: tappedSids,
-            missing_sids: missingSids
+            missing_sids: missingSids,
+            slots,
+            unknown_tags: unknownMacs,
+            unknown_tag_count: unknownMacs.length,
+            unidentified_count: unidentifiedCount
           }
         });
       } catch (error) {
@@ -233,7 +333,8 @@ const lotoComplianceController = {
     try {
       const idBox = requiredText(req.params.idBox, 50, 'idBox');
       const [rows] = await pool.query(
-        'SELECT *, (created_at < NOW() - INTERVAL 30 SECOND) AS stale FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC, id DESC LIMIT 1',
+        // Box mengirim heartbeat BLE tiap 15 detik selama sesi; toleransi satu laporan tertunda.
+        'SELECT *, (created_at < NOW() - INTERVAL 45 SECOND) AS stale FROM loto_compliance WHERE id_box = ? ORDER BY created_at DESC, id DESC LIMIT 1',
         [idBox]
       );
 
@@ -243,6 +344,8 @@ const lotoComplianceController = {
         data.detected_sids = JSON.parse(data.detected_sids || '[]');
         data.tapped_sids = JSON.parse(data.tapped_sids || '[]');
         data.missing_sids = JSON.parse(data.missing_sids || '[]');
+        data.slots = data.slots == null ? null : parseJsonArray(data.slots);
+        data.unknown_tags = parseJsonArray(data.unknown_tags);
       }
 
       return res.status(200).json({ success: true, data });
@@ -268,7 +371,9 @@ const lotoComplianceController = {
         ...row,
         detected_sids: JSON.parse(row.detected_sids || '[]'),
         tapped_sids: JSON.parse(row.tapped_sids || '[]'),
-        missing_sids: JSON.parse(row.missing_sids || '[]')
+        missing_sids: JSON.parse(row.missing_sids || '[]'),
+        slots: row.slots == null ? null : parseJsonArray(row.slots),
+        unknown_tags: parseJsonArray(row.unknown_tags)
       }));
 
       return res.status(200).json({ success: true, data: parsed });
@@ -443,6 +548,30 @@ const lotoComplianceController = {
       return res.status(200).json({ success: true, data: resolved });
     } catch (error) {
       return errorResponse(res, error, 'Gagal mengambil data presence aktif', 'getActivePresence');
+    }
+  },
+
+  // Riwayat perubahan BLE per nomor slot (diikat, terdeteksi, hilang, iTag tanpa tap).
+  getBleEvents: async (req, res) => {
+    try {
+      const idBox = requiredText(req.params.idBox, 50, 'idBox');
+      const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+      if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || Array.isArray(req.query.limit)) {
+        fail('limit harus berupa bilangan bulat positif');
+      }
+      const limit = Math.min(requestedLimit, 200);
+      const [rows] = await pool.query(
+        `SELECT e.id, e.id_box, e.session_id, e.slot, e.sid, e.ble_mac, e.event, e.created_at, u.nama
+         FROM ble_events e
+         LEFT JOIN users u ON u.sid = e.sid
+         WHERE e.id_box = ?
+         ORDER BY e.created_at DESC, e.id DESC
+         LIMIT ?`,
+        [idBox, limit]
+      );
+      return res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+      return errorResponse(res, error, 'Gagal mengambil riwayat BLE', 'getBleEvents');
     }
   },
 

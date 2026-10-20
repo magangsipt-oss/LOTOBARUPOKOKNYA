@@ -363,6 +363,8 @@ struct WorkerInfo {
     bool isAssigned = true; 
     bool lookupUnavailable = false;
     bool offlineFallbackAllowed = false;
+    char bleMac[18] = "";       // iTag yang terikat ke nomor BLE personel ini
+    uint32_t bleBindSince = 0;  // >0: masih mencari iTag yang didekatkan saat tap
 };
 
 // Validasi dan rapikan format SID personel.
@@ -665,6 +667,7 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, const String &sidHint = "");
 void requestPhotoSync(const String &uid, const String &sid, bool background = false);
 void photoSyncTask(void *pvParameters);
+extern volatile bool bleBindingActive;
 void clearMainScreenArea();
 void executeFooterChoice();
 void parseGpsResponse(const String &response);
@@ -995,15 +998,30 @@ void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, boo
     tft.fillRoundRect(x - (bodyW / 2), bodyY, bodyW, bodyH, bodyR, color);
 }
 
-// Tampilkan jumlah mekanik tanpa menyerupai foto personel tambahan.
-void drawMechanicCountBadge(int16_t x, int16_t y, uint8_t count) {
-    tft.drawRoundRect(x, y, 112, 82, 6, ELOTO_HEADER);
+// Gambar deretan ikon personel di tengah, satu ikon per mekanik.
+void drawMechanicIconRow(int16_t cx, int16_t cy, int count) {
+    if (count <= 0) return;
+    if (count > MAX_WORKERS) count = MAX_WORKERS;
+    float scale     = (count <= 5) ? 1.5f : 1.0f;
+    int16_t spacing = (count <= 5) ? 62 : 44;
+    int16_t startX  = cx - ((count - 1) * spacing) / 2;
+    for (int i = 0; i < count; i++) {
+        drawSinglePersonIcon(startX + i * spacing, cy, scale, ELOTO_TEXT, false);
+    }
+}
+
+// Gambar kotak petunjuk di bawah daftar.
+void drawHintBox(const String &text) {
+    const int16_t boxW = 320;
+    const int16_t boxH = 26;
+    const int16_t boxX = (480 - boxW) / 2;
+    const int16_t boxY = 220;
+    tft.fillRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_BG);
+    tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_DARK_RED);
+    setStoryFont(9);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-    setStoryFont(24);
-    tft.drawString(twoDigits(count), x + 56, y + 31);
-    setStoryFont(9);
-    tft.drawString("MEKANIK", x + 56, y + 65);
+    tft.drawString(text, 240, boxY + (boxH / 2));
 }
 
 // Tentukan layar yang menampilkan pilihan bawah.
@@ -1382,17 +1400,23 @@ bool cachePhotoStreamToSD(const String &uid, const String &sid, NetworkClient &s
         photo.close();
         if (complete) {
             File verify = SD.open(temporary, FILE_READ);
-            bool valid = verify && verify.size() == expectedSize;
+            bool verifyOpened = static_cast<bool>(verify);
+            size_t verifySize = verifyOpened ? verify.size() : 0;
+            bool valid = verify && verifySize == expectedSize;
+            uint8_t head[2] = {}, tail[2] = {};
             if (verify) {
-                uint8_t signature[2] = {};
-                valid = valid && verify.read(signature, sizeof(signature)) == sizeof(signature) &&
-                    signature[0] == 0xFF && signature[1] == 0xD8 &&
-                    verify.seek(expectedSize - sizeof(signature)) &&
-                    verify.read(signature, sizeof(signature)) == sizeof(signature) &&
-                    signature[0] == 0xFF && signature[1] == 0xD9;
+                valid = valid && verify.read(head, sizeof(head)) == sizeof(head) &&
+                    head[0] == 0xFF && head[1] == 0xD8 &&
+                    verify.seek(expectedSize - sizeof(tail)) &&
+                    verify.read(tail, sizeof(tail)) == sizeof(tail) &&
+                    tail[0] == 0xFF && tail[1] == 0xD9;
                 verify.close();
             }
-            if (!valid) failureReason = "file_verify";
+            if (!valid) {
+                failureReason = "file_verify";
+                Serial.printf("[PHOTO_SYNC] Verify detail path=%s opened=%d size=%u head=%02X%02X tail=%02X%02X\n",
+                    temporary.c_str(), verifyOpened ? 1 : 0, (unsigned int)verifySize, head[0], head[1], tail[0], tail[1]);
+            }
             else if (commitSdFile(active.c_str(), temporary.c_str(), backup.c_str())) saved = true;
             else failureReason = "commit_failed";
         }
@@ -1629,6 +1653,12 @@ void photoSyncTask(void *pvParameters) {
     PhotoSyncJob job;
     for (;;) {
         if (xQueueReceive(photoSyncQueue, &job, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            // Prefetch latar menunggu sampai iTag personel yang baru tap terikat.
+            if (job.background && bleBindingActive) {
+                xQueueSendToBack(photoSyncQueue, &job, 0);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
             String uid(job.uid);
             String sid(job.sid);
             bool alreadyLoaded = false;
@@ -1681,6 +1711,23 @@ void photoSyncTask(void *pvParameters) {
     }
 }
 
+// Hitung skala dan posisi JPEG agar muat di kotak, lalu siapkan decoder.
+bool prepareJpegRender(uint16_t sourceW, uint16_t sourceH, int32_t boxX, int32_t boxY,
+                       uint16_t boxW, uint16_t boxH, int32_t &renderX, int32_t &renderY) {
+    uint8_t scale = 1;
+    while (scale < 8 && (sourceW / scale > boxW || sourceH / scale > boxH)) scale *= 2;
+    uint16_t renderW = sourceW / scale;
+    uint16_t renderH = sourceH / scale;
+    renderX = boxX + (boxW - renderW) / 2;
+    renderY = boxY + (boxH - renderH) / 2;
+    if (renderX < boxX || renderY < boxY ||
+        renderX + renderW > boxX + boxW || renderY + renderH > boxY + boxH) return false;
+    tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
+    TJpgDec.setJpgScale(scale);
+    TJpgDec.setCallback(tft_output);
+    return true;
+}
+
 // Gambar foto dari cache SD; tidak melakukan HTTP di jalur input/tampilan.
 bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uint16_t boxH, const String &sidHint) {
     uid.trim();
@@ -1701,17 +1748,8 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
             uint16_t sourceW = 0, sourceH = 0;
             if (TJpgDec.getJpgSize(&sourceW, &sourceH, photoDisplayData, photoDisplaySize) == JDR_OK &&
                 sourceW > 0 && sourceH > 0) {
-                uint8_t scale = 1;
-                while (scale < 8 && (sourceW / scale > boxW || sourceH / scale > boxH)) scale *= 2;
-                uint16_t renderW = sourceW / scale;
-                uint16_t renderH = sourceH / scale;
-                int32_t renderX = boxX + (boxW - renderW) / 2;
-                int32_t renderY = boxY + (boxH - renderH) / 2;
-                if (renderX >= boxX && renderY >= boxY &&
-                    renderX + renderW <= boxX + boxW && renderY + renderH <= boxY + boxH) {
-                    tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
-                    TJpgDec.setJpgScale(scale);
-                    TJpgDec.setCallback(tft_output);
+                int32_t renderX, renderY;
+                if (prepareJpegRender(sourceW, sourceH, boxX, boxY, boxW, boxH, renderX, renderY)) {
                     drawn = TJpgDec.drawJpg(renderX, renderY, photoDisplayData, photoDisplaySize) == JDR_OK;
                     Serial.printf("[PHOTO] Online image rendered uid=%s result=%d bytes=%u\n",
                         uid.c_str(), drawn ? 1 : 0, (unsigned int)photoDisplaySize);
@@ -1766,17 +1804,8 @@ bool drawPhotoFromAPI(String uid, int32_t boxX, int32_t boxY, uint16_t boxW, uin
                 invalidJpeg = true;
                 continue;
             }
-            uint8_t scale = 1;
-            while (scale < 8 && (sourceW / scale > boxW || sourceH / scale > boxH)) scale *= 2;
-            uint16_t renderW = sourceW / scale;
-            uint16_t renderH = sourceH / scale;
-            int32_t renderX = boxX + (boxW - renderW) / 2;
-            int32_t renderY = boxY + (boxH - renderH) / 2;
-            if (renderX >= boxX && renderY >= boxY &&
-                renderX + renderW <= boxX + boxW && renderY + renderH <= boxY + boxH) {
-                tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
-                TJpgDec.setJpgScale(scale);
-                TJpgDec.setCallback(tft_output);
+            int32_t renderX, renderY;
+            if (prepareJpegRender(sourceW, sourceH, boxX, boxY, boxW, boxH, renderX, renderY)) {
                 drawn = TJpgDec.drawFsJpg(renderX, renderY, paths[i], SD) == JDR_OK;
                 Serial.printf("[PHOTO] SD image rendered uid=%s result=%d bytes=%u\n",
                     uid.c_str(), drawn ? 1 : 0, (unsigned int)size);
@@ -1887,15 +1916,30 @@ const char *const GEO_MECHANIC_MACS[] = { "" };
 const uint32_t GEO_TAG_TIMEOUT_MS = 25000;
 const uint32_t GEO_WARNING_DELAY_MS = 3000;
 // HTTPS pauses the scanner; keep health valid across one TLS request.
-const uint32_t GEO_SCANNER_STALE_MS = 20000;
+const uint32_t GEO_SCANNER_STALE_MS = 30000;
 const uint8_t GEO_MAX_TAGS = 20;
-struct GeoTag { char mac[18]; int rssi; uint32_t seen; };
+// Tag hilang bila tidak terlihat selama 12 detik pemindaian aktif; jeda HTTPS tidak ikut dihitung.
+const uint32_t GEO_TAG_SCAN_TIMEOUT_MS = 12000;
+// iTag yang didekatkan ke box saat tap kartu diikat ke nomor BLE personel tersebut.
+const int GEO_BIND_MIN_RSSI = -65;
+const uint32_t GEO_BIND_WINDOW_MS = 30000;
+const uint32_t GEO_BIND_FRESH_MS = 3000;
+struct GeoTag { char mac[18]; int rssi; uint32_t seen; uint32_t seenScanMs; };
 GeoTag geoTags[GEO_MAX_TAGS] = {};
 uint8_t geoTagCount = 0;
 portMUX_TYPE geoMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t geoScanHeartbeat = 0, geoOverflowSeen = 0;
 bool geoScanCompleted = false, geoOverflow = false;
 uint32_t geoAdvertisements = 0, geoTagAdvertisements = 0;
+uint32_t geoActiveScanTotalMs = 0;
+// Snapshot nomor BLE per personel untuk layar dan laporan backend (dilindungi geoMux).
+struct GeoSlotSnap { char mac[18]; char sid[12]; char uid[24]; bool present; bool pending; int rssi; };
+GeoSlotSnap geoSlotSnap[MAX_WORKERS] = {};
+uint8_t geoSlotSnapCount = 0;
+volatile uint32_t geoSnapVersion = 0;
+int geoUnknownCount = 0, geoUntaggedCount = 0;
+// Selama ada personel yang baru tap dan iTag-nya belum terikat, HTTPS latar ditunda agar BLE terus memindai.
+volatile bool bleBindingActive = false;
 TaskHandle_t geoTaskHandle = NULL;
 volatile bool bleScannerRestartedForTls = false;
 int geoCount = 0, geoTapCount = 0;
@@ -1996,6 +2040,7 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
         for (uint8_t i = 0; i < geoTagCount; ++i) {
             if (strcasecmp(mac, geoTags[i].mac) == 0) {
                 geoTags[i].seen = now; geoTags[i].rssi = device->getRSSI();
+                geoTags[i].seenScanMs = geoActiveScanTotalMs;
                 portEXIT_CRITICAL(&geoMux); return;
             }
         }
@@ -2003,6 +2048,7 @@ class GeoAdvertCallbacks : public NimBLEScanCallbacks {
             if (geoTagCount < GEO_MAX_TAGS) {
                 memcpy(geoTags[geoTagCount].mac, mac, sizeof(mac));
                 geoTags[geoTagCount].rssi = device->getRSSI();
+                geoTags[geoTagCount].seenScanMs = geoActiveScanTotalMs;
                 geoTags[geoTagCount++].seen = now;
             } else { geoOverflow = true; geoOverflowSeen = now; }
         }
@@ -2096,13 +2142,15 @@ void geoScanTask(void *unused) {
             } else {
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
-            activeScanMs += uint32_t(millis() - sliceStartedAt);
+            uint32_t sliceMs = uint32_t(millis() - sliceStartedAt);
+            activeScanMs += sliceMs;
             scan->clearResults();
             xSemaphoreGive(ioMutex);
             // Mark progress per slice so TLS pauses do not reset scanner health.
             if (sliceScanned) {
                 portENTER_CRITICAL(&geoMux);
                 geoScanHeartbeat = millis(); geoScanCompleted = true;
+                geoActiveScanTotalMs += sliceMs;
                 portEXIT_CRITICAL(&geoMux);
             }
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -2110,7 +2158,7 @@ void geoScanTask(void *unused) {
         uint32_t now = millis();
         portENTER_CRITICAL(&geoMux);
         for (uint8_t i = 0; i < geoTagCount;) {
-            if (uint32_t(now - geoTags[i].seen) > GEO_TAG_TIMEOUT_MS) {
+            if (uint32_t(geoActiveScanTotalMs - geoTags[i].seenScanMs) > GEO_TAG_SCAN_TIMEOUT_MS) {
                 geoTags[i] = geoTags[--geoTagCount];
             } else ++i;
         }
@@ -2148,52 +2196,181 @@ int geoMechanicsTapped() {
     return total;
 }
 
+// Cek apakah MAC sudah terikat ke personel di antrean.
+bool geoMacBoundInQueue(const char *mac) {
+    for (int i = 0; i <= safetyQueue.topIndex; ++i) {
+        if (safetyQueue.workers[i].bleMac[0] && strcasecmp(safetyQueue.workers[i].bleMac, mac) == 0) return true;
+    }
+    return false;
+}
+
 // Perbarui status geofence dari hasil pemindaian BLE.
 void serviceGeofence() {
     uint32_t now = millis();
     int count; uint32_t heartbeat; bool completed, overflow;
+    GeoTag tags[GEO_MAX_TAGS];
     portENTER_CRITICAL(&geoMux);
     count = geoTagCount; heartbeat = geoScanHeartbeat;
     completed = geoScanCompleted; overflow = geoOverflow;
+    memcpy(tags, geoTags, sizeof(GeoTag) * count);
     portEXIT_CRITICAL(&geoMux);
-    
+
     bool healthy = completed && !overflow && uint32_t(now - heartbeat) <= GEO_SCANNER_STALE_MS;
     int taps = geoMechanicsTapped();
-    bool excess = isSessionActive && healthy && count > taps;
+
+    // Nomor BLE = urutan tap. iTag terkuat yang belum dipakai diikat ke personel yang baru tap.
+    bool queueChanged = false;
+    bool boundThisPass = false;
+    for (int i = 0; i <= safetyQueue.topIndex; ++i) {
+        WorkerInfo &worker = safetyQueue.workers[i];
+        if (worker.bleMac[0] || worker.bleBindSince == 0 || boundThisPass) continue;
+        if (uint32_t(now - worker.bleBindSince) > GEO_BIND_WINDOW_MS) {
+            worker.bleBindSince = 0;
+            queueChanged = true;
+            Serial.printf("[BLE] BLE %d %s: iTag tidak ditemukan saat tap\n", i + 1, worker.name.c_str());
+            logAuditAsync("BLE_TAG_NOT_FOUND", worker.uid);
+            continue;
+        }
+        int best = -1;
+        for (int t = 0; t < count; ++t) {
+            if (tags[t].rssi < GEO_BIND_MIN_RSSI || uint32_t(now - tags[t].seen) > GEO_BIND_FRESH_MS) continue;
+            if (geoMacBoundInQueue(tags[t].mac)) continue;
+            if (best < 0 || tags[t].rssi > tags[best].rssi) best = t;
+        }
+        if (best >= 0) {
+            strlcpy(worker.bleMac, tags[best].mac, sizeof(worker.bleMac));
+            worker.bleBindSince = 0;
+            queueChanged = true;
+            boundThisPass = true;
+            Serial.printf("[BLE] BLE %d %s terikat ke iTag %s rssi=%d\n",
+                i + 1, worker.name.c_str(), worker.bleMac, tags[best].rssi);
+            logAuditAsync("BLE_TAG_BOUND", worker.uid);
+        }
+    }
+    if (queueChanged) saveSessionToSD();
+
+    GeoSlotSnap slots[MAX_WORKERS];
+    uint8_t slotCount = 0;
+    int untagged = 0;
+    bool anyPending = false;
+    uint32_t signature = 2166136261UL;
+    auto mix = [&signature](const char *text) {
+        for (; *text; ++text) signature = (signature ^ (uint8_t)*text) * 16777619UL;
+        signature = (signature ^ 0xFF) * 16777619UL;
+    };
+    for (int i = 0; i <= safetyQueue.topIndex && slotCount < MAX_WORKERS; ++i) {
+        WorkerInfo &worker = safetyQueue.workers[i];
+        GeoSlotSnap &slot = slots[slotCount++];
+        memset(&slot, 0, sizeof(slot));
+        strlcpy(slot.mac, worker.bleMac, sizeof(slot.mac));
+        strlcpy(slot.sid, worker.sid.c_str(), sizeof(slot.sid));
+        strlcpy(slot.uid, worker.uid.c_str(), sizeof(slot.uid));
+        slot.pending = !worker.bleMac[0] && worker.bleBindSince != 0;
+        if (slot.pending) anyPending = true;
+        if (worker.bleMac[0]) {
+            for (int t = 0; t < count; ++t) {
+                if (strcasecmp(tags[t].mac, worker.bleMac) == 0) { slot.present = true; slot.rssi = tags[t].rssi; break; }
+            }
+        } else if (!slot.pending) {
+            ++untagged;
+        }
+        mix(slot.uid); mix(slot.mac); mix(slot.present ? "1" : "0"); mix(slot.pending ? "P" : "-");
+    }
+    int unknown = 0;
+    for (int t = 0; t < count; ++t) {
+        if (geoMacBoundInQueue(tags[t].mac)) continue;
+        ++unknown;
+        mix(tags[t].mac);
+    }
+    mix(healthy ? "H" : "U");
+
+    static uint32_t lastSignature = 0;
+    if (signature != lastSignature) {
+        lastSignature = signature;
+        portENTER_CRITICAL(&geoMux);
+        memcpy(geoSlotSnap, slots, sizeof(GeoSlotSnap) * slotCount);
+        geoSlotSnapCount = slotCount;
+        ++geoSnapVersion;
+        portEXIT_CRITICAL(&geoMux);
+        if (currentState == STATE_GEOFENCE) needsRedraw = true;
+    }
+
+    // Peringatan: ada iTag yang tidak terikat ke siapa pun melebihi personel tanpa iTag.
+    bool excess = isSessionActive && healthy && !anyPending && unknown > untagged;
     if (excess) {
         if (!geoPending) { geoPending = true; geoPendingSince = now; }
     } else geoPending = false;
     bool warning = excess && uint32_t(now - geoPendingSince) >= GEO_WARNING_DELAY_MS;
-    
+
     if (warning != geoWarning) {
         logAuditAsync(warning ? "BLE_COUNT_WARNING" : "BLE_WARNING_ENDED", "SYSTEM");
     }
-    
+
     if ((count != geoCount || taps != geoTapCount || healthy != geoHealthy) && currentState == STATE_GEOFENCE) {
-        needsRedraw = true; 
+        needsRedraw = true;
     }
     if (healthy != geoHealthy && isSessionActive) {
-        needsRedraw = true; 
+        needsRedraw = true;
     }
     geoCount = count; geoTapCount = taps; geoHealthy = healthy; geoWarning = warning;
+    geoUnknownCount = unknown; geoUntaggedCount = untagged;
+    bleBindingActive = anyPending;
 }
 
-// Kirim daftar tag BLE terbaru ke backend.
+// Kirim nomor BLE per personel dan tag terdeteksi ke backend.
+// Setiap HTTPS menjeda BLE, jadi kirim saat ada perubahan atau sebagai heartbeat berkala.
 void reportBlePresence() {
+    static uint32_t lastSentAt = 0;
+    static uint32_t lastSentVersion = 0;
+    static bool sentOnce = false;
+    static bool retryPending = false;
     if (WiFi.status() != WL_CONNECTED || ESP.getFreeHeap() < 30000) return;
 
-    DynamicJsonDocument doc(1536);
-    doc["id_box"] = getDeviceId();
-    JsonArray tags = doc.createNestedArray("ble_tags");
+    uint32_t now = millis();
+    uint32_t version = geoSnapVersion;
+    uint32_t heartbeatMs = isSessionActive ? 15000 : 60000;
+    bool changed = !sentOnce || retryPending || version != lastSentVersion;
+    if (!(changed && uint32_t(now - lastSentAt) >= 3000) && uint32_t(now - lastSentAt) < heartbeatMs) return;
+    if (bleBindingActive && uint32_t(now - lastSentAt) < heartbeatMs) return;
+
+    GeoSlotSnap slots[MAX_WORKERS];
+    uint8_t slotCount;
+    char macs[GEO_MAX_TAGS][18];
+    uint8_t tagCount;
     portENTER_CRITICAL(&geoMux);
-    for (uint8_t i = 0; i < geoTagCount; ++i) tags.add(geoTags[i].mac);
+    slotCount = geoSlotSnapCount;
+    memcpy(slots, geoSlotSnap, sizeof(GeoSlotSnap) * slotCount);
+    tagCount = geoTagCount;
+    for (uint8_t i = 0; i < tagCount; ++i) memcpy(macs[i], geoTags[i].mac, sizeof(macs[i]));
     portEXIT_CRITICAL(&geoMux);
 
-    size_t tagCount = tags.size();
+    lastSentAt = now;
+    lastSentVersion = version;
+    sentOnce = true;
+    retryPending = false;
+
+    DynamicJsonDocument doc(3072);
+    doc["id_box"] = getDeviceId();
+    doc["scan_ok"] = geoHealthy;
+    JsonArray tags = doc.createNestedArray("ble_tags");
+    for (uint8_t i = 0; i < tagCount; ++i) tags.add((const char *)macs[i]);
+    JsonArray slotArray = doc.createNestedArray("ble_slots");
+    for (uint8_t i = 0; i < slotCount; ++i) {
+        JsonObject slot = slotArray.createNestedObject();
+        slot["slot"] = i + 1;
+        slot["sid"] = (const char *)slots[i].sid;
+        slot["uid"] = (const char *)slots[i].uid;
+        if (slots[i].mac[0]) slot["mac"] = (const char *)slots[i].mac;
+        else slot["mac"] = nullptr;
+        slot["present"] = slots[i].present;
+        slot["pending"] = slots[i].pending;
+        if (slots[i].present) slot["rssi"] = slots[i].rssi;
+    }
 
     ServerHttpClient http;
     if (!http.begin(getApiUrl("loto/presence"))) {
         Serial.printf("[BLE_PRESENCE] Deferred tags=%u reason=http_begin_failed\n", (unsigned int)tagCount);
+        retryPending = true;  // jaringan sibuk: coba lagi 3 detik kemudian
         return;
     }
     http.addHeader("Content-Type", "application/json");
@@ -2202,7 +2379,8 @@ void reportBlePresence() {
     String payload;
     serializeJson(doc, payload);
     int httpCode = http.POST(payload);
-    Serial.printf("[BLE_PRESENCE] POST tags=%u => HTTP %d\n", (unsigned int)tagCount, httpCode);
+    Serial.printf("[BLE_PRESENCE] POST tags=%u slots=%u => HTTP %d\n",
+        (unsigned int)tagCount, (unsigned int)slotCount, httpCode);
     if (httpCode != HTTP_CODE_OK) {
         String response = http.getString();
         if (response.length() > 160) response = response.substring(0, 160);
@@ -2211,26 +2389,52 @@ void reportBlePresence() {
     http.end();
 }
 
-// Gambar halaman informasi geofence.
+// Gambar halaman informasi geofence: status iTag per nomor BLE (urutan tap).
 void drawGeofencePage() {
-    tft.fillRect(10, 90, 460, 150, ELOTO_BG); 
-    
+    tft.fillRect(10, 86, 460, 182, ELOTO_BG);
+
     tft.setTextDatum(MC_DATUM); setStoryFont(12);
     tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
     tft.drawString("KONFIRMASI GEOFENCE / BLE", 240, 72);
-    setStoryFont(12); tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
-    tft.drawString("iTag terdeteksi : " + String(geoCount), 240, 112);
-    tft.drawString("Mekanik sudah tap : " + String(geoTapCount), 240, 144);
-    setStoryFont(9); tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-    const char *status = !geoHealthy ? "BLE BELUM SIAP / DATA TIDAK VALID" :
-        !isSessionActive ? "MONITOR - SESI BELUM AKTIF" :
-        geoWarning ? "WARNING: ADA TAG LEBIH DARI TAP" :
-        geoCount > geoTapCount ? "MENUNGGU KONFIRMASI 3 DETIK" :
-        geoCount < geoTapCount ? "TAG KURANG - PERIKSA MANUAL" : "JUMLAH SAMA - CEK IDENTITAS";
-    tft.drawString(status, 240, 184);
-    tft.setTextColor(ELOTO_MUTED, ELOTO_BG);
-    tft.drawString("BLE scan, bukan koneksi / posisi GPS", 240, 214);
-    tft.drawString("Tag hilang dihapus setelah 25 detik", 240, 236);
+
+    GeoSlotSnap slots[MAX_WORKERS];
+    uint8_t slotCount;
+    portENTER_CRITICAL(&geoMux);
+    slotCount = geoSlotSnapCount;
+    memcpy(slots, geoSlotSnap, sizeof(GeoSlotSnap) * slotCount);
+    portEXIT_CRITICAL(&geoMux);
+
+    setStoryFont(9);
+    if (slotCount == 0) {
+        tft.setTextColor(ELOTO_MUTED, ELOTO_BG);
+        tft.drawString("BELUM ADA PERSONEL TAP", 240, 150);
+    }
+    const uint8_t MAX_ROWS = 5;
+    tft.setTextDatum(TL_DATUM);
+    for (uint8_t i = 0; i < slotCount && i < MAX_ROWS; ++i) {
+        int16_t rowY = 92 + i * 26;
+        String status;
+        uint16_t statusColor = ELOTO_HEADER;
+        if (slots[i].pending) status = "DEKATKAN iTAG";
+        else if (!slots[i].mac[0]) { status = "TANPA iTAG"; statusColor = ELOTO_MUTED; }
+        else if (!geoHealthy) { status = "MEMINDAI..."; statusColor = ELOTO_MUTED; }
+        else if (slots[i].present) { status = "TERDETEKSI"; statusColor = ELOTO_TEXT; }
+        else status = "TIDAK TERDETEKSI";
+        String name = (i <= safetyQueue.topIndex) ? safetyQueue.workers[i].name : String(slots[i].sid);
+        drawTextFit("BLE " + String(i + 1), 22, rowY, 56, ELOTO_HEADER, ELOTO_BG, 9);
+        drawTextFit(name, 84, rowY, 206, ELOTO_TEXT, ELOTO_BG, 9);
+        drawTextFit(status, 300, rowY, 160, statusColor, ELOTO_BG, 9);
+    }
+    tft.setTextDatum(MC_DATUM);
+    if (slotCount > MAX_ROWS) {
+        tft.setTextColor(ELOTO_MUTED, ELOTO_BG);
+        tft.drawString("+" + String(slotCount - MAX_ROWS) + " PERSONEL LAIN", 240, 228);
+    }
+    tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+    String summary = !geoHealthy ? "BLE BELUM SIAP / DATA TIDAK VALID" :
+        geoUnknownCount > 0 ? "iTAG TANPA TAP KARTU: " + String(geoUnknownCount) :
+        "SEMUA iTAG SESUAI TAP KARTU";
+    tft.drawString(summary, 240, 254);
     drawTftFooterSingle("KEMBALI");
 }
 
@@ -2248,15 +2452,15 @@ void drawGeofenceWarning() {
     static int lastWarnTap = -1;
     static bool lastWarnHealthy = true;
 
-    if (!geoBannerWasVisible || lastWarnCount != geoCount || lastWarnTap != geoTapCount || lastWarnHealthy != geoHealthy) {
+    if (!geoBannerWasVisible || lastWarnCount != geoUnknownCount || lastWarnTap != geoTapCount || lastWarnHealthy != geoHealthy) {
         geoBannerWasVisible = true;
-        lastWarnCount = geoCount; lastWarnTap = geoTapCount; lastWarnHealthy = geoHealthy;
+        lastWarnCount = geoUnknownCount; lastWarnTap = geoTapCount; lastWarnHealthy = geoHealthy;
 
         tft.fillRect(10, 246, 460, 23, ELOTO_HEADER);
         tft.setTextDatum(MC_DATUM); setStoryFont(9);
         tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
         String text = !geoHealthy ? "BLE TIDAK VALID - PERIKSA PERSONEL" :
-            "WARNING: BLE " + String(geoCount) + " / TAP MEKANIK " + String(geoTapCount);
+            "WARNING: " + String(geoUnknownCount) + " iTAG TANPA TAP KARTU";
         tft.drawString(text, 240, 257);
     }
 }
@@ -2894,6 +3098,7 @@ void saveSessionToSD() {
                     obj["sid"]  = safetyQueue.workers[i].sid;
                     obj["name"] = safetyQueue.workers[i].name;
                     obj["role"] = safetyQueue.workers[i].role;
+                    obj["ble_mac"] = (const char *)safetyQueue.workers[i].bleMac;
                 }
                 if (doc.overflowed()) {
                     sessionFile.close();
@@ -2985,6 +3190,9 @@ bool loadSessionFromSD() {
                                 safetyQueue.workers[idx].sid  = obj["sid"] | (idx == 0 ? savedSupervisorSid : "-----");
                                 safetyQueue.workers[idx].name = obj["name"].as<String>();
                                 safetyQueue.workers[idx].role = obj["role"].as<String>();
+                                strlcpy(safetyQueue.workers[idx].bleMac, obj["ble_mac"] | "",
+                                    sizeof(safetyQueue.workers[idx].bleMac));
+                                safetyQueue.workers[idx].bleBindSince = 0;
                                 idx++;
                             }
                         }
@@ -3000,7 +3208,7 @@ bool loadSessionFromSD() {
                         rebuildCachedQueueString();
                         targetMekanikCount = constrain((int)targetMekanikCount, 0, MAX_WORKERS - countQueueSupervisors());
                         selectedWorkerIndex = constrain((int)selectedWorkerIndex, 0, max(0, (int)safetyQueue.topIndex));
-                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, 3);
+                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, 4);
                         selectedFooterAction = constrain((int)selectedFooterAction, 0, currentState == STATE_WORKER_LIST ? 2 : 1);
 
                         bool savedSessionActive = doc["is_session_active"] | false;
@@ -3095,6 +3303,8 @@ bool pushQueue(String uid, String sid, String name, String role) {
     entry.role = normalizeUserRole(role);
     entry.isSpv = checkIsSupervisorRole(entry.role);
     entry.isRegistered = true;
+    entry.bleMac[0] = '\0';
+    entry.bleBindSince = millis();
 
     int maxMechanics = MAX_WORKERS - countQueueSupervisors();
     if (targetMekanikCount > maxMechanics) targetMekanikCount = maxMechanics;
@@ -3114,6 +3324,8 @@ void removeQueueAt(int index) {
     safetyQueue.workers[safetyQueue.topIndex].uid = "";
     safetyQueue.workers[safetyQueue.topIndex].name = "";
     safetyQueue.workers[safetyQueue.topIndex].role = "";
+    safetyQueue.workers[safetyQueue.topIndex].bleMac[0] = '\0';
+    safetyQueue.workers[safetyQueue.topIndex].bleBindSince = 0;
     safetyQueue.topIndex--;
     
     rebuildCachedQueueString();
@@ -3274,7 +3486,8 @@ bool pollSyncUsersCommand() {
 
     String commandId = response["data"]["id"] | "";
     String parameter = response["data"]["cmd_param"] | "";
-    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard()) return false;
+    // Perintah dari dashboard (kartu baru/diubah) ikut mengunduh foto yang belum ada di SD.
+    if (commandId.length() == 0 || parameter.length() != 0 || !syncDatabaseToSDCard(true)) return false;
 
     DynamicJsonDocument body(128);
     body["commandId"] = commandId;
@@ -3938,7 +4151,7 @@ void networkTaskCore0(void * pvParameters) {
             }
         }
 
-        if (millis() - lastBlePresenceTask >= 10000) {
+        if (millis() - lastBlePresenceTask >= 1000) {
             lastBlePresenceTask = millis();
             reportBlePresence();
         }
@@ -4390,6 +4603,26 @@ void connectWiFiRoutine() {
 }
 
 // Jalankan pilihan tombol footer sesuai layar aktif.
+// Hitung mundur 10 detik saat relay terbuka; server & GPS tetap dilayani.
+void runRelayCountdown(bool exitMode) {
+    exitCountdownActive = exitMode;
+    for (int detik = 10; detik >= 1; detik--) {
+        currentState = STATE_COUNTDOWN;
+        notificationMessage = String(detik);
+        needsRedraw = true;
+        drawScreen();
+        countdownBeep(detik);
+        unsigned long startTick = millis();
+        unsigned long waitDuration = (detik <= 3) ? 700 : 940;
+        while (millis() - startTick < waitDuration) {
+            server.handleClient();
+            feedGPS();
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+    }
+    exitCountdownActive = false;
+}
+
 void executeFooterChoice() {
     if (currentState == STATE_WELCOME) {
         if (selectedFooterAction == 0) {
@@ -4438,21 +4671,7 @@ void executeFooterChoice() {
             isSessionActive = true;
             sessionStartTime = millis();
 
-            for (int detik = 10; detik >= 1; detik--) {
-                exitCountdownActive = false;
-                currentState = STATE_COUNTDOWN;
-                notificationMessage = String(detik);
-                needsRedraw = true;
-                drawScreen();
-                countdownBeep(detik);
-                unsigned long startTick = millis();
-                unsigned long waitDuration = (detik <= 3) ? 700 : 940;
-                while (millis() - startTick < waitDuration) {
-                    server.handleClient();
-                    feedGPS();
-                    vTaskDelay(pdMS_TO_TICKS(15));
-                }
-            }
+            runRelayCountdown(false);
             digitalWrite(PIN_RELAY, LOW);
             relayOpen = false;
             delay(500);
@@ -4486,21 +4705,7 @@ void executeFooterChoice() {
             isSessionActive = true;
             sessionStartTime = millis();
 
-            for (int detik = 10; detik >= 1; detik--) {
-                exitCountdownActive = false;
-                currentState = STATE_COUNTDOWN;
-                notificationMessage = String(detik);
-                needsRedraw = true;
-                drawScreen();
-                countdownBeep(detik);
-                unsigned long startTick = millis();
-                unsigned long waitDuration = (detik <= 3) ? 700 : 940;
-                while (millis() - startTick < waitDuration) {
-                    server.handleClient();
-                    feedGPS();
-                    vTaskDelay(pdMS_TO_TICKS(15));
-                }
-            }
+            runRelayCountdown(false);
             digitalWrite(PIN_RELAY, LOW);
             relayOpen = false;
             delay(500);
@@ -4596,22 +4801,7 @@ void executeFooterChoice() {
             relayOpen = true;
             delay(500); 
 
-            exitCountdownActive = true;
-            for (int detik = 10; detik >= 1; detik--) {
-                currentState = STATE_COUNTDOWN;
-                notificationMessage = String(detik);
-                needsRedraw = true;
-                drawScreen();
-                countdownBeep(detik);
-                unsigned long startTick = millis();
-                unsigned long waitDuration = (detik <= 3) ? 700 : 940;
-                while (millis() - startTick < waitDuration) {
-                    server.handleClient();
-                    feedGPS();
-                    vTaskDelay(pdMS_TO_TICKS(15));
-                }
-            }
-            exitCountdownActive = false;
+            runRelayCountdown(true);
 
             digitalWrite(PIN_RELAY, LOW); 
             relayOpen = false; 
@@ -4812,7 +5002,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             }
             return;
         } else if (activeKey == KEY_2) { 
-            if (selectedMenuIndex < 3) {
+            if (selectedMenuIndex < 4) {
                 selectedMenuIndex++; buzzTick(); needsRedraw = true;
             }
             return;
@@ -4837,6 +5027,9 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
                 currentState = STATE_WAIT_SPV_IN;
             } else if (selectedMenuIndex == 3) {
                 currentState = STATE_GEOFENCE;
+            } else if (selectedMenuIndex == 4) {
+                workerListFromMenu = true;
+                currentState = STATE_WORKER_LIST;
             }
             forceFullRedraw = true;
             needsRedraw = true;
@@ -5166,43 +5359,15 @@ void drawScreen() {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("SEMUA MEKANIK MASUK", 240, 72);
         int totalMekanik = countQueueMechanics();
-        int lastMechanicIndex = -1;
-        for (int index = safetyQueue.topIndex; index >= 0; --index) {
-            if (!isQueueSupervisor(index) && !isFuelmanRole(safetyQueue.workers[index].role)) {
-                lastMechanicIndex = index;
-                break;
-            }
-        }
-        if (lastMechanicIndex >= 0) {
-            WorkerInfo &lastMechanic = safetyQueue.workers[lastMechanicIndex];
-            const int16_t photoSize = 110;
-            tft.fillRect(24, 96, photoSize, photoSize, ELOTO_BG);
-            tft.drawRect(24, 96, photoSize, photoSize, TFT_WHITE);
-            if (!drawPhotoFromAPI(lastMechanic.uid, 24, 96, photoSize, photoSize, lastMechanic.sid)) {
-                drawPhotoPending(24, 96, photoSize);
-            }
-            tft.setTextDatum(TL_DATUM);
-            setStoryFont(9);
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            drawTextFit(lastMechanic.name, 154, 102, 300, TFT_WHITE, TFT_BLACK, 9);
-            tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-            drawTextFit("SID: " + formatSid(lastMechanic.sid), 154, 132, 300, TFT_LIGHTGREY, TFT_BLACK, 9);
-        }
-        if (totalMekanik > 0) {
-            tft.setTextDatum(TL_DATUM);
-            setStoryFont(9);
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            drawTextFit("TOTAL: " + String(totalMekanik) + " MEKANIK", 154, 166, 300, TFT_WHITE, TFT_BLACK, 9);
-            drawTextFit("SIAP MEMULAI PEKERJAAN", 154, 198, 300, TFT_LIGHTGREY, TFT_BLACK, 9);
-        } else {
-            tft.setTextDatum(MC_DATUM);
-            setStoryFont(12);
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.drawString("TOTAL: " + String(totalMekanik) + " MEKANIK TERDAFTAR", 240, 198);
-            setStoryFont(9);
-            tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-            tft.drawString("SIAP MEMULAI PEKERJAAN", 240, 226);
-        }
+        tft.fillRect(20, 92, 440, 90, ELOTO_BG);
+        drawMechanicIconRow(240, 138, totalMekanik);
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(12);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString("TOTAL: " + String(totalMekanik) + " MEKANIK TERDAFTAR", 240, 198);
+        setStoryFont(9);
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawString("SIAP MEMULAI PEKERJAAN", 240, 226);
         drawTftFooter("KEMBALI", "LANJUT");
     }
     else if (currentState == STATE_WORKER_LIST) {
@@ -5236,16 +5401,7 @@ void drawScreen() {
             drawTextFit(prefix + safetyQueue.workers[i].name, 22, rowY + 4, 290, nameColor, rowBgColor, 9);
             drawTextFit(role, 340, rowY + 4, 115, roleColor, rowBgColor, 9);
         }
-        const int16_t boxW = 320;
-        const int16_t boxH = 26;
-        const int16_t boxX = (480 - boxW) / 2;
-        const int16_t boxY = 220;
-        tft.fillRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_BG);
-        tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_DARK_RED);
-        setStoryFont(9);
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        tft.drawString("TEKAN PILIH UNTUK BUKA DETAIL", 240, boxY + (boxH / 2));
+        drawHintBox("TEKAN PILIH UNTUK BUKA DETAIL");
         drawTftFooterTriple("KEMBALI", "PILIH", "LANJUT");
     } 
     else if (currentState == STATE_WORKER_DETAIL && safetyQueue.topIndex >= 0) {
@@ -5291,10 +5447,11 @@ void drawScreen() {
             "1. KELUAR / SELESAI MAINTENANCE",
             "2. TAMBAH MEKANIK",
             "3. TAMBAH PENGAWAS",
-            "4. KONFIRMASI GEOFENCE / BLE"
+            "4. KONFIRMASI GEOFENCE / BLE",
+            "5. KEMBALI"
         };
         tft.setTextDatum(TL_DATUM);
-        for (uint8_t i = 0; i < 4; i++) {
+        for (uint8_t i = 0; i < 5; i++) {
             bool selected = (i == selectedMenuIndex);
             int rowY = 96 + i * 32;
             if (selected) {
@@ -5308,17 +5465,7 @@ void drawScreen() {
             tft.setTextColor(textColor, bgColor);
             tft.drawString(menuItems[i], 24, rowY + 6);
         }
-        const int16_t boxW = 320;
-        const int16_t boxH = 26;
-        const int16_t boxX = (480 - boxW) / 2;
-        const int16_t boxY = 220;
-        tft.fillRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_BG);
-        tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, ELOTO_DARK_RED);
-        setStoryFont(9);
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        tft.drawString("TEKAN OK UNTUK MEMILIH", 240, boxY + (boxH / 2));
-        drawTftFooterSingle("KEMBALI");
+        drawTftFooterSingle("");
     }
     else if (currentState == STATE_MEKANIK_OUT) {
         tft.setTextDatum(MC_DATUM);

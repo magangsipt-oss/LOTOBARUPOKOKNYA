@@ -8,6 +8,15 @@ import Avatar from '../components/Avatar';
 import BoxCard from '../components/BoxCard';
 import { escapeHtml, STATE_DESC, formatWaktuDowntime, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
 
+const BLE_EVENT_LABEL = {
+  TAG_BOUND: ['iTag diikat saat tap', 'text-blue-600'],
+  TAG_DETECTED: ['Terdeteksi kembali', 'text-green-600'],
+  TAG_LOST: ['Tidak terdeteksi', 'text-amber-600'],
+  TAG_NOT_FOUND: ['Tap tanpa iTag', 'text-slate-500'],
+  UNKNOWN_TAG: ['iTag tanpa tap muncul', 'text-red-600'],
+  UNKNOWN_TAG_GONE: ['iTag tanpa tap hilang', 'text-slate-500']
+};
+
 /**
  * Halaman Dashboard - Peta, Box Cards, Telemetri
  */
@@ -30,7 +39,7 @@ export default function Dashboard() {
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
     bukaModalUmum, bukaModalRadar,
     handleHapusRiwayatTapping,
-    lotoCompliance, lotoComplianceHistory,
+    lotoCompliance, lotoComplianceHistory, bleEvents,
   } = useApp();
 
   const isLiveTapPhotoVisible = isHwOnline &&
@@ -65,7 +74,12 @@ export default function Dashboard() {
   // server snapshot must remain visible even if the device heartbeat is late;
   // otherwise a successful RFID tap is incorrectly hidden as "no data".
   const complianceUnavailable = lotoCompliance.stale;
-  const countMismatch = !complianceUnavailable && Number(lotoCompliance.missing_count) > 0;
+  // Slot BLE dari box: nomor = urutan tap, iTag diikat saat tap.
+  const bleSlots = Array.isArray(lotoCompliance.slots) ? lotoCompliance.slots : null;
+  const unknownTags = Array.isArray(lotoCompliance.unknown_tags) ? lotoCompliance.unknown_tags : [];
+  const unidentifiedCount = complianceUnavailable ? 0 : (Number(lotoCompliance.unidentified_count) || 0);
+  const missingTotal = (Number(lotoCompliance.missing_count) || 0) + unidentifiedCount;
+  const countMismatch = !complianceUnavailable && missingTotal > 0;
   // BLE label follows tap order on the live device queue: first tap = BLE 1.
   const liveTapQueue = (() => {
     if (Array.isArray(hwData.queue)) return hwData.queue;
@@ -75,8 +89,9 @@ export default function Dashboard() {
     return [];
   })();
   const bleLabelBySid = {};
+  (bleSlots || []).forEach(slot => { if (slot.sid) bleLabelBySid[slot.sid] = slot.slot; });
   const assignBleLabel = sid => {
-    if (sid && sid !== '—' && !(sid in bleLabelBySid)) bleLabelBySid[sid] = Object.keys(bleLabelBySid).length + 1;
+    if (sid && sid !== '—' && !(sid in bleLabelBySid)) bleLabelBySid[sid] = Math.max(0, ...Object.values(bleLabelBySid)) + 1;
   };
   liveTapQueue.forEach(item => {
     const uid = typeof item === 'string' ? item : (item.uid || item.last_uid || '');
@@ -89,6 +104,19 @@ export default function Dashboard() {
     ...(Array.isArray(lotoCompliance.detected_sids) ? lotoCompliance.detected_sids : []),
     ...(Array.isArray(lotoCompliance.tapped_sids) ? lotoCompliance.tapped_sids : [])
   ])].sort((a, b) => (bleLabelBySid[a] ?? Infinity) - (bleLabelBySid[b] ?? Infinity));
+  const slotSids = new Set((bleSlots || []).map(slot => slot.sid).filter(Boolean));
+  const bleEventsTable = <table className="w-full text-left text-[11px] font-mono-tech">
+    <thead className="sticky top-0 bg-white"><tr className="border-b border-slate-200"><th className="p-2">Waktu</th><th className="p-2">BLE</th><th className="p-2">Personel / iTag</th><th className="p-2">Kejadian</th></tr></thead>
+    <tbody>{(bleEvents || []).length > 0 ? bleEvents.map(event => {
+      const [label, color] = BLE_EVENT_LABEL[event.event] || [event.event, 'text-slate-600'];
+      return <tr key={event.id} className="border-b border-slate-100">
+        <td className="p-2 whitespace-nowrap">{new Date(event.created_at).toLocaleString('id-ID')}</td>
+        <td className="p-2 font-black">{event.slot ? `BLE ${event.slot}` : '—'}</td>
+        <td className="p-2">{event.sid ? <>{event.nama || getUserProfile(event.sid).nama}<span className="block text-[9px] text-slate-500">{event.sid}</span></> : <span className="text-slate-500">{event.ble_mac || '—'}</span>}</td>
+        <td className={`p-2 font-bold ${color}`}>{label}</td>
+      </tr>;
+    }) : <tr><td colSpan="4" className="p-4 text-center text-slate-400 italic">Belum ada riwayat BLE</td></tr>}</tbody>
+  </table>;
 
   // Riwayat Refueling
   const [refuelingLogs, setRefuelingLogs] = useState([]);
@@ -279,7 +307,12 @@ export default function Dashboard() {
         {/* BLE LOTO COMPLIANCE CARD */}
         <div onClick={() => {
           bukaModalUmum('BLE LOTO Compliance', 'fa-shield-halved', <div className="space-y-3">
-            <p>{complianceUnavailable ? 'Data BLE belum tersedia atau sudah kedaluwarsa.' : `BLE Detected: ${lotoCompliance.ble_detected_count || 0}; Sudah LOTO: ${lotoCompliance.loto_tapped_count || 0}; Belum: ${lotoCompliance.missing_count || 0}`}</p>
+            <p>{complianceUnavailable ? 'Data BLE belum tersedia atau sudah kedaluwarsa.' : `BLE Detected: ${lotoCompliance.ble_detected_count || 0}; Sudah LOTO: ${lotoCompliance.loto_tapped_count || 0}; Belum: ${missingTotal}`}</p>
+            {!complianceUnavailable && unidentifiedCount > 0 && (
+              <div className="bg-red-50 border border-red-300 rounded-lg p-2 text-xs font-bold text-red-700">
+                {unidentifiedCount} iTag terdeteksi tanpa tap kartu: {unknownTags.join(', ')}
+              </div>
+            )}
             {!complianceUnavailable && lotoCompliance.missing_sids && lotoCompliance.missing_sids.length > 0 && (
               <div className="bg-red-50 border border-red-300 rounded-lg p-2">
                 <p className="text-xs font-bold text-red-700">Mekanik Belum Apply LOTO:</p>
@@ -292,8 +325,10 @@ export default function Dashboard() {
                 <ul className="list-disc list-inside text-xs text-green-700">{lotoCompliance.tapped_sids.map((sid, i) => <li key={i}>{sid}</li>)}</ul>
               </div>
             )}
+            <p className="text-xs font-bold text-slate-700">Riwayat BLE:</p>
+            <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-lg">{bleEventsTable}</div>
             <table className="w-full text-left"><thead><tr><th>Waktu</th><th>BLE Detected</th><th>Sudah LOTO</th><th>Belum</th></tr></thead>
-              <tbody>{lotoComplianceHistory.map((row, index) => <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.ble_detected_count}</td><td>{row.loto_tapped_count}</td><td className={row.missing_count > 0 ? 'font-bold text-red-600' : ''}>{row.missing_count}</td></tr>)}</tbody>
+              <tbody>{lotoComplianceHistory.map((row, index) => { const belum = (row.missing_count || 0) + (row.unidentified_count || 0); return <tr key={row.id || index}><td>{new Date(row.created_at).toLocaleString('id-ID')}</td><td>{row.ble_detected_count}</td><td>{row.loto_tapped_count}</td><td className={belum > 0 ? 'font-bold text-red-600' : ''}>{belum}</td></tr>; })}</tbody>
             </table>
           </div>);
         }} className={`bg-white border p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98] ${countMismatch ? 'border-red-500 bg-red-50' : 'border-gray-200'}`}>
@@ -305,7 +340,7 @@ export default function Dashboard() {
               <span className="text-green-600">{complianceUnavailable ? '—' : (lotoCompliance.loto_tapped_count || 0)}</span>
             </h3>
             <p className="text-[9px] text-slate-400">BLE Detected / Sudah LOTO</p>
-            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ {lotoCompliance.missing_count} mekanik belum apply LOTO!</p>}
+            {countMismatch && <p role="alert" className="mt-1 text-[10px] font-black text-red-600">⚠ {missingTotal} personel belum apply LOTO!</p>}
           </div>
           <div className={`w-10 h-10 rounded-full flex items-center justify-center ${complianceUnavailable ? 'bg-slate-100' : countMismatch ? 'bg-red-100' : 'bg-green-100'}`}>
             <i className={`fa-solid fa-shield-halved text-lg ${complianceUnavailable ? 'text-slate-500' : countMismatch ? 'text-red-600' : 'text-green-600'}`}></i>
@@ -359,7 +394,7 @@ export default function Dashboard() {
                 </div>
                 <div className={`text-center p-3 rounded-xl bg-white border ${countMismatch ? 'border-red-400' : 'border-slate-200'}`}>
                   <p className={`text-[9px] font-bold uppercase ${countMismatch ? 'text-red-600' : 'text-slate-500'}`}>Belum LOTO</p>
-                  <p className={`text-2xl font-black ${countMismatch ? 'text-red-600 animate-pulse' : 'text-slate-400'}`}>{complianceUnavailable ? '—' : (lotoCompliance.missing_count || 0)}</p>
+                  <p className={`text-2xl font-black ${countMismatch ? 'text-red-600 animate-pulse' : 'text-slate-400'}`}>{complianceUnavailable ? '—' : missingTotal}</p>
                 </div>
               </div>
               {/* Detail table */}
@@ -377,7 +412,43 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {!complianceUnavailable && complianceSids.length > 0 ? (
+                      {!complianceUnavailable && bleSlots && (bleSlots.length > 0 || unknownTags.length > 0) ? (
+                        <>
+                          {bleSlots.map(slot => {
+                            const bleStatus = slot.pending ? ['Menunggu iTag', 'text-amber-600']
+                              : !slot.mac ? ['Tanpa iTag', 'text-slate-400']
+                              : slot.present ? [`Terdeteksi${slot.rssi != null ? ` (${slot.rssi} dBm)` : ''}`, 'text-blue-600']
+                              : ['Tidak terdeteksi', 'text-slate-400'];
+                            return (
+                              <tr key={`slot-${slot.slot}`} className="border-b border-slate-100 bg-green-50/50">
+                                <td className="p-2 font-black whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px]">BLE {slot.slot}</span></td>
+                                <td className="p-2"><span className="text-green-600 font-bold">✅ SUDAH LOTO</span></td>
+                                <td className="p-2 font-bold">{slot.sid || slot.uid || '—'}<span className="block text-[9px] font-normal text-slate-500 truncate max-w-[140px]">{getUserProfile(slot.sid || slot.uid).nama}</span></td>
+                                <td className={`p-2 ${bleStatus[1]}`}>{bleStatus[0]}</td>
+                                <td className="p-2">✅ Tapped</td>
+                              </tr>
+                            );
+                          })}
+                          {(lotoCompliance.missing_sids || []).filter(sid => !slotSids.has(sid)).map(sid => (
+                            <tr key={`missing-${sid}`} className="border-b border-slate-100 bg-red-50">
+                              <td className="p-2 text-slate-400">—</td>
+                              <td className="p-2"><span className="text-red-600 font-bold">❌ BELUM</span></td>
+                              <td className="p-2 font-bold">{sid}<span className="block text-[9px] font-normal text-slate-500 truncate max-w-[140px]">{getUserProfile(sid).nama}</span></td>
+                              <td className="p-2 text-blue-600">BLE Active</td>
+                              <td className="p-2">❌ Belum</td>
+                            </tr>
+                          ))}
+                          {unknownTags.map(tagMac => (
+                            <tr key={`unknown-${tagMac}`} className={`border-b border-slate-100 ${unidentifiedCount > 0 ? 'bg-red-50' : 'bg-amber-50'}`}>
+                              <td className="p-2 text-slate-400">?</td>
+                              <td className="p-2"><span className={`font-bold ${unidentifiedCount > 0 ? 'text-red-600' : 'text-amber-600'}`}>{unidentifiedCount > 0 ? '❌ BELUM TAP' : '⚠ CEK MANUAL'}</span></td>
+                              <td className="p-2 font-bold">iTag tak dikenal<span className="block text-[9px] font-normal text-slate-500">{tagMac}</span></td>
+                              <td className="p-2 text-blue-600">Terdeteksi</td>
+                              <td className="p-2">❌ Belum</td>
+                            </tr>
+                          ))}
+                        </>
+                      ) : !complianceUnavailable && complianceSids.length > 0 ? (
                         complianceSids.map((sid, i) => {
                           const hasBleTag = lotoCompliance.detected_sids?.includes(sid);
                           const hasTapped = lotoCompliance.tapped_sids?.includes(sid);
@@ -415,12 +486,14 @@ export default function Dashboard() {
                     </tbody>
                   </table>
                 </div>
+                <p className="text-[10px] font-bold uppercase text-slate-500 mt-4 mb-2">Riwayat BLE:</p>
+                <div className="overflow-x-auto max-h-[180px] overflow-y-auto bg-white rounded-lg border border-slate-200">{bleEventsTable}</div>
               </div>
               {/* Alert bar */}
               {countMismatch && (
                 <div className="bg-red-600 text-white px-4 py-2 text-xs font-bold flex items-center gap-2">
                   <i className="fa-solid fa-triangle-exclamation"></i>
-                  PERINGATAN: {lotoCompliance.missing_count} mekanik belum apply LOTO! Segera verifikasi!
+                  PERINGATAN: {missingTotal} personel belum apply LOTO{unidentifiedCount > 0 ? ` (${unidentifiedCount} iTag tanpa tap kartu)` : ''}! Segera verifikasi!
                 </div>
               )}
             </div>

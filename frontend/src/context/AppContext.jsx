@@ -16,7 +16,8 @@ import {
 
 import { AppContext } from './AppState';
 
-const COMPLIANCE_MAX_AGE_MS = 30000;
+// Box mengirim heartbeat BLE tiap 15 detik; toleransi satu laporan tertunda.
+const COMPLIANCE_MAX_AGE_MS = 45000;
 const TELEMETRY_MAX_AGE_MS = 90000;
 const emptyCompliance = () => ({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
 const boxKey = value => String(value ?? '').trim().toLowerCase();
@@ -70,6 +71,7 @@ export function AppProvider({ children }) {
   const [deletedAuditIds, setDeletedAuditIds] = useState([]);
   const [lotoCompliance, setLotoCompliance] = useState(emptyCompliance);
   const [lotoComplianceHistory, setLotoComplianceHistory] = useState([]);
+  const [bleEvents, setBleEvents] = useState([]);
   const [bleTags, setBleTags] = useState([]);
 
   const [toast, setToast] = useState({ show: false, msg: '', type: '' });
@@ -313,6 +315,12 @@ export function AppProvider({ children }) {
         if (isCurrent()) setLotoComplianceHistory(Array.isArray(result.data) ? result.data : []);
       } catch {
         if (isCurrent()) setLotoComplianceHistory([]);
+      }
+      try {
+        const events = await logService.getBleEvents(reportBoxId, 50);
+        if (isCurrent()) setBleEvents(Array.isArray(events.data) ? events.data : []);
+      } catch {
+        if (isCurrent()) setBleEvents([]);
       } finally { historyPending = false; }
     };
     refreshCompliance();
@@ -466,6 +474,7 @@ export function AppProvider({ children }) {
           selectedBoxIdRef.current = boksTerbaru.id;
           setLotoCompliance(emptyCompliance());
           setLotoComplianceHistory([]);
+          setBleEvents([]);
         }
 
         if (boksTerbaru) {
@@ -489,6 +498,7 @@ export function AppProvider({ children }) {
           setHwData(boxHardwareSnapshot(null));
           setLotoCompliance(emptyCompliance());
           setLotoComplianceHistory([]);
+          setBleEvents([]);
         }
       } catch {
         if (active && Date.now() - lastPollSuccessAt >= POLL_FAILURE_GRACE_MS) {
@@ -521,6 +531,7 @@ export function AppProvider({ children }) {
   const handleSelectBox = useCallback((box) => {
     setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
     setLotoComplianceHistory([]);
+    setBleEvents([]);
     selectedBoxIdRef.current = box.id;
     setSelectedBox(box);
     setIsHwOnline(boxIsOnline(box));
@@ -556,6 +567,7 @@ export function AppProvider({ children }) {
         setHwData(boxHardwareSnapshot(savedBox));
         setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
         setLotoComplianceHistory([]);
+        setBleEvents([]);
         const wasEditing = Boolean(editingBoxId);
         setEditingBoxId('');
         setFormAlatBerat({ id: '', unit: '', ip: '', lat: '', lng: '' });
@@ -589,6 +601,7 @@ export function AppProvider({ children }) {
             setHwData(boxHardwareSnapshot(sisaBox[0]));
             setLotoCompliance({ ble_detected_count: null, loto_tapped_count: null, missing_count: null, detected_sids: [], tapped_sids: [], missing_sids: [], stale: true });
             setLotoComplianceHistory([]);
+            setBleEvents([]);
             selectedBoxIdRef.current = sisaBox[0] ? sisaBox[0].id : null;
           }
           pemicuToast(hasil.message || 'Boks dihapus', "ok");
@@ -1122,7 +1135,7 @@ export function AppProvider({ children }) {
     logPemeliharaan, setLogPemeliharaan,
     rfidBufferList, setRfidBufferList,
     tappingHistory, setTappingHistory,
-    lotoCompliance, lotoComplianceHistory, bleTags, setBleTags,
+    lotoCompliance, lotoComplianceHistory, bleEvents, bleTags, setBleTags,
     localAuditLog, setLocalAuditLog,
     deletedAuditIds, setDeletedAuditIds,
     downtimeSeconds, isTrackingDowntime,

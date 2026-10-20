@@ -19,8 +19,8 @@ async function invoke(method, body, extra = {}) {
   return res;
 }
 
-function presenceFixture({ session = 7, boxExists = true, tags = [], queue = [], users = [], failSnapshot = false } = {}) {
-  const state = { queries: [], connections: 0, commits: 0, rollbacks: 0, releases: 0 };
+function presenceFixture({ session = 7, boxExists = true, tags = [], queue = [], users = [], failSnapshot = false, previous = null } = {}) {
+  const state = { queries: [], connections: 0, commits: 0, rollbacks: 0, releases: 0, events: [], snapshot: null };
   pool.getConnection = async () => {
     state.connections++;
     return {
@@ -52,8 +52,17 @@ function presenceFixture({ session = 7, boxExists = true, tags = [], queue = [],
             return { sid: user?.sid ?? null };
           })];
         }
+        if (sql.startsWith('SELECT session_id, slots, unknown_tags FROM loto_compliance')) {
+          assert.deepEqual(args, ['BOX-1']);
+          return [previous ? [previous] : []];
+        }
+        if (sql.startsWith('INSERT INTO ble_events')) {
+          state.events.push(...args[0]);
+          return [{ affectedRows: args[0].length }];
+        }
         if (sql.startsWith('INSERT INTO loto_compliance')) {
           if (failSnapshot) throw new Error('simulated storage failure');
+          state.snapshot = args;
           return [{ affectedRows: 1 }];
         }
         throw new Error(`Unexpected fixture query: ${sql}`);
@@ -403,4 +412,64 @@ test('BLE presence history is scoped to the box, resolves tag owners, and caps r
     })).statusCode, 400);
   }
   assert.equal(statements.length, 1);
+});
+
+test('tap-order BLE slots count bound iTags as tapped and flag tags nobody tapped for', async () => {
+  const state = presenceFixture({ users: [{ sid: 'SPV1', rfid_uid: 'U1' }, { sid: 'MEK1', rfid_uid: 'U2' }] });
+  const res = await invoke('reportPresence', {
+    id_box: 'BOX-1',
+    ble_tags: [mac, secondMac],
+    ble_slots: [
+      { slot: 1, sid: 'SPV1', uid: 'U1', mac, present: true, pending: false, rssi: -50 },
+      { slot: 2, sid: 'MEK1', uid: 'U2', mac: null, present: false, pending: false }
+    ]
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.data.detected_sids, ['SPV1']);
+  assert.deepEqual(res.body.data.tapped_sids, ['SPV1', 'MEK1']);
+  assert.equal(res.body.data.missing_count, 0);
+  assert.deepEqual(res.body.data.unknown_tags, [secondMac]);
+  // MEK1 tapped without an iTag, so one unknown tag may be theirs: not yet a violation.
+  assert.equal(res.body.data.unidentified_count, 0);
+  assert.deepEqual(state.events.map(row => row.slice(2)), [[1, 'SPV1', mac, 'TAG_BOUND'], [2, 'MEK1', null, 'TAG_NOT_FOUND'], [null, null, secondMac, 'UNKNOWN_TAG']]);
+  assert.equal(JSON.parse(state.snapshot[8])[0].slot, 1);
+});
+
+test('an extra iTag beyond untagged taps is unidentified, and only changes are logged', async () => {
+  const slots = [{ slot: 1, sid: 'SPV1', uid: 'U1', mac, present: true, pending: false, rssi: -50 }];
+  const state = presenceFixture({ previous: { session_id: 7, slots: JSON.stringify(slots), unknown_tags: '[]' } });
+  const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [mac, secondMac], ble_slots: slots });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.unidentified_count, 1);
+  assert.deepEqual(state.events.map(row => row.slice(2)), [[null, null, secondMac, 'UNKNOWN_TAG']]);
+});
+
+test('a lost bound iTag is logged once and pending bindings suppress unidentified warnings', async () => {
+  const before = [{ slot: 1, sid: 'SPV1', mac, present: true, pending: false }];
+  const state = presenceFixture({ previous: { session_id: 7, slots: JSON.stringify(before), unknown_tags: '[]' } });
+  const res = await invoke('reportPresence', {
+    id_box: 'BOX-1',
+    ble_tags: [secondMac],
+    ble_slots: [{ slot: 1, sid: 'SPV1', mac, present: false }, { slot: 2, sid: 'MEK1', mac: null, pending: true }]
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.unidentified_count, 0);
+  assert.deepEqual(state.events.map(row => row.slice(2)), [[1, 'SPV1', mac, 'TAG_LOST'], [null, null, secondMac, 'UNKNOWN_TAG']]);
+});
+
+test('malformed BLE slots are rejected before touching the database', async () => {
+  for (const ble_slots of [[{ slot: 0 }], [{ slot: 1 }, { slot: 1 }], [{ slot: 1, mac: 'bad' }], [{ slot: 1, present: 'yes' }], 'x']) {
+    pool.getConnection = async () => { throw new Error('must not connect'); };
+    const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [], ble_slots });
+    assert.equal(res.statusCode, 400, JSON.stringify(ble_slots));
+  }
+});
+
+test('BLE event history is scoped to the box and caps its limit', async () => {
+  let captured;
+  pool.query = async (sql, args) => { captured = [sql, args]; return [[{ id: 1, event: 'TAG_BOUND' }]]; };
+  const res = await invoke('getBleEvents', undefined, { params: { idBox: 'BOX-1' }, query: { limit: '999' } });
+  assert.equal(res.statusCode, 200);
+  assert.match(captured[0], /FROM ble_events e/);
+  assert.deepEqual(captured[1], ['BOX-1', 200]);
 });
