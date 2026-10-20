@@ -618,7 +618,6 @@ bool rfidTapArmed = true;
 unsigned long lastRfidFrameMillis = 0;
 const uint32_t RFID_REMOVAL_GAP_MS = 250;
 // Tap memakai daftar personel hasil sinkron VPS bila sinkron terakhir masih sesegar ini.
-const uint32_t TAP_CACHE_MAX_AGE_MS = 300000;
 volatile uint32_t lastUserSyncOkAt = 0;
 
 bool startupSyncPending = true;
@@ -4031,9 +4030,9 @@ WorkerInfo fetchCardDataAPI(String uid) {
 // menunggu HTTPS. Kartu tak dikenal atau cache yang basi tetap diverifikasi ke backend.
 WorkerInfo lookupCardForTap(String uid) {
     String cleanUid = normalizeRfidUid(uid);
-    bool cacheFresh = lastUserSyncOkAt != 0 &&
-        uint32_t(millis() - lastUserSyncOkAt) <= TAP_CACHE_MAX_AGE_MS;
-    if (cacheFresh) {
+    // Kartu yang sudah dikenal langsung diterima dari cache lokal (sinkron tiap 60 detik + perintah dashboard),
+    // agar tap tidak menunggu HTTPS. Backend hanya dipakai untuk kartu yang belum ada di cache.
+    {
         String decPadded = hexToDecStringPadded(cleanUid);
         String decUnpadded = hexToDecStringUnpadded(cleanUid);
         for (int i = 0; i < ramUserCount; ++i) {
@@ -4057,6 +4056,23 @@ WorkerInfo lookupCardForTap(String uid) {
                 }
                 return card;
             }
+        }
+    }
+    if (sdCardMounted) {
+        WorkerInfo sdCard = searchUserFromSDCard(cleanUid);
+        if (sdCard.isRegistered) {
+            sdCard.uid = cleanUid;
+            sdCard.role = normalizeUserRole(sdCard.role);
+            sdCard.isSpv = checkIsSupervisorRole(sdCard.role);
+            sdCard.lookupUnavailable = false;
+            sdCard.offlineFallbackAllowed = false;
+            Serial.printf("[RFID] SD cache verification uid=%s sid=%s role=%s\n",
+                sdCard.uid.c_str(), sdCard.sid.c_str(), sdCard.role.c_str());
+            if (photoSyncMutex && xSemaphoreTake(photoSyncMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                photoDisplayRequestedUid = cleanUid;
+                xSemaphoreGive(photoSyncMutex);
+            }
+            return sdCard;
         }
     }
     return fetchCardDataAPI(uid);
@@ -4302,8 +4318,13 @@ void logAuditAsync(String event, String uid) {
 // Proses hasil tap sesuai state dan hak personel.
 void processRfidLogic(String uid) {
     uid = normalizeRfidUid(uid);
+    String previousScannedUID = lastScannedUID;
+    String previousScannedSID = lastScannedSID;
     lastScannedUID = uid;
     SystemState operationalState = currentState;
+    // Pengawas & mekanik hanya bisa tap di layar tapping masuk/keluar. Refueling bisa di semua layar.
+    bool lotoTapScreen = operationalState == STATE_WAIT_SPV_IN || operationalState == STATE_MEKANIK_IN ||
+        operationalState == STATE_MEKANIK_OUT || operationalState == STATE_WAIT_SPV_OUT;
     stateBeforeNotification = operationalState;
     
     // Verifikasi kartu existing ke backend online atau ke SD saat offline.
@@ -4359,6 +4380,10 @@ void processRfidLogic(String uid) {
     }
 
     if (!card.isRegistered && card.lookupUnavailable) {
+        if (!lotoTapScreen) {
+            lastScannedUID = previousScannedUID;
+            return;
+        }
         buzzFailed();
         displayErrorCardPopup(uid, "SERVER TIDAK SIAP", "", "", "", "KARTU BELUM DAPAT DIVERIFIKASI");
         return;
@@ -4370,6 +4395,14 @@ void processRfidLogic(String uid) {
         stateToString(operationalState).c_str(), workerIdx);
     
     if (handleFuelmanTap(uid, card)) return;
+
+    if (!lotoTapScreen) {
+        Serial.printf("[RFID] Ignored tap outside LOTO tap screens state=%s uid=%s role=%s\n",
+            stateToString(operationalState).c_str(), uid.c_str(), card.role.c_str());
+        lastScannedUID = previousScannedUID;
+        lastScannedSID = previousScannedSID;
+        return;
+    }
 
     if (!card.isRegistered || card.name == "UNKNOWN" || card.name == "Tidak Terdaftar") {
         buzzFailed();
@@ -4388,68 +4421,6 @@ void processRfidLogic(String uid) {
     }
     
     switch (operationalState) {
-        case STATE_WELCOME:
-        case STATE_BOOT_IP:
-        case STATE_IDLE:
-        case STATE_SHOW_IP:
-        case STATE_SYSTEM_READY:
-        case STATE_SYSTEM_READY_FINAL:
-            // Smart Quick-Tap: Jika Pengawas tap di layar Standby/Welcome, langsung inisialisasi & buka sesi LOTO
-            if (card.isSpv || checkIsSupervisorRole(card.role)) {
-                bool firstSupervisor = supervisorUID.length() == 0;
-                if (firstSupervisor) {
-                    supervisorUID = uid;
-                    supervisorName = card.name;
-                    supervisorRole = "PENGAWAS";
-                }
-
-                relayOpen = true;
-                saveSessionToSD();
-                delay(50);
-                relayPulseActive = true;
-                digitalWrite(PIN_RELAY, HIGH);
-                logAuditAsync("LOCK_INITIALIZED", uid);
-
-                isSessionActive = true;
-                sessionStartTime = millis();
-
-                digitalWrite(PIN_RELAY, LOW);
-                relayOpen = false;
-                delay(50);
-                relayPulseActive = false;
-                clearRfidBuffer();
-
-                if (!pushQueue(uid, card.sid, card.name, "PENGAWAS")) {
-                    if (firstSupervisor) {
-                        supervisorUID = ""; supervisorName = ""; supervisorRole = "";
-                    }
-                    buzzFailed();
-                    displayErrorCardPopup(uid, "ANTREAN PENUH", card.name, card.role, card.sid, "BATAS PERSONEL SUDAH TERCAPAI");
-                    break;
-                }
-
-                buzzSuccess();
-                logAuditAsync("SUPERVISOR_LOCK_IN", uid);
-                selectedFooterAction = 1;
-                currentState = STATE_SUPERVISOR_VALID;
-                displayCardNotification(uid, card.name, "PENGAWAS", "PENGAWAS MASUK", true);
-            } else {
-                buzzFailed();
-                displayErrorCardPopup(uid, "BUKAN PENGAWAS", card.name, card.role, card.sid, "PENGAWAS HARUS LOCK-IN DAHULU");
-            }
-            break;
-
-        case STATE_SUPERVISOR_VALID:
-        case STATE_SET_MEKANIK_COUNT:
-            Serial.printf("[RFID] Rejected tap before mechanic quota state=%s uid=%s\n",
-                stateToString(operationalState).c_str(), uid.c_str());
-            buzzFailed();
-            displayErrorCardPopup(uid, "TAP BELUM DIBUKA", card.name, card.role, card.sid,
-                operationalState == STATE_SUPERVISOR_VALID
-                    ? "TEKAN LANJUT DAHULU"
-                    : "PILIH JUMLAH MEKANIK");
-            break;
-
         case STATE_WAIT_SPV_IN:
             if (card.isSpv || checkIsSupervisorRole(card.role)) {
                 bool firstSupervisor = supervisorUID.length() == 0;
@@ -6032,21 +6003,8 @@ void loop() {
         }
     }
     
-    bool rfidInputEnabled = (
-        currentState == STATE_WELCOME ||
-        currentState == STATE_BOOT_IP ||
-        currentState == STATE_IDLE ||
-        currentState == STATE_SHOW_IP ||
-        currentState == STATE_SYSTEM_READY ||
-        currentState == STATE_SYSTEM_READY_FINAL ||
-        currentState == STATE_SUPERVISOR_VALID ||
-        currentState == STATE_SET_MEKANIK_COUNT ||
-        currentState == STATE_WAIT_SPV_IN ||
-        currentState == STATE_MEKANIK_IN ||
-        currentState == STATE_WAIT_SPV_OUT ||
-        currentState == STATE_MEKANIK_OUT ||
-        currentState == STATE_REGISTER_RFID
-    );
+    // Semua layar menerima kartu (refueling di mana saja); processRfidLogic membatasi pengawas/mekanik.
+    bool rfidInputEnabled = currentState != STATE_COUNTDOWN && currentState != STATE_MAINTENANCE_DONE;
 
     // Pembacaan RFID dengan Debounce & Cooldown Anti-Spam
     String authUID = checkRfidSensor();
