@@ -5,6 +5,7 @@ const router = express.Router();
 
 router.get('/', DOPPlanController.getAll);
 router.post('/', DOPPlanController.create);
+router.put('/:id', DOPPlanController.complete);
 router.delete('/:id', DOPPlanController.delete);
 
 export default router;

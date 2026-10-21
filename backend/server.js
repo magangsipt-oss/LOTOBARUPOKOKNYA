@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import pool, { testConnection } from './config/database.js';
+import { closeAll } from './realtime.js';
 
 async function start() {
   const app = createApp();
@@ -26,6 +27,7 @@ async function start() {
     if (closing) return;
     closing = true;
     const timer = setTimeout(() => process.exit(1), 10000).unref();
+    closeAll();
     server.close(async () => { await pool.end(); clearTimeout(timer); process.exit(0); });
   };
   process.on('SIGTERM', shutdown);

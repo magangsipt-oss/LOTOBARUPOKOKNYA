@@ -29,7 +29,8 @@ test('accepted card taps are posted with the box ID and stored as tapping histor
 
 test('dashboard refreshes refueling history while it remains open', () => {
   assert.match(dashboardPage, /fetchRefuelingLogs\(\);\s*const interval = setInterval\(fetchRefuelingLogs, 4000\)/);
-  assert.match(dashboardPage, /return \(\) => \{ active = false; clearInterval\(interval\); \};/);
+  assert.match(dashboardPage, /const stopLive = subscribeLive\(fetchRefuelingLogs\);/);
+  assert.match(dashboardPage, /return \(\) => \{ active = false; clearInterval\(interval\); stopLive\(\); \};/);
 });
 
 test('second tap by the active fuelman ends refueling and reports REFUEL_END', () => {

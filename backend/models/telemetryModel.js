@@ -1,5 +1,6 @@
 import pool from '../config/database.js';
 import { normalizeState, eventType, isTap } from '../domain/telemetry.js';
+import { syncSessionDraft } from './dopPlanModel.js';
 
 export async function recordTelemetry(idBox, body) {
   const c = await pool.getConnection();
@@ -50,6 +51,15 @@ export async function recordTelemetry(idBox, body) {
       if (body.queue) {
         await c.query('DELETE FROM queue WHERE id_box = ?', [idBox]);
         for (const worker of body.queue) await c.query('INSERT INTO queue (id_box, session_id, rfid_uid) VALUES (?, ?, ?)', [idBox, session, worker.uid]);
+        if (session != null) {
+          // Draft DOP otomatis tidak boleh menggagalkan telemetri box (mis. migrasi belum dijalankan).
+          await c.query('SAVEPOINT dop_draft');
+          try { await syncSessionDraft(c, { idBox, session, unit: box.unit }); }
+          catch (error) {
+            await c.query('ROLLBACK TO SAVEPOINT dop_draft');
+            console.error('DOP draft sync failed:', error.code || error.message);
+          }
+        }
       }
     }
     if (event !== 'HEARTBEAT_SYNC') await c.query('INSERT INTO audit_logs (id_box, event, rfid_uid, lat, lng, tanggal) VALUES (?, ?, ?, ?, ?, NOW())', [idBox, event, uid, lat ?? 0, lng ?? 0]);

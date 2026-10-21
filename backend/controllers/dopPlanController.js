@@ -49,6 +49,21 @@ const DOPPlanController = {
     }
   },
 
+  // Melengkapi draft DOP otomatis dari sesi box (atau mengoreksi DOP yang sudah ada).
+  complete: async (req, res) => {
+    try {
+      const id = parseId(req.params.id);
+      const payload = validateDOPPlanPayload(req.body?.data);
+      const row = await DOPPlanModel.complete(id, payload);
+      if (!row) {
+        return res.status(404).json({ success: false, message: 'Data DOP tidak ditemukan.' });
+      }
+      return res.status(200).json({ success: true, data: formatDOPPlan(row) });
+    } catch (error) {
+      return errorResponse(res, error, 'completeDOPPlan');
+    }
+  },
+
   delete: async (req, res) => {
     try {
       const id = parseId(req.params.id);

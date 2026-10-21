@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import dopPlanService from '../services/dopPlanService';
+import { subscribeLive } from '../services/live';
 
 export default function DOPPlan() {
   const frameRef = useRef(null);
@@ -18,6 +19,9 @@ export default function DOPPlan() {
           result = await dopPlanService.getAll();
         } else if (request.action === 'create' && request.data && typeof request.data === 'object') {
           result = await dopPlanService.create(request.data);
+        } else if (request.action === 'complete' && Number.isSafeInteger(request.idValue) &&
+            request.data && typeof request.data === 'object') {
+          result = await dopPlanService.complete(request.idValue, request.data);
         } else if (request.action === 'delete' && Number.isSafeInteger(request.idValue)) {
           result = await dopPlanService.delete(request.idValue);
         } else {
@@ -41,7 +45,11 @@ export default function DOPPlan() {
 
     window.addEventListener('message', handleMessage);
     if (frameLoadedRef.current) startFrame();
-    return () => window.removeEventListener('message', handleMessage);
+    // Draft DOP baru dari box langsung muncul tanpa reload halaman.
+    const stopLive = subscribeLive(() => {
+      if (frameLoadedRef.current) frameRef.current?.contentWindow?.postMessage({ type: 'eloto-dop-refresh' }, '*');
+    });
+    return () => { window.removeEventListener('message', handleMessage); stopLive(); };
   }, []);
 
   return (

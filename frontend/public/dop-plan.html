@@ -162,7 +162,7 @@
             <i data-lucide="file-signature" class="w-6 h-6 text-white"></i>
           </div>
           <div>
-            <h3 class="text-lg font-black tracking-wide shadow-black/10 drop-shadow-sm">Formulir Input DOP</h3>
+            <h3 id="modal-title" class="text-lg font-black tracking-wide shadow-black/10 drop-shadow-sm">Formulir Input DOP</h3>
             <p class="text-xs text-red-100 font-medium">Pengisian Urut (Kolom 1 - 14) Sesuai Dokumen F-HSE-201</p>
           </div>
         </div>
@@ -419,6 +419,8 @@
     ];
 
     let dopData = [];
+    // ID draft DOP otomatis yang sedang dilengkapi pengawas (null = input DOP baru).
+    let editingId = null;
 
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -445,6 +447,10 @@
             loadDOPPlans();
             return;
         }
+        if (event.data?.type === 'eloto-dop-refresh') {
+            loadDOPPlans(true);
+            return;
+        }
         if (event.data?.type !== 'eloto-dop-response') return;
         const pending = pendingRequests.get(event.data.id);
         if (!pending) return;
@@ -460,16 +466,18 @@
         status.className = `text-xs font-semibold ${isError ? 'text-red-700' : 'text-slate-600'}`;
     }
 
-    async function loadDOPPlans() {
-        setDOPStatus('Memuat data DOP dari server...');
+    async function loadDOPPlans(silent = false) {
+        if (!silent) setDOPStatus('Memuat data DOP dari server...');
         try {
             const result = await requestParent('list');
             if (!Array.isArray(result)) throw new Error('Format data DOP dari server tidak valid.');
             dopData = result;
             renderTable();
-            setDOPStatus(`${dopData.length} data DOP tersinkron dengan server.`);
+            const drafts = dopData.filter(item => item.status === 'DRAFT').length;
+            setDOPStatus(`${dopData.length} data DOP tersinkron dengan server.` +
+                (drafts ? ` ${drafts} draft dari sesi maintenance menunggu dilengkapi pengawas.` : ''));
         } catch (error) {
-            setDOPStatus(error.message, true);
+            if (!silent) setDOPStatus(error.message, true);
         }
     }
 
@@ -503,7 +511,12 @@
         
         dopData.forEach((item) => {
             const tr = document.createElement('tr');
-            tr.className = 'hover:bg-amber-50/30 transition-colors border-b border-slate-400 group';
+            const isDraft = item.status === 'DRAFT';
+            tr.className = `${isDraft ? 'bg-amber-50' : ''} hover:bg-amber-50/30 transition-colors border-b border-slate-400 group`;
+            const draftBadge = isDraft ? `<div class="mt-1 inline-block bg-amber-100 border border-amber-300 text-amber-800 px-1.5 py-0.5 rounded text-[9px] font-black uppercase">Draft ${escapeHtml(item.idBox || '')}</div>` : '';
+            const personelText = Array.isArray(item.personel) && item.personel.length
+                ? `<span class="text-[9px] text-slate-600 block mt-1"><b>Personel:</b> ${item.personel.map(p => escapeHtml(p.nama)).join(', ')}</span>`
+                : '';
             
             const unitsText = item.fleetUnits && item.fleetUnits.length > 0 ? escapeHtml(item.fleetUnits.join(', ')) : '-';
             const fotoBadge = item.foto ? `<br><span class="inline-flex mt-1 items-center gap-1 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[9px] border border-blue-200"><i data-lucide="image" class="w-3 h-3"></i> Ada Foto</span>` : '';
@@ -517,11 +530,12 @@
                 <!-- 1-13 Standard Cols -->
                 <td class="border border-slate-300 p-2 text-center font-bold align-top">
                     ${escapeHtml(item.id)}
-                    <div class="mt-2"><button onclick="hapusItem(${item.id})" class="text-[9px] bg-red-50 text-red-500 border border-red-200 hover:bg-red-500 hover:text-white rounded px-1.5 py-0.5 w-full transition-colors shadow-sm">Hapus</button></div>
+                    ${draftBadge}
+                    <div class="mt-2"><button onclick="openModal(${Number(item.id)})" class="mb-1 text-[9px] ${isDraft ? 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-200'} border rounded px-1.5 py-0.5 w-full transition-colors shadow-sm">${isDraft ? 'Lengkapi' : 'Edit'}</button><button onclick="hapusItem(${item.id})" class="text-[9px] bg-red-50 text-red-500 border border-red-200 hover:bg-red-500 hover:text-white rounded px-1.5 py-0.5 w-full transition-colors shadow-sm">Hapus</button></div>
                 </td>
                 <td class="border border-slate-300 p-2 whitespace-nowrap">${escapeHtml(item.tanggal)}</td>
                 <td class="border border-slate-300 p-2 text-center">${escapeHtml(item.shift)}</td>
-                <td class="border border-slate-300 p-2 whitespace-normal"><b>${escapeHtml(item.aktivitas)}</b> ${lotoBadge}<br><span class="text-slate-500 italic text-[10px]">${item.keluhan ? `-${escapeHtml(item.keluhan)}` : ''}</span><br><span class="text-[9px] text-blue-600 block mt-1">${unitsText}</span></td>
+                <td class="border border-slate-300 p-2 whitespace-normal"><b>${escapeHtml(item.aktivitas)}</b> ${lotoBadge}<br><span class="text-slate-500 italic text-[10px]">${item.keluhan ? `-${escapeHtml(item.keluhan)}` : ''}</span><br><span class="text-[9px] text-blue-600 block mt-1">${unitsText}</span>${personelText}</td>
                 <td class="border border-slate-300 p-2 text-center whitespace-normal">${escapeHtml(item.departemen)}</td>
                 <td class="border border-slate-300 p-2 whitespace-normal">${escapeHtml(item.lokasi)}</td>
                 <td class="border border-slate-300 p-2 whitespace-normal">${nl2br(item.tools)}</td>
@@ -565,7 +579,7 @@
         }
     }
 
-    function addPjaRow(containerId, defaultJabatan) {
+    function addPjaRow(containerId, defaultJabatan, entry = null) {
         const container = document.getElementById(containerId);
         const div = document.createElement('div');
         div.className = "flex items-start sm:items-center gap-1.5 bg-white p-2 rounded-md border border-slate-200 shadow-sm relative group pja-row animate-in fade-in zoom-in-95 duration-200";
@@ -590,6 +604,11 @@
                 <i data-lucide="trash" class="w-4 h-4"></i>
             </button>
         `;
+        if (entry) {
+            div.querySelector('.input-nama').value = entry.nama || '';
+            div.querySelector('.input-jabatan').value = entry.jabatan || defaultJabatan;
+            div.querySelector('.input-hp').value = entry.hp || '';
+        }
         container.appendChild(div);
         if (window.lucide && typeof window.lucide.createIcons === 'function') {
             lucide.createIcons({ root: div });
@@ -612,7 +631,55 @@
     const modal = document.getElementById('modal-dop');
     const modalContent = document.getElementById('modal-content');
 
-    function openModal() {
+    const PJA_JABATAN = {'pja-layer1s1':'Foreman', 'pja-layer1s2':'Foreman', 'pja-layer2':'Spv/Act Spv', 'pja-layer3':'Mcr', 'pja-layer4':'Manager'};
+
+    function addFleetCheckbox(unit) {
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm group';
+        label.innerHTML = '<input type="checkbox" class="cb-fleet w-4 h-4 text-red-600 rounded focus:ring-red-500 cursor-pointer accent-red-600 border-slate-300"><span class="text-[10px] font-bold font-mono text-slate-700 group-hover:text-red-700 transition-colors"></span>';
+        label.querySelector('input').value = unit;
+        label.querySelector('span').textContent = unit;
+        document.getElementById('cb-unit-container').appendChild(label);
+    }
+
+    // Isi form dari draft/DOP; kolom kosong pada draft tetap memakai nilai bawaan form.
+    function fillForm(item) {
+        const setValue = (id, value) => {
+            const el = document.getElementById(id);
+            if (!el || typeof value !== 'string' || !value) return;
+            if (el.tagName === 'SELECT' && ![...el.options].some(option => option.value === value)) return;
+            el.value = value;
+        };
+        setValue('in-tanggal', item.tanggalISO);
+        setValue('in-shift', item.shift);
+        setValue('in-pekerjaan', item.aktivitas);
+        setValue('in-keluhan', item.keluhan);
+        setValue('in-dept', item.departemen);
+        setValue('in-lokasi', item.lokasi);
+        setValue('in-tools', item.tools);
+        setValue('in-hazard', item.hazard);
+        setValue('in-gr', item.goldenRules);
+        setValue('in-sib', item.sib);
+        setValue('in-kritis', item.kritis);
+        setValue('in-ibpr', item.ibpr);
+        setValue('in-jsa', item.jsa);
+        setValue('in-loto', item.loto);
+        setValue('in-jarak', item.pemantauan);
+        const units = Array.isArray(item.fleetUnits) ? item.fleetUnits : [];
+        const existing = new Set([...document.querySelectorAll('.cb-fleet')].map(cb => cb.value));
+        units.filter(unit => !existing.has(unit)).forEach(addFleetCheckbox);
+        document.querySelectorAll('.cb-fleet').forEach(cb => { cb.checked = units.includes(cb.value); });
+        const layers = { 'pja-layer1s1': 'layer1s1', 'pja-layer1s2': 'layer1s2', 'pja-layer2': 'layer2', 'pja-layer3': 'layer3', 'pja-layer4': 'layer4' };
+        Object.entries(layers).forEach(([containerId, layer]) => {
+            (item.pja?.[layer] || []).forEach(entry => addPjaRow(containerId, PJA_JABATAN[containerId], entry));
+        });
+    }
+
+    function openModal(id = null) {
+        const item = id === null ? null : dopData.find(d => d.id === id);
+        editingId = item ? item.id : null;
+        document.getElementById('modal-title').textContent = !item ? 'Formulir Input DOP'
+            : item.status === 'DRAFT' ? `Lengkapi Draft DOP No.${item.id}` : `Edit DOP No.${item.id}`;
         modal.classList.remove('hidden');
         modal.classList.add('flex');
         
@@ -628,10 +695,10 @@
             });
         }
         
+        if (item) fillForm(item);
         ['pja-layer1s1', 'pja-layer1s2', 'pja-layer2', 'pja-layer3', 'pja-layer4'].forEach(id => {
             if(document.getElementById(id).innerHTML.trim() === "") {
-                const jabatans = {'pja-layer1s1':'Foreman', 'pja-layer1s2':'Foreman', 'pja-layer2':'Spv/Act Spv', 'pja-layer3':'Mcr', 'pja-layer4':'Manager'};
-                addPjaRow(id, jabatans[id]);
+                addPjaRow(id, PJA_JABATAN[id]);
             }
         });
 
@@ -648,6 +715,7 @@
             modal.classList.remove('flex');
             modal.classList.add('hidden');
             document.getElementById('form-dop').reset();
+            editingId = null;
             ['pja-layer1s1', 'pja-layer1s2', 'pja-layer2', 'pja-layer3', 'pja-layer4'].forEach(id => {
                 document.getElementById(id).innerHTML = "";
             });
@@ -698,8 +766,13 @@
 
         setDOPStatus('Menyimpan DOP ke database...');
         try {
-            const savedData = await requestParent('create', { data: newData });
-            dopData.unshift(savedData);
+            if (editingId !== null) {
+                const savedData = await requestParent('complete', { idValue: editingId, data: newData });
+                dopData = dopData.map(d => d.id === savedData.id ? savedData : d);
+            } else {
+                const savedData = await requestParent('create', { data: newData });
+                dopData.unshift(savedData);
+            }
             renderTable();
             closeModal();
             setDOPStatus('DOP berhasil disimpan dan tersinkron dengan server.');

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import L from 'leaflet';
 import refuelingService from '../services/refuelingService';
+import { subscribeLive } from '../services/live';
 import { boxCoordinates, DEFAULT_CENTER } from '../utils/mapCoordinates.js';
 import 'leaflet/dist/leaflet.css';
 import { useApp } from '../context/useApp';
@@ -128,7 +129,8 @@ export default function Dashboard() {
     };
     fetchRefuelingLogs();
     const interval = setInterval(fetchRefuelingLogs, 4000);
-    return () => { active = false; clearInterval(interval); };
+    const stopLive = subscribeLive(fetchRefuelingLogs);
+    return () => { active = false; clearInterval(interval); stopLive(); };
   }, [isLoggedIn, activeTab, selectedBox?.id]);
 
   const handleHapusRiwayatRefueling = async (idRefueling) => {

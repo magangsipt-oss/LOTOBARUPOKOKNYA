@@ -8,6 +8,7 @@ import boxService from '../services/boxService';
 import commandService from '../services/commandService';
 import logService from '../services/logService';
 import api from '../services/api';
+import { subscribeLive } from '../services/live';
 import { useAuth } from './useAuth';
 import {
   getUserProfile, isSystemUid, isAdminUid, normalizeUserRole,
@@ -258,7 +259,8 @@ export function AppProvider({ children }) {
     };
     muatUserDatabaseGlobal();
     const intervalUser = setInterval(muatUserDatabaseGlobal, 5000);
-    return () => clearInterval(intervalUser);
+    const stopLive = subscribeLive(muatUserDatabaseGlobal);
+    return () => { clearInterval(intervalUser); stopLive(); };
   }, [isLoggedIn]);
 
   const reportBoxId = selectedBox?.id || boxes[0]?.id || null;
@@ -287,7 +289,8 @@ export function AppProvider({ children }) {
 
     muatDataLaporanDanBuffer();
     const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
-    return () => { active = false; clearInterval(intervalSync); };
+    const stopLive = subscribeLive(muatDataLaporanDanBuffer);
+    return () => { active = false; clearInterval(intervalSync); stopLive(); };
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -318,8 +321,10 @@ export function AppProvider({ children }) {
     };
     refreshCompliance();
     refreshHistory();
-    const interval = setInterval(() => { refreshCompliance(); refreshHistory(); }, 4000);
-    return () => { active = false; clearInterval(interval); };
+    const refreshAll = () => { refreshCompliance(); refreshHistory(); };
+    const interval = setInterval(refreshAll, 4000);
+    const stopLive = subscribeLive(refreshAll);
+    return () => { active = false; clearInterval(interval); stopLive(); };
   }, [isLoggedIn, reportBoxId]);
 
   // Expire a valid snapshot even while the next request is still pending.
@@ -501,7 +506,8 @@ export function AppProvider({ children }) {
 
     muatDataOperasionalMesin();
     const intervalKoneksi = setInterval(muatDataOperasionalMesin, 2500);
-    return () => { active = false; clearInterval(intervalKoneksi); };
+    const stopLive = subscribeLive(muatDataOperasionalMesin);
+    return () => { active = false; clearInterval(intervalKoneksi); stopLive(); };
   }, [isLoggedIn]);
 
   // Audit log from HW events

@@ -22,6 +22,7 @@ import { testConnection } from './config/database.js';
 import authentication from './middleware/authentication.js';
 import authorization from './middleware/authorization.js';
 import userController from './controllers/userController.js';
+import { subscribe as subscribeLive, announceChanges } from './realtime.js';
 
 
 dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)), quiet: true });
@@ -117,6 +118,9 @@ export function createApp() {
     standardHeaders: 'draft-7', legacyHeaders: false }));
   app.use('/api', authorization);
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Dashboard berlangganan perubahan data; box tidak diizinkan oleh authorization.
+  app.get('/api/live', subscribeLive);
+  app.use('/api', announceChanges);
   const root = path.dirname(fileURLToPath(import.meta.url));
   app.use('/api/uploads', express.static(path.join(root, 'uploads'), { dotfiles: 'deny' }));
   app.use('/api/legacy-uploads', express.static(path.join(root, 'legacy-uploads'), { dotfiles: 'deny' }));

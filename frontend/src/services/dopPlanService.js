@@ -11,6 +11,11 @@ const dopPlanService = {
     return response.data;
   },
 
+  complete: async (id, data) => {
+    const response = await api.put(`/dop-plans/${encodeURIComponent(id)}`, { data });
+    return response.data;
+  },
+
   delete: async id => {
     const response = await api.delete(`/dop-plans/${encodeURIComponent(id)}`);
     return response.data;
