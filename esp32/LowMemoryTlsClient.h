@@ -107,11 +107,15 @@ public:
     }
     int fd() const override { return tcp_.fd(); }
     int lastError(char *error, size_t size) {
+        int code = tls_.getLastSSLError(error, size);
         if (!tlsConnectionEstablished_) {
-            if (error && size > 0) snprintf(error, size, "TLS handshake did not complete");
-            return -1;
+            // Tanpa kode BearSSL berarti TLS belum dimulai: TCP ke server gagal (umumnya jaringan tanpa internet).
+            if (code == 0 && error && size > 0) {
+                snprintf(error, size, "TLS handshake did not complete (no TLS error: TCP connect failed, check internet)");
+            }
+            return code ? code : -1;
         }
-        return tls_.getLastSSLError(error, size);
+        return code;
     }
 };
 
