@@ -112,6 +112,8 @@ volatile uint32_t lastNetworkIoReleasedAt = 0;
 volatile bool bleInitInProgress = false;
 volatile uint32_t bleInitStartedAt = 0;
 volatile bool bleHalted = false;
+// Waktu terakhir server membalas 2xx (semua jalur); dipakai watchdog koneksi server.
+volatile uint32_t lastServerOkAt = 0;
 const uint32_t BLE_RESUME_QUIET_MS = 1500;
 const uint32_t BLE_INIT_HANG_MS = 10000;
 // Log lapangan: init berhasil pada free~48 KB/largest~13 KB; macet saat largest~5 KB.
@@ -258,9 +260,13 @@ public:
         request.setTimeout(timeout);
     }
 
-    int GET() { return requestReady ? request.GET() : -1; }
-    int POST(const String &payload) { return requestReady ? request.POST(payload) : -1; }
-    int PATCH(const String &payload) { return requestReady ? request.PATCH(payload) : -1; }
+    int GET() { return markServerOk(requestReady ? request.GET() : -1); }
+    int POST(const String &payload) { return markServerOk(requestReady ? request.POST(payload) : -1); }
+    int PATCH(const String &payload) { return markServerOk(requestReady ? request.PATCH(payload) : -1); }
+    static int markServerOk(int code) {
+        if (code >= 200 && code < 300) lastServerOkAt = millis();
+        return code;
+    }
     int getSize() { return request.getSize(); }
     String getString() { return request.getString(); }
     String header(const char *name) { return request.header(name); }
@@ -6007,9 +6013,39 @@ void serviceRfidInput() {
     }
 }
 
+// Pemulihan otomatis bila box tidak bisa menghubungi server walau tampak tersambung
+// (mis. hotspot HP putus tanpa melepas Wi-Fi, atau koneksi TLS menggantung).
+const uint32_t SERVER_LINK_RECONNECT_MS = 120000;
+const uint32_t SERVER_LINK_RESTART_MS = 300000;
+
+void serviceServerLinkWatchdog() {
+    static uint32_t lastReconnect = 0;
+    uint32_t now = millis();
+    uint32_t silentMs = lastServerOkAt ? uint32_t(now - lastServerOkAt) : now;
+    if (silentMs < SERVER_LINK_RECONNECT_MS) return;
+
+    // Putus-sambung Wi-Fi aman kapan pun (juga saat sesi): gembok tidak tersentuh.
+    if (uint32_t(now - lastReconnect) >= SERVER_LINK_RECONNECT_MS) {
+        lastReconnect = now;
+        Serial.printf("[NET] Server tidak membalas %lu dtk; sambung ulang Wi-Fi\n", (unsigned long)(silentMs / 1000));
+        WiFi.disconnect(false);
+    }
+
+    // Restart hanya saat idle tanpa sesi dan Wi-Fi tersambung (server tak terjangkau = jaringan macet).
+    bool wifiHasIp = WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
+    if (silentMs >= SERVER_LINK_RESTART_MS && wifiHasIp && currentState == STATE_IDLE &&
+        !isSessionActive && safetyQueue.topIndex < 0 && !relayOpen && !relayPulseActive) {
+        Serial.println("[NET] Server tetap tak terjangkau; restart box (idle, tanpa sesi LOTO)");
+        saveSessionToSD();
+        delay(200);
+        ESP.restart();
+    }
+}
+
 void loop() {
     serviceRfidInput();
     serviceBleInitWatchdog();
+    serviceServerLinkWatchdog();
     if (!gpsInitStarted) {
         gpsInitStarted = true;
         if (xTaskCreatePinnedToCore(gpsInitTask, "GPSInit", 4096,

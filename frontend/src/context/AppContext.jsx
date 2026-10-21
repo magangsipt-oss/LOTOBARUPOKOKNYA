@@ -446,8 +446,14 @@ export function AppProvider({ children }) {
               is_online: b.source === 'device' || boxIsOnline(b) ? 1 : 0,
               telemetry_online: telemetryOnline ? 1 : 0,
               telemetry_last_ping: telemetryLastPing,
+              // Lama sesi diukur box saat telemetri terakhir dikirim; hitung maju dari waktu kirim itu,
+              // bukan dari waktu browser menerima, agar refresh/polling tidak me-reset timer.
               session_elapsed_received_at: sessionElapsedMs != null &&
-                Number.isSafeInteger(Number(sessionElapsedMs)) ? Date.now() : null,
+                Number.isSafeInteger(Number(sessionElapsedMs))
+                ? (b.source !== 'device' && Number.isFinite(Date.parse(telemetryLastPing || ''))
+                  ? Date.parse(telemetryLastPing)
+                  : Date.now())
+                : null,
               id: id_box,
               id_box,
               lat: realLat,
