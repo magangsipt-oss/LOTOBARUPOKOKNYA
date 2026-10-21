@@ -329,6 +329,12 @@
                     <span class="bg-blue-950 px-1.5 rounded text-[9px]">13 - 14</span> Pengawas & Pemantauan
                 </div>
 
+                <!-- Personel yang tap di box (hanya baca, dari sesi LOTO) -->
+                <div id="personel-box" class="hidden mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                    <label class="block text-xs font-black text-amber-900 mb-2">Personel yang tap di box (otomatis dari sesi LOTO)</label>
+                    <div id="personel-list" class="flex flex-wrap gap-2"></div>
+                </div>
+
                 <!-- 13. PENGAWAS / PJA (4 LAYER) -->
                 <div class="mb-6">
                     <label class="block text-sm font-black text-slate-800 border-b border-slate-200 pb-2 mb-4">13. PENGAWAS / PJA <span class="text-red-500">*</span></label>
@@ -669,6 +675,12 @@
         const existing = new Set([...document.querySelectorAll('.cb-fleet')].map(cb => cb.value));
         units.filter(unit => !existing.has(unit)).forEach(addFleetCheckbox);
         document.querySelectorAll('.cb-fleet').forEach(cb => { cb.checked = units.includes(cb.value); });
+        const people = Array.isArray(item.personel) ? item.personel : [];
+        const roleLabel = { pengawas: 'Pengawas', teknisi: 'Mekanik', fuelman: 'Fuelman' };
+        document.getElementById('personel-list').innerHTML = people.map(p =>
+            `<span class="bg-white border border-amber-300 rounded-lg px-2.5 py-1 text-xs"><b>${escapeHtml(p.nama)}</b> <span class="text-slate-500">· ${escapeHtml(roleLabel[p.role] || p.role || '-')} · ${escapeHtml(p.sid)}</span></span>`
+        ).join('');
+        document.getElementById('personel-box').classList.toggle('hidden', !people.length);
         const layers = { 'pja-layer1s1': 'layer1s1', 'pja-layer1s2': 'layer1s2', 'pja-layer2': 'layer2', 'pja-layer3': 'layer3', 'pja-layer4': 'layer4' };
         Object.entries(layers).forEach(([containerId, layer]) => {
             (item.pja?.[layer] || []).forEach(entry => addPjaRow(containerId, PJA_JABATAN[containerId], entry));
@@ -716,6 +728,8 @@
             modal.classList.add('hidden');
             document.getElementById('form-dop').reset();
             editingId = null;
+            document.getElementById('personel-box').classList.add('hidden');
+            document.getElementById('personel-list').innerHTML = '';
             ['pja-layer1s1', 'pja-layer1s2', 'pja-layer2', 'pja-layer3', 'pja-layer4'].forEach(id => {
                 document.getElementById(id).innerHTML = "";
             });
