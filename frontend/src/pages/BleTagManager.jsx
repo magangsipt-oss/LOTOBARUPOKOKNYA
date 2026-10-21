@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/useApp';
 import logService from '../services/logService';
-import { subscribeLive } from '../services/live';
+import { livePoll } from '../services/live';
 
 const BLE_EVENT_LABEL = {
   TAG_BOUND: ['iTag diikat saat tap', 'text-blue-600'],
@@ -73,9 +73,8 @@ export default function BleTagManager() {
       } finally { pending = false; }
     };
     loadPresence();
-    const interval = setInterval(loadPresence, 3000);
-    const stopLive = subscribeLive(loadPresence);
-    return () => { active = false; clearInterval(interval); stopLive(); };
+    const stopPoll = livePoll(loadPresence, 3000);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn, activeTab, selectedBoxId]);
 
   useEffect(() => {
@@ -96,9 +95,8 @@ export default function BleTagManager() {
     };
     setPresenceHistory({ boxId: selectedBoxId, status: 'loading', rows: [] });
     loadHistory();
-    const interval = setInterval(loadHistory, 5000);
-    const stopLive = subscribeLive(loadHistory);
-    return () => { active = false; clearInterval(interval); stopLive(); };
+    const stopPoll = livePoll(loadHistory, 5000);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn, activeTab, selectedBoxId]);
 
   // Riwayat perubahan BLE per nomor tap (diikat, terdeteksi, hilang, iTag tanpa tap)
@@ -119,9 +117,8 @@ export default function BleTagManager() {
       } finally { pending = false; }
     };
     loadEvents();
-    const interval = setInterval(loadEvents, 5000);
-    const stopLive = subscribeLive(loadEvents);
-    return () => { active = false; clearInterval(interval); stopLive(); };
+    const stopPoll = livePoll(loadEvents, 5000);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn, activeTab, selectedBoxId]);
 
   // Register new BLE tag

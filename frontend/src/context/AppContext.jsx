@@ -8,7 +8,7 @@ import boxService from '../services/boxService';
 import commandService from '../services/commandService';
 import logService from '../services/logService';
 import api from '../services/api';
-import { subscribeLive } from '../services/live';
+import { livePoll } from '../services/live';
 import { useAuth } from './useAuth';
 import {
   getUserProfile, isSystemUid, isAdminUid, normalizeUserRole,
@@ -258,9 +258,7 @@ export function AppProvider({ children }) {
       } catch { /* silent */ }
     };
     muatUserDatabaseGlobal();
-    const intervalUser = setInterval(muatUserDatabaseGlobal, 5000);
-    const stopLive = subscribeLive(muatUserDatabaseGlobal);
-    return () => { clearInterval(intervalUser); stopLive(); };
+    return livePoll(muatUserDatabaseGlobal, 5000);
   }, [isLoggedIn]);
 
   const reportBoxId = selectedBox?.id || boxes[0]?.id || null;
@@ -288,9 +286,8 @@ export function AppProvider({ children }) {
     };
 
     muatDataLaporanDanBuffer();
-    const intervalSync = setInterval(muatDataLaporanDanBuffer, 4000);
-    const stopLive = subscribeLive(muatDataLaporanDanBuffer);
-    return () => { active = false; clearInterval(intervalSync); stopLive(); };
+    const stopPoll = livePoll(muatDataLaporanDanBuffer, 4000);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -322,9 +319,8 @@ export function AppProvider({ children }) {
     refreshCompliance();
     refreshHistory();
     const refreshAll = () => { refreshCompliance(); refreshHistory(); };
-    const interval = setInterval(refreshAll, 4000);
-    const stopLive = subscribeLive(refreshAll);
-    return () => { active = false; clearInterval(interval); stopLive(); };
+    const stopPoll = livePoll(refreshAll, 4000);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn, reportBoxId]);
 
   // Expire a valid snapshot even while the next request is still pending.
@@ -505,9 +501,8 @@ export function AppProvider({ children }) {
     };
 
     muatDataOperasionalMesin();
-    const intervalKoneksi = setInterval(muatDataOperasionalMesin, 2500);
-    const stopLive = subscribeLive(muatDataOperasionalMesin);
-    return () => { active = false; clearInterval(intervalKoneksi); stopLive(); };
+    const stopPoll = livePoll(muatDataOperasionalMesin, 2500);
+    return () => { active = false; stopPoll(); };
   }, [isLoggedIn]);
 
   // Audit log from HW events
