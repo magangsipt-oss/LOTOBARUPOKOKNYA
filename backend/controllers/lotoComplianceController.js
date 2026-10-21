@@ -30,6 +30,9 @@ function parseSlots(value) {
   if (value === undefined || value === null) return null;
   if (!Array.isArray(value) || value.length > 20) fail('ble_slots harus berupa array maksimal 20 slot');
   const seen = new Set();
+  // Satu sesi: 1 SID hanya punya 1 iTag dan 1 iTag hanya milik 1 SID.
+  const seenSids = new Set();
+  const seenMacs = new Set();
   return value.map(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('Slot BLE tidak valid');
     const slot = item.slot;
@@ -41,10 +44,19 @@ function parseSlots(value) {
     if (item.rssi != null && (!Number.isSafeInteger(item.rssi) || item.rssi < -127 || item.rssi > 20)) fail('RSSI slot BLE tidak valid');
     const sid = optionalText(item.sid, 50, 'SID slot BLE');
     const mac = item.mac == null || item.mac === '' ? null : normalizeMac(item.mac);
+    const cleanSid = sid && !/^-+$/.test(sid) ? sid : null;
+    if (cleanSid) {
+      if (seenSids.has(cleanSid)) fail('SID tercatat di lebih dari satu slot BLE');
+      seenSids.add(cleanSid);
+    }
+    if (mac) {
+      if (seenMacs.has(mac)) fail('iTag terikat ke lebih dari satu slot BLE');
+      seenMacs.add(mac);
+    }
     const present = Boolean(mac && item.present);
     return {
       slot,
-      sid: sid && !/^-+$/.test(sid) ? sid : null,
+      sid: cleanSid,
       uid: optionalText(item.uid, 50, 'UID slot BLE'),
       mac,
       present,

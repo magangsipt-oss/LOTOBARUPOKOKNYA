@@ -2022,12 +2022,8 @@ const uint8_t GEO_MAX_TAGS = 20;
 // Tag hilang bila tidak terlihat selama 30 detik pemindaian aktif; jeda HTTPS tidak ikut dihitung.
 // iTag murah memancar tiap 1-3 detik dan kadang terlewat, jadi batas pendek membuat tag berkedip.
 const uint32_t GEO_TAG_SCAN_TIMEOUT_MS = 30000;
-// iTag yang didekatkan ke box saat tap kartu diikat ke nomor BLE personel tersebut.
-const int GEO_BIND_MIN_RSSI = -65;
+// Saat tap kartu, iTag terdeteksi yang belum dipakai otomatis diikat ke personel itu untuk sesi ini.
 const uint32_t GEO_BIND_WINDOW_MS = 30000;
-const uint32_t GEO_BIND_FRESH_MS = 3000;
-// Pengikatan susulan untuk personel "TANPA iTAG": iTag harus ditempel sangat dekat ke box.
-const int GEO_LATE_BIND_MIN_RSSI = -55;
 struct GeoTag { char mac[18]; int rssi; uint32_t seen; uint32_t seenScanMs; };
 GeoTag geoTags[GEO_MAX_TAGS] = {};
 uint8_t geoTagCount = 0;
@@ -2323,8 +2319,8 @@ void serviceGeofence() {
     bool healthy = completed && !overflow && uint32_t(now - heartbeat) <= GEO_SCANNER_STALE_MS;
     int taps = geoMechanicsTapped();
 
-    // Nomor BLE = urutan tap. iTag terkuat yang belum dipakai diikat ke personel yang baru tap.
-    // Personel "TANPA iTAG" bisa menyusul selama sesi dengan menempelkan iTag ke box.
+    // Nomor BLE = urutan tap. iTag terkuat yang belum dipakai langsung diikat ke personel yang tap,
+    // tanpa syarat jarak. Personel "TANPA iTAG" otomatis mendapat iTag baru yang muncul selama sesi.
     bool queueChanged = false;
     bool boundThisPass = false;
     for (int i = 0; i <= safetyQueue.topIndex; ++i) {
@@ -2341,8 +2337,6 @@ void serviceGeofence() {
         }
         int best = -1;
         for (int t = 0; t < count; ++t) {
-            int minRssi = lateBinding ? GEO_LATE_BIND_MIN_RSSI : GEO_BIND_MIN_RSSI;
-            if (tags[t].rssi < minRssi || uint32_t(now - tags[t].seen) > GEO_BIND_FRESH_MS) continue;
             if (geoMacBoundInQueue(tags[t].mac)) continue;
             if (best < 0 || tags[t].rssi > tags[best].rssi) best = t;
         }
@@ -2524,8 +2518,8 @@ void drawGeofencePage() {
         int16_t rowY = 92 + i * 26;
         String status;
         uint16_t statusColor = ELOTO_HEADER;
-        if (slots[i].pending) status = "DEKATKAN iTAG";
-        else if (!slots[i].mac[0]) status = "TANPA iTAG - TEMPEL";
+        if (slots[i].pending) status = "MENCARI iTAG";
+        else if (!slots[i].mac[0]) status = "TANPA iTAG";
         else if (!geoHealthy) { status = "MEMINDAI..."; statusColor = ELOTO_MUTED; }
         else if (slots[i].present) { status = "TERDETEKSI"; statusColor = ELOTO_TEXT; }
         else status = "TIDAK TERDETEKSI";
@@ -3315,6 +3309,11 @@ bool loadSessionFromSD() {
                                 safetyQueue.workers[idx].role = obj["role"].as<String>();
                                 strlcpy(safetyQueue.workers[idx].bleMac, obj["ble_mac"] | "",
                                     sizeof(safetyQueue.workers[idx].bleMac));
+                                // 1 iTag hanya untuk 1 SID per sesi: buang duplikat dari file sesi yang rusak.
+                                for (int prev = 0; prev < idx && safetyQueue.workers[idx].bleMac[0]; ++prev) {
+                                    if (strcasecmp(safetyQueue.workers[prev].bleMac, safetyQueue.workers[idx].bleMac) == 0)
+                                        safetyQueue.workers[idx].bleMac[0] = '\0';
+                                }
                                 safetyQueue.workers[idx].bleBindSince = 0;
                                 idx++;
                             }

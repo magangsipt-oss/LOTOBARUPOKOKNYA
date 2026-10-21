@@ -465,6 +465,17 @@ test('malformed BLE slots are rejected before touching the database', async () =
   }
 });
 
+test('one session binds each SID to one iTag and each iTag to one SID', async () => {
+  for (const ble_slots of [
+    [{ slot: 1, sid: 'MEK1', mac }, { slot: 2, sid: 'MEK2', mac: mac.toLowerCase() }],
+    [{ slot: 1, sid: 'MEK1', mac }, { slot: 2, sid: 'MEK1', mac: secondMac }]
+  ]) {
+    pool.getConnection = async () => { throw new Error('must not connect'); };
+    const res = await invoke('reportPresence', { id_box: 'BOX-1', ble_tags: [], ble_slots });
+    assert.equal(res.statusCode, 400, JSON.stringify(ble_slots));
+  }
+});
+
 test('BLE event history is scoped to the box and caps its limit', async () => {
   let captured;
   pool.query = async (sql, args) => { captured = [sql, args]; return [[{ id: 1, event: 'TAG_BOUND' }]]; };

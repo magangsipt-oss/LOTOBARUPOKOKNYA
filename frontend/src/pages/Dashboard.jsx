@@ -408,7 +408,7 @@ export default function Dashboard() {
                         <>
                           {bleSlots.map(slot => {
                             const bleStatus = slot.pending ? ['Menunggu iTag', 'text-amber-600']
-                              : !slot.mac ? ['Tanpa iTag — tempel iTag ke box', 'text-amber-600 font-bold']
+                              : !slot.mac ? ['Tanpa iTag — terikat otomatis saat iTag terdeteksi', 'text-amber-600 font-bold']
                               : slot.present ? [`Terdeteksi${slot.rssi != null ? ` (${slot.rssi} dBm)` : ''}`, 'text-blue-600']
                               : ['Tidak terdeteksi', 'text-slate-400'];
                             return (
