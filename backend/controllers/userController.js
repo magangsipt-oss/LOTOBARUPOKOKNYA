@@ -95,6 +95,26 @@ const userController = {
     } catch (error) { next(error); }
   },
 
+  // Admin mengatur kata sandi pengguna mana pun; semua sesi login pengguna itu diputus.
+  setUserPassword: async (req, res, next) => {
+    try {
+      const sid = String(req.params.sid || '');
+      const { newPassword } = req.body || {};
+      const passwordError = passwordValidationError(newPassword, sid, { allowSidMatch: true });
+      if (passwordError) return res.status(400).json({ success: false, message: passwordError });
+      const existing = await UserModel.getBySid(sid);
+      if (!existing) return res.status(404).json({ success: false, message: 'Pengguna tidak ditemukan.' });
+      await UserModel.changePassword(existing.sid, await bcrypt.hash(newPassword, 12));
+      const self = existing.sid === req.auth.user.sid;
+      if (self) await destroySession(req, res);
+      res.json({
+        success: true,
+        relogin: self,
+        message: self ? 'Kata sandi diubah. Silakan login kembali.' : `Kata sandi ${existing.nama} diubah. Pengguna perlu login ulang.`
+      });
+    } catch (error) { next(error); }
+  },
+
   // 1. Mengambil semua data pengguna
   getAllUsers: async (req, res) => {
     try {

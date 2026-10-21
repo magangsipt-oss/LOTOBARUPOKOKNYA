@@ -42,6 +42,12 @@ const userService = {
     return response.data;
   },
 
+  // Admin mengatur kata sandi pengguna
+  setPassword: async (sid, newPassword) => {
+    const response = await api.post(`/users/${encodeURIComponent(sid)}/password`, { newPassword });
+    return response.data;
+  },
+
   // Menghapus data pengguna
   deleteUser: async (sid) => {
     const response = await api.delete(`/users/${encodeURIComponent(sid)}`);

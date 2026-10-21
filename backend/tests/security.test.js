@@ -114,6 +114,38 @@ test('account creation allows SID as password while password changes reject weak
     body: JSON.stringify({ currentPassword: 'old password', newPassword: 'too-short' }) });
   assert.equal(weakChange.status, 400);
 });
+test('only admins manage passwords; pengawas and workers cannot change their own', async () => {
+  for (const role of ['PENGAWAS', 'WORKER']) {
+    const headers = authHeaders(role);
+    const self = await call('/api/users/password', { method: 'POST', headers,
+      body: JSON.stringify({ currentPassword: 'old password', newPassword: 'a much longer password' }) });
+    assert.equal(self.status, 403, role);
+    const other = await call('/api/users/worker-1/password', { method: 'POST', headers,
+      body: JSON.stringify({ newPassword: 'a much longer password' }) });
+    assert.equal(other.status, 403, role);
+  }
+  const originalGetBySid = UserModel.getBySid;
+  const originalChange = UserModel.changePassword;
+  const changed = [];
+  UserModel.getBySid = async sid => (sid === 'spv-1' ? { sid, nama: 'Pengawas Satu' } : null);
+  UserModel.changePassword = async (sid, hash) => { changed.push([sid, hash]); };
+  try {
+    const headers = authHeaders('ADMIN');
+    const weak = await call('/api/users/spv-1/password', { method: 'POST', headers, body: JSON.stringify({ newPassword: 'short' }) });
+    assert.equal(weak.status, 400);
+    const missing = await call('/api/users/nobody/password', { method: 'POST', headers, body: JSON.stringify({ newPassword: 'a much longer password' }) });
+    assert.equal(missing.status, 404);
+    const reset = await call('/api/users/spv-1/password', { method: 'POST', headers, body: JSON.stringify({ newPassword: 'spv-1' }) });
+    assert.equal(reset.status, 200);
+    assert.equal((await reset.json()).relogin, false);
+    assert.equal(changed.length, 1);
+    assert.equal(changed[0][0], 'spv-1');
+    assert.ok(changed[0][1].startsWith('$2'));
+  } finally {
+    UserModel.getBySid = originalGetBySid;
+    UserModel.changePassword = originalChange;
+  }
+});
 test('untrusted origins and old shared Bearer token cannot authorize requests', async () => {
   assert.equal((await call('/api/users/login',{method:'POST',headers:{Origin:'https://evil.invalid'}})).status,403);
   assert.equal((await call('/api/users',{headers:{Authorization:'Bearer ELOTO_SECURE_KEY_2026'}})).status,401);

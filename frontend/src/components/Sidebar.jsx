@@ -59,10 +59,8 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
     });
   };
 
+  // Profil dibuka lewat kartu "Pengguna aktif", bukan item menu.
   const navItems = [];
-  if (sessionUser && sessionUser.role !== 'admin') {
-    navItems.push({ id: 'profil-tab', icon: 'fa-user', label: 'Profil Saya' });
-  }
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
     navItems.push({ id: 'dop-plan', icon: 'fa-clipboard-list', label: 'DOP Plan' });
@@ -82,7 +80,7 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
   }
 
   const activePage = navItems.find(item => item.id === activeTab)?.label || 'E-LOTO';
-  const UserCard = sessionUser?.role === 'admin' ? 'div' : 'button';
+  const UserCard = sessionUser ? 'button' : 'div';
 
   return (
     <>
@@ -122,7 +120,7 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <div className="p-4">
-            <UserCard {...(sessionUser?.role !== 'admin' && { type: 'button', onClick: () => navigate({ id: 'profil-tab' }) })} className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left">
+            <UserCard {...(sessionUser && { type: 'button', onClick: () => navigate({ id: 'profil-tab' }), title: 'Buka profil saya', 'aria-current': activeTab === 'profil-tab' ? 'page' : undefined })} className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-colors ${activeTab === 'profil-tab' ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-slate-50 hover:border-red-300 hover:bg-red-50/50 cursor-pointer'}`}>
               <Avatar profile={sessionUser} className="h-11 w-11 shrink-0 ring-2 ring-white shadow-sm" />
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Pengguna aktif</p>

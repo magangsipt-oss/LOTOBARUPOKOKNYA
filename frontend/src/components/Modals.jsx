@@ -234,6 +234,11 @@ export function ModalEditUser({ show, onClose, formEditUser, setFormEditUser, on
             <label className="block text-slate-700 font-bold mb-1">Foto Profil:</label>
             <input type="file" accept="image/*" className="w-full mt-2 text-[10px]" onChange={(e) => onUploadPhoto(e, setFormEditUser)} />
           </div>
+          <div>
+            <label className="block text-slate-700 font-bold mb-1">Kata Sandi Baru (opsional):</label>
+            <input type="password" autoComplete="new-password" maxLength="72" placeholder="Kosongkan bila tidak diubah" className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-slate-900 focus:outline-none focus:border-red-500" value={formEditUser.password || ''} onChange={(e) => setFormEditUser({ ...formEditUser, password: e.target.value })} />
+            <p className="text-[10px] text-slate-500 mt-1">Minimal 12 karakter, atau sama dengan SID untuk mengembalikan ke kata sandi awal. Pengguna akan diminta login ulang.</p>
+          </div>
           <div className="pt-2 flex justify-end gap-2 border-t">
             <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-slate-700 font-bold rounded-lg font-mono-tech">Batal</button>
             <button type="submit" className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-black rounded-lg font-mono-tech uppercase shadow-md">Simpan</button>

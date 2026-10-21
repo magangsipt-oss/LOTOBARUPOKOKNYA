@@ -24,7 +24,8 @@ export default function authorization(req, res, next) {
   if (route === '/dop-plans' && read && !['admin', 'pengawas'].includes(req.auth.role)) return deny(res);
   if (read) return next();
   const { role, user } = req.auth;
-  if (route === '/users/logout' || route === '/users/password') return next();
+  // Kata sandi hanya dikelola admin (ganti sendiri maupun reset pengguna lain).
+  if (route === '/users/logout') return next();
   // Telemetry and counting are device-originated, even for administrators.
   if (/^\/boxes\/[^/]+\/(telemetry|state)$/.test(route) || route === '/logs/people-counting' || route === '/loto/presence') return deny(res);
   if (role === 'admin') return next();

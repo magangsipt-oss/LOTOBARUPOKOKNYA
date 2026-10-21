@@ -8,6 +8,7 @@ const router = express.Router();
 router.get('/me', userController.me);
 router.post('/logout', userController.logout);
 router.post('/password', userController.changePassword);
+router.post('/:sid/password', userController.setUserPassword);
 router.post('/check-card', userController.checkCard);
 router.get('/supervisors', userController.getSupervisors);
 router.get('/photo/:uid', userController.getPhoto);

@@ -43,6 +43,12 @@ export default function Profile() {
         <div className="border-t border-red-100 p-5"><p className="text-[10px] text-slate-500 uppercase font-mono-tech">Status Akun</p><p className="mt-1 inline-flex items-center gap-2 text-sm font-bold text-green-700"><span className="w-2 h-2 rounded-full bg-green-500"></span>AKUN AKTIF</p></div>
       </div>
       {sessionUser?.role !== 'admin' && (
+        <div className="bg-white border border-red-200 rounded-2xl p-5">
+          <h2 className="font-bold">Kata sandi</h2>
+          <p className="text-sm text-slate-600 mt-1">Kata sandi hanya dapat diubah oleh admin. Hubungi admin bila perlu mengganti kata sandi.</p>
+        </div>
+      )}
+      {sessionUser?.role === 'admin' && (
         <form onSubmit={changePassword} className="bg-white border border-red-200 rounded-2xl p-5 space-y-3">
           <h2 className="font-bold">Ubah kata sandi</h2>
           <input aria-label="Kata sandi lama" type="password" autoComplete="current-password" required value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} placeholder="Kata sandi lama" className="w-full border rounded-lg p-3" />

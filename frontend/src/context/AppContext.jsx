@@ -801,7 +801,7 @@ export function AppProvider({ children }) {
   };
 
   const handleBukaModalEditUser = (user, defaultRfidInput = '') => {
-    setFormEditUser({ sid: user.sid, nama: user.nama, role: user.role || 'teknisi', rfidUid: defaultRfidInput || user.rfidUid || user.rfid_uid || '', foto: user.foto || '' });
+    setFormEditUser({ sid: user.sid, nama: user.nama, role: user.role || 'teknisi', rfidUid: defaultRfidInput || user.rfidUid || user.rfid_uid || '', foto: user.foto || '', password: '' });
     setShowEditUserModal(true);
   };
 
@@ -811,12 +811,26 @@ export function AppProvider({ children }) {
     const cleanNama = formEditUser.nama.trim();
     const cleanRfid = formEditUser.rfidUid.trim().toUpperCase();
     if (!cleanSid || !cleanNama) { pemicuToast("SID dan Nama Karyawan Wajib Diisi!", "fail"); return; }
-    const payloadUser = { sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid || null, foto: formEditUser.foto || 'assets/default-avatar.png' };
+    const newPassword = formEditUser.password || '';
+    if (newPassword && !validInitialPassword(newPassword, cleanSid, true)) {
+      pemicuToast("Kata sandi baru minimal 12 karakter, atau sama dengan SID.", "fail"); return;
+    }
+    const payloadUser ={ sid: cleanSid, nama: cleanNama, role: formEditUser.role, rfidUid: cleanRfid || null, foto: formEditUser.foto || 'assets/default-avatar.png' };
     try {
       const hasil = await userService.updateUser(cleanSid, payloadUser);
       if (hasil.success || hasil.status === 'success') {
         const fotoTerbaru = hasil.data?.profile_photo || hasil.foto || payloadUser.foto;
         setUserDatabase(prev => prev.map(u => u.sid === cleanSid ? { ...u, ...payloadUser, foto: fotoTerbaru } : u));
+        if (newPassword) {
+          try {
+            const pw = await userService.setPassword(cleanSid, newPassword);
+            pemicuToast(pw.message || 'Kata sandi diubah.', 'ok');
+            if (pw.relogin) setTimeout(() => window.dispatchEvent(new Event('eloto-session-expired')), 1500);
+          } catch (error) {
+            pemicuToast(error.response?.data?.message || 'Data tersimpan, tetapi kata sandi gagal diubah.', 'fail');
+            return;
+          }
+        }
         setShowEditUserModal(false);
         await queuePersonnelSync(`✓ Data ${cleanNama} berhasil diperbarui!`);
       } else { pemicuToast(hasil.message || "Gagal memperbarui data personel!", "fail"); }
