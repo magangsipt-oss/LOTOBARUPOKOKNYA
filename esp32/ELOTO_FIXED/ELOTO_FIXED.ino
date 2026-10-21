@@ -2614,6 +2614,27 @@ void gpsRecoveryTask(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
+// Cadangan bila NTP diblokir jaringan (mis. hotspot HP): set jam sistem dari waktu UTC GNSS
+// (field ke-3 +CGNSINF: yyyyMMddhhmmss.sss). Tanpa jam yang benar, semua HTTPS ditahan.
+void setClockFromGps(const String &utc) {
+    if (utc.length() < 14) return;
+    int y = utc.substring(0, 4).toInt(), mo = utc.substring(4, 6).toInt(), d = utc.substring(6, 8).toInt();
+    int h = utc.substring(8, 10).toInt(), mi = utc.substring(10, 12).toInt(), s = utc.substring(12, 14).toInt();
+    if (y < 2026 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return;
+    // Hari sejak 1970-01-01 (algoritma days_from_civil), bebas pengaruh zona waktu.
+    long yy = y - (mo <= 2 ? 1 : 0);
+    long era = yy / 400;
+    long yoe = yy - era * 400;
+    long doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = era * 146097L + doe - 719468L;
+    time_t epoch = (time_t)days * 86400 + h * 3600 + mi * 60 + s;
+    if (epoch < 1792121297) return;
+    struct timeval tv = { epoch, 0 };
+    settimeofday(&tv, nullptr);
+    Serial.printf("[TIME] Clock set from GPS epoch=%ld (NTP belum tersedia)\n", (long)epoch);
+}
+
 // Uraikan koordinat dan status dari respons GPS.
 void parseGpsResponse(const String &response) {
     int pos = response.indexOf("+CGNSINF:");
@@ -2648,6 +2669,12 @@ void parseGpsResponse(const String &response) {
     if (idx > 10 && field[10].length() > 0) gpsHdop = field[10].toFloat();
     if (idx > 14 && field[14].length() > 0) gpsSatellitesInView = (uint8_t)field[14].toInt();
     if (idx > 15 && field[15].length() > 0) gpsSatellitesUsed = (uint8_t)field[15].toInt();
+
+    if (fixStatus == "1" && !systemClockReady()) {
+        String utc = field[2];
+        utc.trim();
+        setClockFromGps(utc);
+    }
 
     if (fixStatus == "1" && latStr.length() > 0 && lonStr.length() > 0) {
         double newLat = strtod(latStr.c_str(), NULL);
@@ -4217,7 +4244,7 @@ void networkTaskCore0(void * pvParameters) {
         if (WiFi.status() == WL_CONNECTED) {
             if (!systemClockReady() && (!ntpRequestStarted ||
                 uint32_t(millis() - lastNtpRequestAt) >= 60000)) {
-                configTime(0, 0, "pool.ntp.org", "time.google.com");
+                configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
                 lastNtpRequestAt = millis();
                 ntpRequestStarted = true;
                 Serial.println("[TIME] NTP synchronization requested");
