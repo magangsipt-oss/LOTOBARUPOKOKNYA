@@ -58,7 +58,6 @@ export default function Profile() {
         </form>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {(sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && <button type="button" onClick={() => setActiveTab('dashboard')} className="bg-red-600 hover:bg-red-700 text-white p-3 rounded-xl font-bold text-xs font-mono-tech"><i className="fa-solid fa-house mr-2"></i>Buka Home / Pantau Langsung</button>}
         {(sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') && <button type="button" onClick={() => setActiveTab('teknisi-tab')} className="bg-white hover:bg-red-50 border border-red-200 text-red-600 p-3 rounded-xl font-bold text-xs font-mono-tech"><i className="fa-solid fa-screwdriver-wrench mr-2"></i>Form Laporan Servis</button>}
       </div>
     </div>
