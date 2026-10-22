@@ -723,6 +723,8 @@ String hexToDecStringUnpadded(String hexStr) {
 }
 
 // Baca tombol keypad analog tanpa debounce.
+// Batas diambil di titik tengah antar-pita tegangan (tanpa celah): tombol yang ADC-nya
+// bergeser karena toleransi resistor/ADC tetap terbaca. Di atas 3300 = tidak ditekan.
 uint8_t readADKeypadRaw() {
     uint32_t sum = 0;
     for (int i = 0; i < 16; i++) {
@@ -730,13 +732,20 @@ uint8_t readADKeypadRaw() {
         delayMicroseconds(50);
     }
     int val = sum / 16;
-    if (val < 250)                  return KEY_1;
-    else if (val >= 400 && val < 900)   return KEY_2;
-    else if (val >= 1100 && val < 1650) return KEY_3;
-    else if (val >= 1800 && val < 2350) return KEY_4;
-    else if (val >= 2500 && val < 3100) return KEY_5;
-    
-    return KEY_NONE;
+    uint8_t key = KEY_NONE;
+    if (val < 325) key = KEY_1;
+    else if (val < 1000) key = KEY_2;
+    else if (val < 1725) key = KEY_3;
+    else if (val < 2425) key = KEY_4;
+    else if (val < 3300) key = KEY_5;
+
+    // Log hanya saat hasil berubah, untuk kalibrasi tombol lewat Serial Monitor.
+    static uint8_t lastLoggedKey = KEY_NONE;
+    if (key != lastLoggedKey) {
+        lastLoggedKey = key;
+        Serial.printf("[KEYPAD] adc=%d key=%u\n", val, key);
+    }
+    return key;
 }
 
 // Kembalikan tombol setelah pembacaan stabil.
@@ -5920,7 +5929,10 @@ void setup() {
     digitalWrite(PIN_BUZZER, HIGH); delay(80);
     digitalWrite(PIN_BUZZER, LOW);
     pinMode(PIN_AD_KEY, INPUT);
-    
+    // Rentang ADC penuh 0-4095 (~0-3.1 V) agar pita tegangan keypad sesuai batas di readADKeypadRaw.
+    analogReadResolution(12);
+    analogSetPinAttenuation(PIN_AD_KEY, ADC_11db);
+
     WiFi.mode(WIFI_STA); 
     WiFi.setSleep(false);        // Mode tidur dimatikan agar negosiasi koneksi & IP 2x lebih cepat
     WiFi.setAutoReconnect(true); // Otomatis menyambung ulang jika terputus
