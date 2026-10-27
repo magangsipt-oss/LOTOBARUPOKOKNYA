@@ -75,8 +75,11 @@ Setelah upload, restart ESP32.
 ### Step 4: Verifikasi firmware dan sinkronisasi SD di Serial Monitor
 Pastikan firmware yang baru di-upload mencetak penanda berikut:
 ```
-[BUILD] ELOTO_FIXED AUTH=GPS_EARLY_ACQUISITION_V27 SD_STARTUP_RETRY_V31 SD_HANDSHAKE_DIAG_V32 SD_RELAY_QUIESCE_V37 COUNTDOWN_DISPLAY_V37 LCD_PHOTO_COVER_V1
+[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V1
 ```
+`MULTI_JOB_V1`: menu LOTO punya TAMBAH PEKERJAAN. Dengan lebih dari satu pekerjaan, layar sebelum menu menjadi DAFTAR PEKERJAAN; pilih pekerjaan, mekaniknya tap keluar (urutan bebas), lalu pengawasnya. Relay hanya dibuka saat pengawas pekerjaan terakhir keluar.
+Untuk perbaikan GPS SIM808, periksa log `[GPS AT] ... -> OK`, lalu `[GPS] Acquiring fix ...` atau `[GPS] FIX ...`. Ikuti [diagnosis GPS](docs/TROUBLESHOOTING.md#sim808-berkedip-tetapi-gps-belum-mendapat-posisi) untuk membedakan masalah UART, daya GNSS, dan penerimaan satelit. Kompilasi dan tes simulasi belum membuktikan antena pada alat nyata mendapat fix.
+
 Saat online, backend memverifikasi kartu; cache lokal dipakai ketika Wi-Fi/backend tidak dapat dijangkau, tetapi kartu yang dinyatakan tidak terdaftar oleh backend tetap ditolak. Setelah personel dibuat/diubah dari dashboard, perintah `SYNC_USERS` meminta box menyinkronkan daftar dan foto secara langsung (poll hingga 3 detik); sinkronisasi berkala menjadi cadangan. Foto diunduh di task latar dan disimpan ke `/foto/<SID>.jpg` (atau nama berbasis UID), sehingga tapping tidak menunggu unduhan. Foto yang tersimpan dapat ditampilkan dan digunakan saat offline.
 Mount SD mencoba SPI 1 MHz, 400 kHz, lalu 100 kHz dan mencatat hasil setiap percobaan. Firmware tidak memformat kartu.
 Saat backend dan SD siap, alat memperbarui `users.csv` dan menjadwalkan cache foto personel. Foto disimpan transaksional memakai SID valid sebagai nama FAT 8.3 (`/foto/<SID>.jpg`) dengan file staging/cadangan (`.TMP`/`.BAK`), sedangkan UID dipakai untuk meminta foto dari backend. LCD mengulang percobaan tampil tiap 10 detik selama foto belum berhasil dirender; file JPEG hingga 60 KB diterima. Periksa log `[PHOTO_SYNC] ... saved=1` dan folder `foto` untuk memastikan file berhasil disimpan. Tanpa SD yang terpasang dan dapat ditulis, cache foto offline tidak tersedia.

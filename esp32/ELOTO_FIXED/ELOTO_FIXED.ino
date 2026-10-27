@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "../ServerDefaults.h"
 #include "../FirmwareSafety.h"
+#include "../GpsNavigation.h"
 #include "../PhotoCacheIO.h"
 #include <NimBLEDevice.h>
 #include <freertos/queue.h>
@@ -349,11 +350,15 @@ enum SystemState {
     STATE_INITIALIZING, STATE_CONNECTING, STATE_SHOW_IP, STATE_SYSTEM_READY, STATE_COUNTDOWN,
     STATE_SUPERVISOR_VALID, STATE_MECHANIC_VALID, STATE_ALL_WORKERS_REGISTERED,
     STATE_LOGOUT_SUCCESS, STATE_ALL_WORKERS_OUT, STATE_UNLOCKING, STATE_SYSTEM_READY_FINAL,
-    STATE_WELCOME, STATE_GEOFENCE
+    STATE_WELCOME, STATE_GEOFENCE,
+    // Ditambahkan di akhir agar nilai state lama di session.json tetap sama.
+    STATE_JOB_LIST
 };
 
 String stateToString(SystemState s);
-const uint8_t MAX_WORKERS      = 10;
+// Total personel di unit untuk semua tim; jumlah per tim bebas. Ukuran JSON sesi/telemetri
+// mengikuti isi antrean, jadi naikkan hanya setelah heap diuji pada perangkat.
+const uint8_t MAX_WORKERS      = 20;
 const uint8_t AUDIT_RING_SIZE  = 20;
 
 struct WorkerInfo {
@@ -368,6 +373,7 @@ struct WorkerInfo {
     bool offlineFallbackAllowed = false;
     char bleMac[18] = "";       // iTag yang terikat ke nomor BLE personel ini
     uint32_t bleBindSince = 0;  // >0: masih mencari iTag yang didekatkan saat tap
+    uint8_t team = 0;           // Tim pengawas pemilik personel ini dalam sesi unit
 };
 
 // Validasi dan rapikan format SID personel.
@@ -464,6 +470,16 @@ int8_t lastMekanikDisplayCount = -99;
 int8_t initialMekanikOutCount  = -1;
 bool isAddingFromMenu          = false;
 bool workerListFromMenu        = false;
+
+// Multi-pekerjaan: satu sesi unit dapat berisi beberapa pekerjaan. Tiap pekerjaan dipimpin
+// satu pengawas; mekanik yang tap sesudahnya masuk ke pekerjaan itu. Saat ada lebih dari satu
+// pekerjaan, layar sebelum MENU LOTO menjadi DAFTAR PEKERJAAN; pekerjaan yang dipilih menjadi
+// cakupan daftar personel dan seluruh isi menu. Mekanik keluar bebas urutan, pengawas keluar
+// setelah mekaniknya habis, dan relay hanya dibuka oleh pengawas pekerjaan terakhir di unit.
+uint8_t activeTeam = 0;            // Pekerjaan yang sedang diisi / dikeluarkan / dilihat
+bool isAddingTeam = false;         // Alur TAMBAH PEKERJAAN dari menu
+uint8_t selectedJobListIndex = 0;
+const uint8_t MENU_ITEM_COUNT = 5;
 volatile bool needsRedraw      = true;
 volatile bool forceFullRedraw  = true;
 volatile bool photoAlreadyDrawn = false;
@@ -489,12 +505,7 @@ void gpsInitTask(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-// Pastikan koordinat GPS berada dalam rentang valid.
-bool hasValidGpsFix() {
-    return gpsHasFix && currentLatitude >= -90.0 && currentLatitude <= 90.0 &&
-            currentLongitude >= -180.0 && currentLongitude <= 180.0 &&
-            (currentLatitude != 0.0 || currentLongitude != 0.0);
-}
+bool hasValidGpsFix();
 
 QueueHandle_t networkQueue;
 QueueHandle_t photoSyncQueue = NULL;
@@ -568,14 +579,26 @@ unsigned long gpsPollStartMillis = 0;
 unsigned long gpsLastPollMillis = 0;
 const unsigned long GPS_POLL_INTERVAL = 1000;
 const unsigned long GPS_POLL_TIMEOUT  = 1200; // Toleransi waktu respon SIM808
-const unsigned long GPS_NO_RESPONSE_RECOVERY = 60000; // 60 detik agar tidak flapping
+const unsigned long GPS_NO_RESPONSE_RECOVERY = 20000;
 const unsigned long GPS_RECOVERY_COOLDOWN    = 45000;
+const unsigned long GPS_FIX_MAX_AGE = 15000;
+unsigned long gpsCommunicationStartedAt = 0;
+bool gpsRecoveryAttempted = false;
+bool gpsPowerOffDetected = false;
+uint8_t gpsConsecutivePollFailures = 0;
+String gpsAtResponse;
+String gpsLastFixUtc;
+unsigned long gpsUartBaud = 9600;
+bool gpsSearchTracking = false;
+unsigned long gpsSearchStartedAt = 0;
 
 // Parameter GPS Smart Lock & Adaptive Polling
 bool gpsIsLocked = false;
 const float HDOP_ACCURACY_THRESHOLD = 2.5;     // Batas presisi akurat (HDOP <= 2.5)
 const uint8_t MIN_SATELLITES_LOCKED = 4;       // Minimal 4 satelit untuk 3D Fix
-const unsigned long GPS_LOCKED_INTERVAL = 300000; // 5 menit saat terkunci agar hemat daya & CPU
+const unsigned long GPS_LOCKED_INTERVAL = 1000; // Posisi/hilangnya fix tetap diperiksa setiap detik.
+static_assert(GPS_LOCKED_INTERVAL + GPS_POLL_TIMEOUT < GPS_NO_RESPONSE_RECOVERY,
+    "GPS polling must finish before communication recovery is due");
 
 HardwareSerial rd6300Serial(1);
 WebServer server(80);
@@ -617,8 +640,22 @@ unsigned long gpsLastRecoveryMillis = 0;
 uint8_t gpsSatellitesInView = 0;
 uint8_t gpsSatellitesUsed = 0;
 float gpsHdop = 99.9f;
+bool gpsHdopValid = false;
+bool gpsSatellitesVisibleValid = false;
+bool gpsSatellitesUsedValid = false;
+uint8_t gpsCn0Max = 0;
+bool gpsCn0Valid = false;
 double gpsLastSerialLatitude = 0;
 double gpsLastSerialLongitude = 0;
+
+// Berlaku juga untuk pembaca jaringan saat loop sedang sibuk menggambar/menangani kartu.
+bool hasValidGpsFix() {
+    return gpsHasFix && millis() - gpsLastFixMillis < GPS_FIX_MAX_AGE &&
+        isfinite(currentLatitude) && isfinite(currentLongitude) &&
+        currentLatitude >= -90.0 && currentLatitude <= 90.0 &&
+        currentLongitude >= -180.0 && currentLongitude <= 180.0 &&
+        (currentLatitude != 0.0 || currentLongitude != 0.0);
+}
 
 String lastScannedRfidUID = "";
 bool rfidTapArmed = true;
@@ -690,6 +727,11 @@ void photoSyncTask(void *pvParameters);
 extern volatile bool bleBindingActive;
 void clearMainScreenArea();
 void executeFooterChoice();
+void openJobList();
+void beginTeamExit();
+void openWorkerList();
+void openSessionHome();
+void startAddMechanicsToActiveTeam();
 void parseGpsResponse(const String &response);
 void feedGPS();
 void serviceGeofence();
@@ -1030,8 +1072,8 @@ void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, boo
 // Gambar deretan ikon personel di tengah, satu ikon per mekanik.
 void drawMechanicIconRow(int16_t cx, int16_t cy, int count) {
     if (count <= 0) return;
-    if (count > MAX_WORKERS) count = MAX_WORKERS;
-    float scale     = (count <= 5) ? 1.5f : 1.0f;
+    if (count > 10) count = 10; // Lebar layar; jumlah lengkap tetap ditampilkan sebagai teks.
+    float scale    = (count <= 5) ? 1.5f : 1.0f;
     int16_t spacing = (count <= 5) ? 62 : 44;
     int16_t startX  = cx - ((count - 1) * spacing) / 2;
     for (int i = 0; i < count; i++) {
@@ -1061,7 +1103,7 @@ bool hasFooterChoice() {
             currentState == STATE_SUPERVISOR_VALID || currentState == STATE_SET_MEKANIK_COUNT ||
             currentState == STATE_ALL_WORKERS_REGISTERED || currentState == STATE_WORKER_LIST ||
             currentState == STATE_WORKER_DETAIL || currentState == STATE_SPV_OUT_CONFIRM ||
-            currentState == STATE_SERVER_OFFLINE;
+            currentState == STATE_SERVER_OFFLINE || currentState == STATE_JOB_LIST;
 }
 
 // Gambar ikon Wi-Fi pada layar.
@@ -2002,6 +2044,121 @@ int countQueueSupervisors() {
     return count;
 }
 
+int countTeamMembers(uint8_t team) {
+    int count = 0;
+    for (int i = 0; i <= safetyQueue.topIndex; i++) {
+        if (safetyQueue.workers[i].team == team) count++;
+    }
+    return count;
+}
+
+int countTeamMechanics(uint8_t team) {
+    int count = 0;
+    for (int i = 0; i <= safetyQueue.topIndex; i++) {
+        if (safetyQueue.workers[i].team == team && !isQueueSupervisor(i)) count++;
+    }
+    return count;
+}
+
+// Pengawas tim adalah pengawas pertama yang tercatat pada tim tersebut.
+int teamLeadIndex(uint8_t team) {
+    for (int i = 0; i <= safetyQueue.topIndex; i++) {
+        if (safetyQueue.workers[i].team == team && isQueueSupervisor(i)) return i;
+    }
+    return -1;
+}
+
+// Mekanik tim yang paling akhir tap masuk, untuk foto di layar tapping masuk.
+int lastTeamMechanicIndex(uint8_t team) {
+    for (int i = safetyQueue.topIndex; i >= 0; i--) {
+        if (safetyQueue.workers[i].team == team && !isQueueSupervisor(i)) return i;
+    }
+    return -1;
+}
+
+int activeTeamCount() {
+    int count = 0;
+    for (uint8_t t = 0; t < MAX_WORKERS; t++) {
+        if (countTeamMembers(t) > 0) count++;
+    }
+    return count;
+}
+
+// Setiap tim butuh satu pengawas, jadi nomor tim tidak pernah melebihi MAX_WORKERS.
+int findFreeTeam() {
+    for (uint8_t t = 0; t < MAX_WORKERS; t++) {
+        if (countTeamMembers(t) == 0) return t;
+    }
+    return -1;
+}
+
+// Urutan pekerjaan mengikuti urutan pengawasnya tap masuk.
+int activeTeamAt(int position) {
+    for (int i = 0; i <= safetyQueue.topIndex; i++) {
+        uint8_t team = safetyQueue.workers[i].team;
+        if (teamLeadIndex(team) == i && position-- == 0) return team;
+    }
+    return -1;
+}
+
+int teamOrderNumber(uint8_t team) {
+    int lead = teamLeadIndex(team);
+    int number = 0;
+    for (int i = 0; i <= lead; i++) {
+        if (teamLeadIndex(safetyQueue.workers[i].team) == i) number++;
+    }
+    return lead >= 0 ? number : team + 1;
+}
+
+String jobLabel(uint8_t team) {
+    int lead = teamLeadIndex(team);
+    return "PEKERJAAN " + String(teamOrderNumber(team)) + " (" +
+        (lead >= 0 ? safetyQueue.workers[lead].name : String("-")) + ")";
+}
+
+// Pastikan activeTeam menunjuk pekerjaan yang masih ada (mis. setelah pekerjaan lain selesai).
+void ensureActiveTeam() {
+    if (countTeamMembers(activeTeam) == 0 && safetyQueue.topIndex >= 0) {
+        activeTeam = safetyQueue.workers[0].team;
+    }
+}
+
+// DAFTAR PERSONEL berisi personel pekerjaan activeTeam.
+int workerListCount() {
+    return countTeamMembers(activeTeam);
+}
+
+int workerListQueueIndex(int position) {
+    for (int i = 0; i <= safetyQueue.topIndex; i++) {
+        if (safetyQueue.workers[i].team == activeTeam && position-- == 0) return i;
+    }
+    return -1;
+}
+
+// UID tersimpan dapat berformat heksadesimal atau desimal (data offline lama).
+bool uidMatches(const String &stored, const String &uid) {
+    return stored.length() > 0 && (stored.equalsIgnoreCase(uid) ||
+        stored.equalsIgnoreCase(hexToDecStringPadded(uid)) ||
+        stored.equalsIgnoreCase(hexToDecStringUnpadded(uid)));
+}
+
+int freeQueueSlots() {
+    return MAX_WORKERS - (safetyQueue.topIndex + 1);
+}
+
+// Batas atas target mekanik tim aktif: yang sudah masuk + slot antrean yang tersisa.
+int maxTeamMechanicTarget() {
+    return countTeamMechanics(activeTeam) + freeQueueSlots();
+}
+
+// Pengawas utama = personel indeks 0 (pengawas tim paling awal yang masih di unit).
+void syncMainSupervisor() {
+    if (safetyQueue.topIndex < 0) return;
+    supervisorUID = safetyQueue.workers[0].uid;
+    supervisorName = safetyQueue.workers[0].name;
+    supervisorRole = safetyQueue.workers[0].role;
+}
+
 // Normalisasi UID sebelum pencarian atau penyimpanan.
 String normalizeRfidUid(String uid) {
     uid.trim(); uid.replace(" ", ""); uid.replace(":", ""); uid.replace("-", ""); uid.toUpperCase();
@@ -2578,41 +2735,122 @@ void drawGeofenceWarning() {
     }
 }
 
-// Kirim perintah AT ke modul GPS.
-void kirimPerintahAT(const char* perintah, unsigned long tunggu) {
-    while (gpsSerial.available()) gpsSerial.read();
+// Satu pemilik UART: task init/recovery, lalu feedGPS di task loop.
+// Tunggu jawaban akhir; jeda saja tidak membuktikan SIM808 menerima perintah.
+bool kirimPerintahAT(const char* perintah, unsigned long tunggu) {
+    for (int i = 0; i < 1024 && gpsSerial.available(); ++i) gpsSerial.read();
+    gpsAtResponse = "";
+    String line;
     gpsSerial.println(perintah);
     unsigned long mulai = millis();
     while (millis() - mulai < tunggu) {
+        while (gpsSerial.available()) {
+            char c = gpsSerial.read();
+            ++gpsByteCount;
+            gpsLastByteMillis = millis();
+            if (gpsAtResponse.length() < 512) gpsAtResponse += c;
+            if (c == '\n') {
+                line.trim();
+                if (line == "OK") {
+                    Serial.printf("[GPS AT] %s -> OK\n", perintah);
+                    return true;
+                }
+                if (line == "ERROR" || line.startsWith("+CME ERROR")) {
+                    Serial.printf("[GPS AT] %s -> %s\n", perintah, line.c_str());
+                    return false;
+                }
+                line = "";
+            } else if (line.length() < 256) {
+                line += c;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+    Serial.printf("[GPS AT] %s -> TIMEOUT bytes=%u baud=%lu; periksa daya/UART RX16 TX17\n",
+        perintah, (unsigned)gpsAtResponse.length(), gpsUartBaud);
+    return false;
 }
 
 // Inisialisasi modem GPS dan konfigurasi dasarnya.
 void initGpsModule() {
-    delay(1000);
-    kirimPerintahAT("AT", 300);
-    kirimPerintahAT("ATE0", 300);
-    kirimPerintahAT("AT+CGNSPWR=1", 800);
-    kirimPerintahAT("AT+CGNSPWR?", 300);
-    kirimPerintahAT("AT+CGNSSEQ=\"RMC\"", 300);
-    kirimPerintahAT("AT+CGNSCMD=0,\"$PMTK313,1*2E\"", 300); 
-    kirimPerintahAT("AT+CGNSCMD=0,\"$PMTK301,2*2E\"", 300); 
-    kirimPerintahAT("AT+CGNSCMD=0,\"$PMTK220,1000*1F\"", 300); // 1Hz rate
-    gpsLastPollMillis = millis();
-    gpsLastValidResponseMillis = millis();
+    delay(200); // Coba segera; retry AT tetap menoleransi SIM808 yang baru dinyalakan.
+    bool responsive = false;
+    for (uint8_t attempt = 1; attempt <= 5; ++attempt) {
+        if (kirimPerintahAT("AT", 500)) {
+            responsive = true;
+            break;
+        }
+        delay(100);
+    }
+    if (!responsive) {
+        // SIM808 bisa tersimpan pada baud tetap lain. Ubah hanya baud ESP32,
+        // tanpa AT+IPR/AT&W agar konfigurasi modem tidak ditulis ulang.
+        const unsigned long candidates[] = {115200, 57600, 38400, 19200, 4800, 2400, 1200, 230400, 460800, 9600};
+        const unsigned long previousBaud = gpsUartBaud;
+        for (unsigned long candidate : candidates) {
+            if (candidate == previousBaud) continue;
+            gpsUartBaud = candidate;
+            gpsSerial.updateBaudRate(candidate);
+            delay(40);
+            Serial.printf("[GPS] Mencoba UART baud=%lu\n", candidate);
+            for (uint8_t attempt = 0; attempt < 2; ++attempt) {
+                if (kirimPerintahAT("AT", 600)) {
+                    responsive = true;
+                    break;
+                }
+                delay(100);
+            }
+            if (responsive) break;
+        }
+        if (!responsive) {
+            gpsUartBaud = previousBaud;
+            gpsSerial.updateBaudRate(previousBaud);
+        }
+    }
+    if (!responsive) {
+        Serial.println("[GPS] SIM808 tidak menjawab di baud 1200-460800; periksa port UART AT, GND, daya/PWRKEY");
+        return;
+    }
+    Serial.printf("[GPS] Komunikasi SIM808 terkonfirmasi baud=%lu\n", gpsUartBaud);
+    kirimPerintahAT("ATE0", 1000);
+    kirimPerintahAT("AT+CSCLK=0", 1000);
+    kirimPerintahAT("AT+CGNSTST=0", 1000);
+    kirimPerintahAT("AT+CGNSURC=0", 1000);
+    if (!kirimPerintahAT("AT+CGNSPWR?", 1000)) return;
+    String powerResponse = gpsAtResponse;
+    powerResponse.replace(" ", "");
+    if (powerResponse.indexOf("+CGNSPWR:0") >= 0) {
+        if (!kirimPerintahAT("AT+CGNSPWR=1", 2000)) return;
+        if (!kirimPerintahAT("AT+CGNSPWR?", 1000)) return;
+        powerResponse = gpsAtResponse;
+        powerResponse.replace(" ", "");
+    } else if (powerResponse.indexOf("+CGNSPWR:1") >= 0) {
+        Serial.println("[GPS] GNSS sudah ON; lanjutkan pencarian tanpa mengulang aktivasi daya");
+    }
+    if (powerResponse.indexOf("+CGNSPWR:1") < 0) {
+        Serial.println("[GPS] GNSS power belum ON; cek suplai SIM808");
+        return;
+    }
+    kirimPerintahAT("AT+CGNSSEQ=\"RMC\"", 1000);
+    // SIMCom CGNSCMD meneruskan perintah MTK ke GNSS. OK hanya mengonfirmasi
+    // pengiriman, bukan ACK mesin GNSS; kegagalan opsi ini tidak menghalangi polling.
+    if (kirimPerintahAT("AT+CGNSCMD=0,\"$PMTK220,1000*1F\"", 1000)) {
+        Serial.println("[GPS] Permintaan interval GNSS 1 Hz diteruskan; verifikasi dari waktu navigasi");
+    } else {
+        Serial.println("[GPS] Opsi interval GNSS ditolak; lanjutkan dengan konfigurasi receiver yang ada");
+    }
+    // Jangan mematikan daya/cold-start hanya karena belum mendapat fix.
+    // SBAS bukan syarat penerimaan GPS; gunakan konfigurasi navigasi standar SIM808.
+    Serial.println("[GPS] SIM808 siap, GNSS power ON; menunggu posisi satelit");
+    gpsLastPollMillis = millis() - GPS_POLL_INTERVAL;
 }
 
 // Pulihkan koneksi GPS tanpa menghentikan loop utama.
 void gpsRecoveryTask(void *pvParameters) {
-    kirimPerintahAT("AT", 500);
-    kirimPerintahAT("ATE0", 300);
-    kirimPerintahAT("AT+CGNSPWR=1", 800);
-    kirimPerintahAT("AT+CGNSPWR?", 500);
+    initGpsModule();
     gpsPollState = GPS_POLL_IDLE;
     gpsResponseBuffer = "";
-    gpsLastPollMillis = millis();
-    gpsLastValidResponseMillis = millis();
+    gpsLastPollMillis = millis() - GPS_POLL_INTERVAL;
     gpsRecoveryRunning = false;
     vTaskDelete(NULL);
 }
@@ -2638,137 +2876,169 @@ void setClockFromGps(const String &utc) {
     Serial.printf("[TIME] Clock set from GPS epoch=%ld (NTP belum tersedia)\n", (long)epoch);
 }
 
+// Posisi terakhir tetap disimpan, tetapi tidak boleh dilaporkan sebagai fix terkini.
+void invalidateGpsFix() {
+    if (xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        gpsHasFix = false;
+        gpsIsLocked = false;
+        firstGpsFixSent = false;
+        if (!gpsSearchTracking) {
+            gpsSearchTracking = true;
+            gpsSearchStartedAt = millis();
+        }
+        xSemaphoreGive(gpsMutex);
+    }
+}
+
 // Uraikan koordinat dan status dari respons GPS.
 void parseGpsResponse(const String &response) {
-    int pos = response.indexOf("+CGNSINF:");
-    if (pos < 0) return;
-
-    String data = response.substring(pos + 9);
-    int nl = data.indexOf('\n');
-    if (nl > 0) data = data.substring(0, nl);
-    data.trim();
-
-    String field[20];
-    int idx = 0, mulai = 0;
-    for (int i = 0; i <= (int)data.length(); i++) {
-        if (i == (int)data.length() || data.charAt(i) == ',') {
-            if (idx < 20) field[idx] = data.substring(mulai, i);
-            idx++;
-            mulai = i + 1;
-        }
+    eloto::GpsNavigationReading reading;
+    if (!eloto::parseGpsNavigation(response.c_str(), reading)) {
+        Serial.println("[GPS] Respons CGNSINF rusak/tidak lengkap; posisi tidak diperbarui");
+        return;
     }
-    if (idx < 6) return;
+    unsigned long now = millis();
+    ++gpsSentenceCount;
+    gpsLastValidResponseMillis = now;
+    gpsConsecutivePollFailures = 0;
+    gpsPowerOffDetected = !reading.running;
+    gpsHdop = reading.hdop;
+    gpsHdopValid = reading.hdopValid;
+    gpsSatellitesInView = reading.satellitesVisible;
+    gpsSatellitesUsed = reading.satellitesUsed;
+    gpsSatellitesVisibleValid = reading.satellitesVisibleValid;
+    gpsSatellitesUsedValid = reading.satellitesUsedValid;
+    gpsCn0Max = reading.cn0Max;
+    gpsCn0Valid = reading.cn0Valid;
 
-    gpsSentenceCount++;
-    gpsLastValidResponseMillis = millis();
-
-    String fixStatus = field[1];
-    String latStr     = field[3];
-    String lonStr     = field[4];
-    fixStatus.trim();
-    latStr.trim();
-    lonStr.trim();
-
-    if (idx > 10 && field[10].length() > 0) gpsHdop = field[10].toFloat();
-    if (idx > 14 && field[14].length() > 0) gpsSatellitesInView = (uint8_t)field[14].toInt();
-    if (idx > 15 && field[15].length() > 0) gpsSatellitesUsed = (uint8_t)field[15].toInt();
-
-    if (fixStatus == "1" && !systemClockReady()) {
-        String utc = field[2];
-        utc.trim();
-        setClockFromGps(utc);
+    if (!reading.fix) {
+        invalidateGpsFix();
+        if (gpsDebugPrintMillis == 0 || now - gpsDebugPrintMillis >= 10000) {
+            gpsDebugPrintMillis = now;
+            char hdopText[12], cn0Text[12];
+            if (gpsHdopValid) snprintf(hdopText, sizeof(hdopText), "%.2f", gpsHdop);
+            else snprintf(hdopText, sizeof(hdopText), "NA");
+            if (gpsCn0Valid) snprintf(cn0Text, sizeof(cn0Text), "%u", gpsCn0Max);
+            else snprintf(cn0Text, sizeof(cn0Text), "NA");
+            Serial.printf("[GPS] Acquiring fix status=%s sats_used=%u sats_view=%u hdop=%s power=%u cn0_max_dbhz=%s used_valid=%u view_valid=%u search_s=%lu\n",
+                reading.running ? "NO_FIX" : "POWER_OFF", gpsSatellitesUsed,
+                gpsSatellitesInView, hdopText, reading.running ? 1 : 0, cn0Text,
+                gpsSatellitesUsedValid ? 1 : 0, gpsSatellitesVisibleValid ? 1 : 0,
+                (unsigned long)(now - gpsSearchStartedAt) / 1000);
+            int begin = response.indexOf("+CGNSINF:");
+            int end = response.indexOf('\n', begin);
+            Serial.printf("[GPS RAW] %.*s\n", end - begin, response.c_str() + begin);
+        }
+        return;
     }
 
-    if (fixStatus == "1" && latStr.length() > 0 && lonStr.length() > 0) {
-        double newLat = strtod(latStr.c_str(), NULL);
-        double newLon = strtod(lonStr.c_str(), NULL);
-        
-        if (xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            currentLatitude  = newLat;
-            currentLongitude = newLon;
-            gpsHasFix        = true;
-            gpsLastFixMillis = millis();
-            xSemaphoreGive(gpsMutex);
-        }
+    bool wasLocked = gpsIsLocked;
+    if (xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    String utc(reading.utc.c_str());
+    if (utc != gpsLastFixUtc) {
+        gpsLastFixUtc = utc;
+        gpsLastFixMillis = now;
+    }
+    if (now - gpsLastFixMillis >= GPS_FIX_MAX_AGE) {
+        gpsHasFix = false;
+        gpsIsLocked = false;
+        firstGpsFixSent = false;
+        xSemaphoreGive(gpsMutex);
+        Serial.println("[GPS] Waktu GNSS tidak bergerak; fix lama ditolak");
+        return;
+    }
+    currentLatitude = reading.latitude;
+    currentLongitude = reading.longitude;
+    gpsHasFix = true;
+    gpsIsLocked = gpsSatellitesUsed >= MIN_SATELLITES_LOCKED &&
+        gpsHdopValid && gpsSatellitesUsedValid && gpsHdop <= HDOP_ACCURACY_THRESHOLD;
+    bool searchCompleted = gpsSearchTracking;
+    unsigned long searchDuration = now - gpsSearchStartedAt;
+    gpsSearchTracking = false;
+    xSemaphoreGive(gpsMutex);
 
-        bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
-                                fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
-        if (positionChanged || millis() - gpsLastSerialReportMillis >= 5000) {
-            Serial.printf("[GPS] FIX latitude=%.6f  longitude=%.6f\n", currentLatitude, currentLongitude);
-            gpsLastSerialLatitude  = currentLatitude;
-            gpsLastSerialLongitude = currentLongitude;
-            gpsLastSerialReportMillis = millis();
-        }
-        if (!firstGpsFixSent) {
-            firstGpsFixSent = true;
-            logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
-        }
-
-        // Logika Smart Lock: Kunci koordinat jika sudah akurat (satelit >= 4 dan HDOP <= 2.5)
-        if (!gpsIsLocked && gpsSatellitesUsed >= MIN_SATELLITES_LOCKED && gpsHdop <= HDOP_ACCURACY_THRESHOLD) {
-            gpsIsLocked = true;
-            Serial.printf("[GPS LOCK] Koordinat Akurat Terkunci! Sat: %d, HDOP: %.2f | Lat: %.6f, Lon: %.6f\n", gpsSatellitesUsed, gpsHdop, currentLatitude, currentLongitude);
-            logAuditAsync("GPS_ACCURATE_LOCKED", "SYSTEM");
-            saveSessionToSD();
-        }
+    if (searchCompleted) Serial.printf("[GPS] Fix didapat setelah pemantauan pencarian %lu detik\n",
+        searchDuration / 1000);
+    if (!systemClockReady()) setClockFromGps(String(reading.utc.c_str()));
+    bool positionChanged = fabs(currentLatitude - gpsLastSerialLatitude) > 0.00001 ||
+                            fabs(currentLongitude - gpsLastSerialLongitude) > 0.00001;
+    if (positionChanged || now - gpsLastSerialReportMillis >= 5000) {
+        Serial.printf("[GPS] FIX latitude=%.6f longitude=%.6f sats_used=%u sats_view=%u hdop=%.2f\n",
+            currentLatitude, currentLongitude, gpsSatellitesUsed, gpsSatellitesInView, gpsHdop);
+        gpsLastSerialLatitude = currentLatitude;
+        gpsLastSerialLongitude = currentLongitude;
+        gpsLastSerialReportMillis = now;
+    }
+    if (!firstGpsFixSent) {
+        firstGpsFixSent = true;
+        logAuditAsync("GPS_FIX_LOCKED", "SYSTEM");
+    }
+    if (gpsIsLocked && !wasLocked) {
+        Serial.println("[GPS] Posisi akurat; pembacaan tetap berlanjut setiap 1 detik");
+        logAuditAsync("GPS_ACCURATE_LOCKED", "SYSTEM");
     }
 }
 
 // Baca data serial GPS dan perbarui status lokasi.
 void feedGPS() {
-    if (!gpsInitDone || gpsRecoveryRunning) return;
     unsigned long now = millis();
+    if (gpsHasFix && now - gpsLastFixMillis >= GPS_FIX_MAX_AGE) {
+        invalidateGpsFix();
+        Serial.println("[GPS] Fix kedaluwarsa; koordinat lama hanya riwayat");
+    }
+    if (!gpsInitDone || gpsRecoveryRunning) return;
     unsigned long currentInterval = gpsIsLocked ? GPS_LOCKED_INTERVAL : GPS_POLL_INTERVAL;
     if (gpsPollState == GPS_POLL_IDLE) {
         if (now - gpsLastPollMillis >= currentInterval) {
+            // Buang jawaban akhir/URC lama sebelum memulai transaksi baru.
+            for (int i = 0; i < 1024 && gpsSerial.available(); ++i) gpsSerial.read();
             gpsLastPollMillis = now;
-            if (gpsSerial.available() > 500) {
-                while (gpsSerial.available()) gpsSerial.read();
-            }
             gpsSerial.println("AT+CGNSINF");
             gpsResponseBuffer = "";
             gpsPollStartMillis = now;
             gpsPollState = GPS_POLL_WAITING;
         }
     } else {
+        // Habiskan RX yang sudah tersedia sebelum memutuskan timeout. Batas 64 byte
+        // dulu memotong respons valid jika rendering/HTTP menahan loop >1,2 detik.
         int bytesRead = 0;
-        while (gpsSerial.available() && bytesRead < 64) {
+        while (gpsSerial.available() && bytesRead < 1024) {
             char c = gpsSerial.read();
             if (gpsResponseBuffer.length() < 512) gpsResponseBuffer += c;
-            gpsByteCount++;
+            ++gpsByteCount;
             gpsLastByteMillis = now;
-            bytesRead++;
+            ++bytesRead;
         }
         int infIdx = gpsResponseBuffer.indexOf("+CGNSINF:");
-        bool barisLengkap = false;
-        if (infIdx >= 0) {
-            int nlIdx = gpsResponseBuffer.indexOf('\n', infIdx);
-            if (nlIdx > infIdx) barisLengkap = true;
-        }
+        bool barisLengkap = infIdx >= 0 && gpsResponseBuffer.indexOf('\n', infIdx) > infIdx;
         bool timeout = now - gpsPollStartMillis >= GPS_POLL_TIMEOUT;
-        if (barisLengkap || timeout) {
+        bool error = gpsResponseBuffer.indexOf("ERROR") >= 0;
+        if (barisLengkap || timeout || error) {
+            uint32_t previousSentences = gpsSentenceCount;
             if (barisLengkap) parseGpsResponse(gpsResponseBuffer);
+            else Serial.printf("[GPS] CGNSINF %s bytes=%u\n", error ? "ERROR" : "TIMEOUT",
+                (unsigned)gpsResponseBuffer.length());
+            if (gpsSentenceCount == previousSentences && gpsConsecutivePollFailures < 255)
+                ++gpsConsecutivePollFailures;
             gpsPollState = GPS_POLL_IDLE;
         }
     }
     now = millis();
-    if (!gpsRecoveryRunning &&
-        now - gpsLastValidResponseMillis >= GPS_NO_RESPONSE_RECOVERY &&
-        now - gpsLastRecoveryMillis >= GPS_RECOVERY_COOLDOWN) {
-        gpsRecoveryRunning = true;
+    unsigned long responseAt = gpsSentenceCount ? gpsLastValidResponseMillis : gpsCommunicationStartedAt;
+    if ((gpsPowerOffDetected || (gpsConsecutivePollFailures >= 2 &&
+            now - responseAt >= GPS_NO_RESPONSE_RECOVERY)) &&
+        (!gpsRecoveryAttempted || now - gpsLastRecoveryMillis >= GPS_RECOVERY_COOLDOWN)) {
+        gpsRecoveryRunning = true; // Serahkan UART kepada task recovery sebelum task dijalankan.
+        gpsRecoveryAttempted = true;
         gpsLastRecoveryMillis = now;
         gpsPollState = GPS_POLL_IDLE;
+        gpsPowerOffDetected = false;
+        Serial.println("[GPS] Memulihkan komunikasi/daya GNSS; tanpa restart ESP32 atau cold-start");
         if (xTaskCreatePinnedToCore(gpsRecoveryTask, "GPSRecover", 4096,
                 NULL, 1, NULL, 0) != pdPASS) {
             gpsRecoveryRunning = false;
+            Serial.println("[GPS] Task recovery gagal dibuat; akan dicoba ulang setelah cooldown");
         }
-        return;
-    }
-    // Jangan reset fix jika koordinat sudah di-lock akurat
-    if (!gpsIsLocked) {
-        if (gpsHasFix && now - gpsLastFixMillis > 45000) gpsHasFix = false;
-        if (firstGpsFixSent && gpsLastFixMillis != 0 && now - gpsLastFixMillis > 90000)
-            firstGpsFixSent = false;
     }
 }
 
@@ -2921,6 +3191,7 @@ String stateToString(SystemState s) {
         case STATE_UNLOCKING: return "UNLOCKING";
         case STATE_SYSTEM_READY_FINAL: return "SYSTEM_READY_FINAL";
         case STATE_WELCOME: return "WELCOME";
+        case STATE_JOB_LIST: return "JOB_LIST";
         default: return "UNKNOWN";
     }
 }
@@ -3113,6 +3384,30 @@ void displayErrorCardPopup(String uid, String title, String name, String role, S
     needsRedraw = true;
 }
 
+// Peringatan singkat yang bukan dari tap kartu (mis. pilihan menu ditolak).
+void displayMenuWarning(const String &title, const String &hint) {
+    tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
+    tft.drawRoundRect(14, 54, 452, 204, 8, ELOTO_HEADER);
+    tft.setTextDatum(MC_DATUM);
+    setStoryFont(12);
+    tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+    tft.drawString(title, 240, 115);
+    setStoryFont(9);
+    tft.setTextColor(ELOTO_TEXT, ELOTO_BG);
+    tft.drawString(hint, 240, 170);
+    drawTftFooter("", "");
+    unsigned long startNotify = millis();
+    while (millis() - startNotify < NOTIFICATION_ERROR_DURATION) {
+        server.handleClient();
+        feedGPS();
+        if (millis() - startNotify > 200 && readADKeypadRaw() != KEY_NONE) break;
+        delay(5);
+    }
+    digitalWrite(PIN_BUZZER, LOW);
+    lastRenderedState = STATE_SYSTEM_ERROR;
+    needsRedraw = true;
+}
+
 // Catat tap petugas BBM dan tampilkan konfirmasinya.
 bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     if (!isFuelmanRole(card.role)) return false;
@@ -3201,7 +3496,8 @@ void rebuildCachedQueueString() {
         } else {
             displayedRole = "MEKANIK";
         }
-        cachedQueueList += "[" + displayedRole + "] " + safetyQueue.workers[i].name;
+        cachedQueueList += "[" + displayedRole + " T" + String(safetyQueue.workers[i].team + 1) + "] " +
+            safetyQueue.workers[i].name;
         if (i < safetyQueue.topIndex) cachedQueueList += " - ";
     }
 }
@@ -3217,8 +3513,10 @@ void saveSessionToSD() {
         if (recoverSdFile(active, temporary, backup)) {
             File sessionFile = SD.open(temporary, FILE_WRITE);
             if (sessionFile) {
-                DynamicJsonDocument doc(4096);
-                doc["state"]               = (int)(currentState == STATE_GEOFENCE ? STATE_MENU : currentState);
+                // Sekitar 256 byte per personel; menyesuaikan isi antrean agar heap tidak terpakai sia-sia.
+                DynamicJsonDocument doc(1024 + (safetyQueue.topIndex + 1) * 256);
+                doc["state"]               = (int)((currentState == STATE_GEOFENCE ||
+                    currentState == STATE_JOB_LIST) ? STATE_MENU : currentState);
                 doc["spv_uid"]             = supervisorUID;
                 doc["spv_sid"]             = safetyQueue.topIndex >= 0 ? safetyQueue.workers[0].sid : "-----";
                 doc["spv_name"]            = supervisorName;
@@ -3238,8 +3536,10 @@ void saveSessionToSD() {
                 doc["fuelman_name"]        = activeFuelmanName;
                 doc["last_scanned_uid"]    = lastScannedUID;
                 doc["last_scanned_sid"]    = lastScannedSID;
+                doc["active_team"]         = activeTeam;
+                doc["is_adding_team"]      = isAddingTeam;
 
-                if (gpsHasFix) {
+                if (hasValidGpsFix()) {
                     doc["last_lat"] = currentLatitude;
                     doc["last_lon"] = currentLongitude;
                 }
@@ -3252,6 +3552,7 @@ void saveSessionToSD() {
                     obj["name"] = safetyQueue.workers[i].name;
                     obj["role"] = safetyQueue.workers[i].role;
                     obj["ble_mac"] = (const char *)safetyQueue.workers[i].bleMac;
+                    obj["team"] = safetyQueue.workers[i].team;
                 }
                 if (doc.overflowed()) {
                     sessionFile.close();
@@ -3296,7 +3597,7 @@ bool loadSessionFromSD() {
         if (SD.exists("/session.json")) {
             File sessionFile = SD.open("/session.json", FILE_READ);
             if (sessionFile) {
-                DynamicJsonDocument doc(4096);
+                DynamicJsonDocument doc(1024 + MAX_WORKERS * 256);
                 DeserializationError err = deserializeJson(doc, sessionFile);
                 sessionFile.close();
 
@@ -3335,6 +3636,9 @@ bool loadSessionFromSD() {
                         activeFuelmanName  = doc["fuelman_name"] | "";
                         lastScannedUID     = doc["last_scanned_uid"] | "---";
                         lastScannedSID     = doc["last_scanned_sid"] | "-----";
+                        // Sesi format lama tanpa tim dipulihkan sebagai satu tim.
+                        activeTeam         = constrain((int)(doc["active_team"] | 0), 0, MAX_WORKERS - 1);
+                        isAddingTeam       = doc["is_adding_team"] | false;
 
                         int idx = 0;
                         for (JsonObject obj : q) {
@@ -3351,30 +3655,36 @@ bool loadSessionFromSD() {
                                         safetyQueue.workers[idx].bleMac[0] = '\0';
                                 }
                                 safetyQueue.workers[idx].bleBindSince = 0;
+                                safetyQueue.workers[idx].team = constrain((int)(obj["team"] | 0), 0, MAX_WORKERS - 1);
                                 idx++;
                             }
                         }
                         sanitizeQueueDeadlock();
-                        if (currentState == STATE_MEKANIK_OUT && safetyQueue.topIndex == 0) {
+                        ensureActiveTeam();
+                        if (currentState == STATE_MEKANIK_OUT && countTeamMembers(activeTeam) <= 1) {
                             currentState = STATE_WAIT_SPV_OUT;
                         }
-                        if (safetyQueue.topIndex >= 0) {
-                            supervisorUID = safetyQueue.workers[0].uid;
-                            supervisorName = safetyQueue.workers[0].name;
-                            supervisorRole = safetyQueue.workers[0].role;
-                        }
+                        syncMainSupervisor();
                         rebuildCachedQueueString();
-                        targetMekanikCount = constrain((int)targetMekanikCount, 0, MAX_WORKERS - countQueueSupervisors());
+                        targetMekanikCount = constrain((int)targetMekanikCount, 0, maxTeamMechanicTarget());
                         selectedWorkerIndex = constrain((int)selectedWorkerIndex, 0, max(0, (int)safetyQueue.topIndex));
-                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, 4);
+                        selectedMenuIndex = constrain((int)selectedMenuIndex, 0, MENU_ITEM_COUNT - 1);
                         selectedFooterAction = constrain((int)selectedFooterAction, 0, currentState == STATE_WORKER_LIST ? 2 : 1);
 
                         bool savedSessionActive = doc["is_session_active"] | false;
                         unsigned long savedElapsed = doc["session_elapsed_ms"] | 0UL;
 
-                        if (savedSessionActive && stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT) {
+                        bool sessionStateSaved = stateInt >= STATE_WAIT_SPV_IN && stateInt <= STATE_ALL_WORKERS_OUT;
+                        if (savedSessionActive && sessionStateSaved) {
                             isSessionActive = true;
                             sessionStartTime = millis() - savedElapsed;
+                        } else if (safetyQueue.topIndex >= 0) {
+                            // Personel masih tercatat di dalam unit: jangan kembali ke layar awal
+                            // yang dapat membuka relay tanpa tapping keluar.
+                            isSessionActive = true;
+                            sessionStartTime = millis() - savedElapsed;
+                            currentState = STATE_MENU;
+                            selectedFooterAction = 0;
                         } else {
                             isSessionActive = false;
                             sessionStartTime = 0;
@@ -3443,7 +3753,7 @@ void loadUsersToRAM() {
 }
 
 // Tambahkan personel terverifikasi ke antrean LOTO.
-bool pushQueue(String uid, String sid, String name, String role) {
+bool pushQueue(String uid, String sid, String name, String role, uint8_t team) {
     if (safetyQueue.topIndex >= MAX_WORKERS - 1) return false;
     
     String normalized = normalizeRfidUid(uid);
@@ -3463,8 +3773,9 @@ bool pushQueue(String uid, String sid, String name, String role) {
     entry.isRegistered = true;
     entry.bleMac[0] = '\0';
     entry.bleBindSince = millis();
+    entry.team = team < MAX_WORKERS ? team : 0;
 
-    int maxMechanics = MAX_WORKERS - countQueueSupervisors();
+    int maxMechanics = maxTeamMechanicTarget();
     if (targetMekanikCount > maxMechanics) targetMekanikCount = maxMechanics;
     rebuildCachedQueueString();
     saveSessionToSD();
@@ -3484,8 +3795,9 @@ void removeQueueAt(int index) {
     safetyQueue.workers[safetyQueue.topIndex].role = "";
     safetyQueue.workers[safetyQueue.topIndex].bleMac[0] = '\0';
     safetyQueue.workers[safetyQueue.topIndex].bleBindSince = 0;
+    safetyQueue.workers[safetyQueue.topIndex].team = 0;
     safetyQueue.topIndex--;
-    
+
     rebuildCachedQueueString();
     saveSessionToSD();
     forceFullRedraw = true;
@@ -4275,7 +4587,8 @@ void networkTaskCore0(void * pvParameters) {
                 http.addHeader("X-Device-Id", getDeviceId());
                 http.setTimeout(3000);
 
-                DynamicJsonDocument doc(2048);
+                // Kapasitas mengikuti jumlah personel (antrean membawa field team per orang).
+                DynamicJsonDocument doc(1536 + (safetyQueue.topIndex + 1) * 192);
                 String eventId = String(job.event) + "-" + String(job.uid) + "-" + String(millis()) + "-" + String(random(1000, 9999));
                 doc["event_id"]       = eventId;
                 doc["id_box"]         = getDeviceId(); doc["event"] = String(job.event);
@@ -4288,7 +4601,7 @@ void networkTaskCore0(void * pvParameters) {
                 if (xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
                     snapLat = currentLatitude;
                     snapLon = currentLongitude;
-                    snapFix = gpsHasFix;
+                    snapFix = hasValidGpsFix();
                     xSemaphoreGive(gpsMutex);
                 }
                 if (snapFix) {
@@ -4319,7 +4632,10 @@ void networkTaskCore0(void * pvParameters) {
                 for (int i = 0; i <= safetyQueue.topIndex; i++) {
                     JsonObject o = q.createNestedObject();
                     o["uid"]  = safetyQueue.workers[i].uid; o["name"] = safetyQueue.workers[i].name; o["role"] = safetyQueue.workers[i].role;
+                    o["team"] = safetyQueue.workers[i].team + 1;
                 }
+                doc["teams"] = activeTeamCount();
+                if (doc.overflowed()) Serial.println("[TELEMETRY] JSON penuh; sebagian data antrean terpotong");
                 String jsonPayload; serializeJson(doc, jsonPayload);
                 int httpCode = http.POST(jsonPayload);
                 Serial.printf("[TELEMETRY] POST %s event=%s uid=%s => HTTP %d\n", url.c_str(), job.event, job.uid, httpCode);
@@ -4459,7 +4775,8 @@ void logAuditAsync(String event, String uid) {
     
     AuditEntry &slot = auditRing[auditHead];
     slot.event = event; slot.uid = uid; slot.ok = true; slot.ts = millis();
-    slot.lat = gpsHasFix ? currentLatitude : 0; slot.lon = gpsHasFix ? currentLongitude : 0;
+    bool auditGpsFix = hasValidGpsFix();
+    slot.lat = auditGpsFix ? currentLatitude : 0; slot.lon = auditGpsFix ? currentLongitude : 0;
     auditHead = (auditHead + 1) % AUDIT_RING_SIZE; auditCount++;
 }
 
@@ -4568,21 +4885,28 @@ void processRfidLogic(String uid) {
         }
     }
     
+    // Pengawas pekerjaan terpilih yang mekaniknya sudah habis: tap di layar keluar
+    // diproses sebagai pengawas keluar.
+    ensureActiveTeam();
+    if (operationalState == STATE_MEKANIK_OUT && workerIdx >= 0 &&
+            workerIdx == teamLeadIndex(activeTeam) && countTeamMembers(activeTeam) == 1) {
+        operationalState = STATE_WAIT_SPV_OUT;
+    }
+
     switch (operationalState) {
         case STATE_WAIT_SPV_IN:
             if (card.isSpv || checkIsSupervisorRole(card.role)) {
-                bool firstSupervisor = supervisorUID.length() == 0;
-                if (firstSupervisor) {
-                    supervisorUID = uid; supervisorName = card.name; supervisorRole = "PENGAWAS";
-                }
-                if (!pushQueue(uid, card.sid, card.name, "PENGAWAS")) {
-                    if (firstSupervisor) {
-                        supervisorUID = ""; supervisorName = ""; supervisorRole = "";
-                    }
+                // Setiap pengawas yang tap masuk membuka tim baru. Hanya pengawas pertama di
+                // unit yang membuka sesi backend; berikutnya dicatat sebagai pengawas tambahan.
+                bool firstSupervisor = safetyQueue.topIndex < 0;
+                int team = findFreeTeam();
+                if (team < 0 || !pushQueue(uid, card.sid, card.name, "PENGAWAS", (uint8_t)team)) {
                     buzzFailed();
                     displayErrorCardPopup(uid, "ANTREAN PENUH", card.name, card.role, card.sid, "BATAS PERSONEL SUDAH TERCAPAI");
                     break;
                 }
+                activeTeam = (uint8_t)team;
+                syncMainSupervisor();
                 buzzSuccess();
                 logAuditAsync(firstSupervisor ? "SUPERVISOR_LOCK_IN" : "SUPERVISOR_EXTRA_LOCK_IN", uid);
                 selectedFooterAction = 1;
@@ -4598,17 +4922,17 @@ void processRfidLogic(String uid) {
                 buzzFailed();
                 displayErrorCardPopup(uid, "BUKAN MEKANIK", card.name, card.role, card.sid, "TEMPELKAN KARTU MEKANIK");
             } else {
-                if (!pushQueue(uid, card.sid, card.name, "MEKANIK")) {
+                if (!pushQueue(uid, card.sid, card.name, "MEKANIK", activeTeam)) {
                     buzzFailed();
                     displayErrorCardPopup(uid, "ANTREAN PENUH", card.name, card.role, card.sid, "BATAS PERSONEL SUDAH TERCAPAI");
                     break;
                 }
                 buzzSuccess();
                 logAuditAsync("MECHANIC_LOG_IN", uid);
-                
-                if (countQueueMechanics() >= targetMekanikCount) {
+
+                if (countTeamMechanics(activeTeam) >= targetMekanikCount) {
                     displayCardNotification(uid, card.name, "MEKANIK", "SEMUA MEKANIK VERIFIED", true);
-                    selectedFooterAction = 1; 
+                    selectedFooterAction = 1;
                     currentState = STATE_ALL_WORKERS_REGISTERED;
                 } else {
                     displayCardNotification(uid, card.name, "MEKANIK", "MEKANIK MASUK", true);
@@ -4617,34 +4941,64 @@ void processRfidLogic(String uid) {
             }
             break;
 
-        case STATE_MEKANIK_OUT:
-            if (workerIdx == safetyQueue.topIndex && workerIdx > 0) {
-                WorkerInfo leavingUser = safetyQueue.workers[workerIdx];
-                bool leavingSupervisor = isQueueSupervisor(workerIdx);
-                removeQueueAt(workerIdx);
-                buzzSuccess();
-                logAuditAsync(leavingSupervisor ? "SUPERVISOR_EXTRA_LOG_OUT" : "MECHANIC_LOG_OUT", uid);
-                if (safetyQueue.topIndex == 0) {
-                    currentState = STATE_WAIT_SPV_OUT;
-                    displayCardNotification(uid, leavingUser.name, leavingSupervisor ? "PENGAWAS" : "MEKANIK", "TAP PENGAWAS UTAMA", true);
-                } else {
-                    currentState = STATE_MEKANIK_OUT;
-                    displayCardNotification(uid, leavingUser.name, leavingSupervisor ? "PENGAWAS" : "MEKANIK", "KELUAR BERHASIL", true);
-                }
-            } else if (workerIdx != -1) {
-                buzzFailed();
-                displayErrorCardPopup(uid, "SALAH URUTAN", card.name, card.role, card.sid, "TAP KARTU PERSONEL TERAKHIR");
-            } else {
+        case STATE_MEKANIK_OUT: {
+            if (workerIdx == -1) {
                 buzzFailed();
                 displayErrorCardPopup(uid, "TIDAK DITEMUKAN", card.name, card.role, card.sid, "PERSONEL BELUM MASUK UNIT");
+                break;
             }
+            ensureActiveTeam();
+            // Hanya personel pekerjaan yang dipilih di DAFTAR PEKERJAAN yang dapat keluar di sini.
+            uint8_t team = safetyQueue.workers[workerIdx].team;
+            if (team != activeTeam) {
+                buzzFailed();
+                displayErrorCardPopup(uid, "BEDA PEKERJAAN", card.name, card.role, card.sid,
+                    "PILIH PEKERJAANNYA DI DAFTAR PEKERJAAN");
+                break;
+            }
+            int othersInTeam = countTeamMembers(team) - 1;
+            if (workerIdx == teamLeadIndex(team)) {
+                // Pengawas yang sendirian sudah dialihkan ke WAIT_SPV_OUT sebelum switch.
+                buzzFailed();
+                displayErrorCardPopup(uid, "MEKANIK BELUM KELUAR", card.name, card.role, card.sid,
+                    "MASIH " + String(othersInTeam) + " MEKANIK DI DALAM");
+                break;
+            }
+            // Mekanik keluar dengan urutan bebas di dalam pekerjaannya.
+            WorkerInfo leavingUser = safetyQueue.workers[workerIdx];
+            bool leavingSupervisor = isQueueSupervisor(workerIdx);
+            removeQueueAt(workerIdx);
+            syncMainSupervisor();
+            buzzSuccess();
+            logAuditAsync(leavingSupervisor ? "SUPERVISOR_EXTRA_LOG_OUT" : "MECHANIC_LOG_OUT", uid);
+            String status = "KELUAR BERHASIL";
+            if (countTeamMembers(team) <= 1) {
+                currentState = STATE_WAIT_SPV_OUT;
+                status = "TAP KARTU PENGAWAS";
+            } else {
+                currentState = STATE_MEKANIK_OUT;
+            }
+            displayCardNotification(uid, leavingUser.name, leavingSupervisor ? "PENGAWAS" : "MEKANIK", status, true);
             break;
+        }
 
-        case STATE_WAIT_SPV_OUT:
-            if (safetyQueue.topIndex == 0 && supervisorUID.length() > 0 &&
-                (uid.equalsIgnoreCase(supervisorUID) ||
-                supervisorUID.equalsIgnoreCase(hexToDecStringPadded(uid)) ||
-                supervisorUID.equalsIgnoreCase(hexToDecStringUnpadded(uid)))) {
+        case STATE_WAIT_SPV_OUT: {
+            ensureActiveTeam();
+            int lead = teamLeadIndex(activeTeam);
+            if (lead < 0 || !uidMatches(safetyQueue.workers[lead].uid, uid)) {
+                buzzFailed();
+                displayErrorCardPopup(uid, "BUKAN PENGAWAS", card.name, card.role, card.sid,
+                    lead >= 0 ? "TAP KARTU " + safetyQueue.workers[lead].name : String("TEMPELKAN KARTU PENGAWAS"));
+                break;
+            }
+            if (countTeamMembers(activeTeam) > 1) {
+                buzzFailed();
+                displayErrorCardPopup(uid, "MEKANIK BELUM KELUAR", card.name, card.role, card.sid,
+                    "MASIH " + String(countTeamMembers(activeTeam) - 1) + " MEKANIK DI DALAM");
+                break;
+            }
+            if (safetyQueue.topIndex == 0) {
+                // Pengawas pekerjaan terakhir di unit: otorisasi akhir sebelum relay dibuka.
                 buzzSuccess();
                 logAuditAsync("SUPERVISOR_LOG_OUT", uid);
                 displayCardNotification(card.uid, card.name, "PENGAWAS", "PENGAWAS KELUAR", true);
@@ -4652,14 +5006,24 @@ void processRfidLogic(String uid) {
                 supervisorName = card.name;
                 supervisorRole = card.role;
                 lastScannedSID = card.sid;
-                selectedFooterAction = 1; 
+                selectedFooterAction = 1;
                 currentState = STATE_SPV_OUT_CONFIRM;
-            } else {
-                buzzFailed();
-                displayErrorCardPopup(uid, "BUKAN PENGAWAS", card.name, card.role, card.sid, "TEMPELKAN KARTU PENGAWAS");
+                break;
             }
+            // Pekerjaan lain masih di dalam: tutup pekerjaan ini tanpa membuka relay. SUPERVISOR_LOG_OUT
+            // menutup sesi backend, jadi pengawas ini dicatat sebagai pengawas tambahan.
+            WorkerInfo leavingUser = safetyQueue.workers[lead];
+            removeQueueAt(lead);
+            syncMainSupervisor();
+            buzzSuccess();
+            logAuditAsync("SUPERVISOR_EXTRA_LOG_OUT", uid);
+            logAuditAsync("TEAM_CLOSED", uid);
+            displayCardNotification(uid, leavingUser.name, "PENGAWAS", "PEKERJAAN SELESAI", true);
+            // Masih >1 pekerjaan: DAFTAR PEKERJAAN; tinggal satu: langsung daftar personelnya.
+            openSessionHome();
             break;
-            
+        }
+
         default: 
             buzzFailed(); 
             break;
@@ -4816,6 +5180,67 @@ void runRelayCountdown(bool exitMode) {
     exitCountdownActive = false;
 }
 
+void resetTeams() {
+    activeTeam = 0;
+    isAddingTeam = false;
+}
+
+// Relay awal hanya untuk unit kosong. Personel yang masih tercatat (mis. sesi
+// dipulihkan dari SD) wajib tapping keluar dulu; layar kembali ke menu sesi.
+bool refuseRelayWhilePersonnelInside() {
+    if (safetyQueue.topIndex < 0) return false;
+    buzzFailed();
+    logAuditAsync("RELAY_REFUSED_PERSONNEL_INSIDE", "SYSTEM");
+    displayMenuWarning("RELAY TIDAK DIBUKA", "MASIH ADA PERSONEL DI DALAM UNIT");
+    isSessionActive = true;
+    if (sessionStartTime == 0) sessionStartTime = millis();
+    currentState = STATE_MENU;
+    forceFullRedraw = true;
+    needsRedraw = true;
+    return true;
+}
+
+// Lanjutkan TAMBAH MEKANIK ke tim activeTeam.
+void startAddMechanicsToActiveTeam() {
+    isAddingFromMenu = true;
+    targetMekanikCount = countTeamMechanics(activeTeam);
+    currentState = STATE_SET_MEKANIK_COUNT;
+    forceFullRedraw = true;
+    needsRedraw = true;
+}
+
+void openJobList() {
+    selectedJobListIndex = 0;
+    currentState = STATE_JOB_LIST;
+    forceFullRedraw = true;
+    needsRedraw = true;
+}
+
+// Tapping keluar untuk pekerjaan activeTeam: mekanik dulu, lalu pengawasnya.
+void beginTeamExit() {
+    ensureActiveTeam();
+    initialMekanikOutCount = max(0, countTeamMembers(activeTeam) - 1);
+    currentState = countTeamMembers(activeTeam) > 1 ? STATE_MEKANIK_OUT : STATE_WAIT_SPV_OUT;
+    forceFullRedraw = true;
+    needsRedraw = true;
+}
+
+void openWorkerList() {
+    ensureActiveTeam();
+    workerListFromMenu = true;
+    selectedWorkerIndex = 0;
+    currentState = STATE_WORKER_LIST;
+    forceFullRedraw = true;
+    needsRedraw = true;
+}
+
+// Layar sebelum MENU LOTO: daftar personel seperti dulu, atau DAFTAR PEKERJAAN bila
+// ada lebih dari satu pekerjaan di unit.
+void openSessionHome() {
+    if (activeTeamCount() > 1) openJobList();
+    else openWorkerList();
+}
+
 void executeFooterChoice() {
     if (currentState == STATE_WELCOME) {
         if (selectedFooterAction == 0) {
@@ -4849,6 +5274,7 @@ void executeFooterChoice() {
             connectWiFiRoutine();
             return;
         } else {
+            if (refuseRelayWhilePersonnelInside()) return;
             buzzSuccess();
             selectedFooterAction = 1;
             relayOpen = true;
@@ -4873,6 +5299,7 @@ void executeFooterChoice() {
 
             isAddingFromMenu = false;
             workerListFromMenu = false;
+            resetTeams();
             currentState = STATE_WAIT_SPV_IN;
             startupSyncPending = true;
         }
@@ -4887,6 +5314,7 @@ void executeFooterChoice() {
         if (selectedFooterAction == 0) {
             currentState = (WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0") ? STATE_SHOW_IP : STATE_WELCOME;
         } else {
+            if (refuseRelayWhilePersonnelInside()) return;
             buzzSuccess();
             relayOpen = true;
             saveSessionToSD();
@@ -4907,6 +5335,7 @@ void executeFooterChoice() {
 
             isAddingFromMenu = false;
             workerListFromMenu = false;
+            resetTeams();
             currentState = STATE_WAIT_SPV_IN;
             startupSyncPending = true;
         }
@@ -4915,32 +5344,43 @@ void executeFooterChoice() {
         else currentState = STATE_WAIT_SPV_IN;
     } else if (currentState == STATE_SUPERVISOR_VALID) {
         if (selectedFooterAction == 0) {
-            if (!isAddingFromMenu) {
+            // Batalkan hanya pengawas yang baru tap dan timnya masih kosong. Personel yang
+            // sudah masuk wajib tapping keluar dengan kartunya sendiri.
+            int top = safetyQueue.topIndex;
+            if (top >= 0 && isQueueSupervisor(top)) {
+                if (countTeamMembers(safetyQueue.workers[top].team) == 1) {
+                    logAuditAsync("SUPERVISOR_TAP_CANCELLED", safetyQueue.workers[top].uid);
+                    removeQueueAt(top);
+                }
+            }
+            if (safetyQueue.topIndex < 0) {
                 supervisorUID = ""; supervisorName = ""; supervisorRole = "";
                 lastScannedSID = "-----";
+            } else {
+                syncMainSupervisor();
             }
-            if (safetyQueue.topIndex >= 0) removeQueueAt(safetyQueue.topIndex);
-            currentState = isAddingFromMenu ? STATE_MENU : STATE_WAIT_SPV_IN;
+            bool returnToMenu = isAddingFromMenu || isAddingTeam || safetyQueue.topIndex >= 0;
+            currentState = returnToMenu ? STATE_MENU : STATE_WAIT_SPV_IN;
             isAddingFromMenu = false;
+            isAddingTeam = false;
             saveSessionToSD();
         } else {
+            isAddingTeam = false;
+            targetMekanikCount = 0;
             saveSessionToSD();
-            if (isAddingFromMenu) {
-                isAddingFromMenu = false;
-                workerListFromMenu = true;
-                selectedWorkerIndex = 0;
-                currentState = STATE_WORKER_LIST;
-            } else {
-                targetMekanikCount = 0;
-                currentState = STATE_SET_MEKANIK_COUNT;
-            }
+            currentState = STATE_SET_MEKANIK_COUNT;
         }
     } else if (currentState == STATE_SET_MEKANIK_COUNT) {
         if (selectedFooterAction == 0) {
-            currentState = isAddingFromMenu ? STATE_MENU : STATE_SUPERVISOR_VALID;
+            // Tim baru yang belum berisi mekanik kembali ke konfirmasi pengawas; selain itu ke menu.
+            if (!isAddingFromMenu && countTeamMembers(activeTeam) == 1 && teamLeadIndex(activeTeam) >= 0) {
+                currentState = STATE_SUPERVISOR_VALID;
+            } else {
+                currentState = STATE_MENU;
+            }
             isAddingFromMenu = false;
         } else {
-            int mekanikDiDalam = countQueueMechanics();
+            int mekanikDiDalam = countTeamMechanics(activeTeam);
             if (targetMekanikCount <= mekanikDiDalam) {
                 workerListFromMenu = isAddingFromMenu;
                 isAddingFromMenu = false;
@@ -4955,12 +5395,8 @@ void executeFooterChoice() {
         }
     } else if (currentState == STATE_ALL_WORKERS_REGISTERED) {
         if (selectedFooterAction == 0) {
-            if (safetyQueue.topIndex > 0 && !isQueueSupervisor(safetyQueue.topIndex)) {
-                removeQueueAt(safetyQueue.topIndex);
-                currentState = STATE_MEKANIK_IN;
-            } else {
-                currentState = STATE_SET_MEKANIK_COUNT;
-            }
+            // Tidak menghapus mekanik yang sudah tap masuk; keluar hanya lewat tapping kartu.
+            currentState = STATE_SET_MEKANIK_COUNT;
         } else {
             workerListFromMenu = isAddingFromMenu;
             isAddingFromMenu = false;
@@ -4969,7 +5405,9 @@ void executeFooterChoice() {
         }
     } else if (currentState == STATE_WORKER_LIST) {
         if (selectedFooterAction == 0) {
-            currentState = workerListFromMenu ? STATE_MENU : STATE_ALL_WORKERS_REGISTERED;
+            if (!workerListFromMenu) currentState = STATE_ALL_WORKERS_REGISTERED;
+            else if (activeTeamCount() > 1) openJobList();
+            else currentState = STATE_MENU;
         } else if (selectedFooterAction == 1) {
             currentState = STATE_WORKER_DETAIL;
         } else if (selectedFooterAction == 2) {
@@ -4979,11 +5417,19 @@ void executeFooterChoice() {
         if (selectedFooterAction == 0) {
             currentState = STATE_WORKER_LIST;
         } else {
-            if (selectedWorkerIndex < safetyQueue.topIndex) {
+            if (selectedWorkerIndex + 1 < workerListCount()) {
                 selectedWorkerIndex++;
             } else {
                 currentState = STATE_WORKER_LIST;
             }
+        }
+    } else if (currentState == STATE_JOB_LIST) {
+        int team = activeTeamAt(selectedJobListIndex);
+        if (selectedFooterAction == 0 || team < 0) {
+            currentState = STATE_MENU;
+        } else {
+            activeTeam = (uint8_t)team;
+            openWorkerList();
         }
     } else if (currentState == STATE_SPV_OUT_CONFIRM) {
         if (selectedFooterAction == 0) {
@@ -5010,11 +5456,12 @@ void executeFooterChoice() {
             lastScannedUID = "---"; lastScannedSID = "-----";
             activeFuelmanUID = ""; activeFuelmanName = "";
             safetyQueue.topIndex = -1; targetMekanikCount = 0; isAddingFromMenu = false; workerListFromMenu = false;
+            resetTeams();
             clearSessionFromSD();
-            
+
             isSessionActive = false;
             sessionStartTime = 0;
-            
+
             logAuditAsync("SESSION_CLOSED_NORMAL", "SYSTEM");
             currentState = STATE_WELCOME;
         }
@@ -5047,7 +5494,8 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
                 supervisorUID = ""; supervisorName = ""; supervisorRole = "";
                 activeFuelmanUID = ""; activeFuelmanName = "";
                 safetyQueue.topIndex = -1; targetMekanikCount = 0; workerListFromMenu = false; currentState = STATE_BOOT_IP;
-                isSessionActive = false; sessionStartTime = 0; 
+                resetTeams();
+                isSessionActive = false; sessionStartTime = 0;
                 logAuditAsync("HARDWARE_HARD_RESET", "ADMIN");
             }
         }
@@ -5080,9 +5528,11 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
     if (currentState == STATE_WAIT_SPV_IN) {
         if (activeKey == KEY_5 || activeKey == KEY_4) {
             buzzTick();
-            currentState = isAddingFromMenu ? STATE_MENU : STATE_SYSTEM_READY;
+            bool returnToMenu = isAddingFromMenu || isAddingTeam || safetyQueue.topIndex >= 0;
+            currentState = returnToMenu ? STATE_MENU : STATE_SYSTEM_READY;
             isAddingFromMenu = false;
-            
+            isAddingTeam = false;
+
             if (currentState == STATE_SYSTEM_READY) {
                 isSessionActive = false;
                 sessionStartTime = 0;
@@ -5128,7 +5578,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             }
             return;
         } else if (activeKey == KEY_2) {
-            if (selectedWorkerIndex < safetyQueue.topIndex) {
+            if (selectedWorkerIndex + 1 < workerListCount()) {
                 selectedWorkerIndex++; buzzTick(); needsRedraw = true;
             }
             return;
@@ -5149,7 +5599,9 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
         } else if (activeKey == KEY_5) {
             buzzTick();
             if (selectedFooterAction == 0) {
-                currentState = workerListFromMenu ? STATE_MENU : STATE_ALL_WORKERS_REGISTERED;
+                if (!workerListFromMenu) currentState = STATE_ALL_WORKERS_REGISTERED;
+                else if (activeTeamCount() > 1) openJobList();
+                else currentState = STATE_MENU;
             } else if (selectedFooterAction == 1) {
                 currentState = STATE_WORKER_DETAIL;
             } else if (selectedFooterAction == 2) {
@@ -5176,7 +5628,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
                 currentState = STATE_WORKER_LIST;
                 forceFullRedraw = true;  
             } else {
-                if (selectedWorkerIndex < safetyQueue.topIndex) {
+                if (selectedWorkerIndex + 1 < workerListCount()) {
                     selectedWorkerIndex++;
                 } else {
                     currentState = STATE_WORKER_LIST;
@@ -5195,34 +5647,41 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             }
             return;
         } else if (activeKey == KEY_2) { 
-            if (selectedMenuIndex < 4) {
+            if (selectedMenuIndex < MENU_ITEM_COUNT - 1) {
                 selectedMenuIndex++; buzzTick(); needsRedraw = true;
             }
             return;
         } else if (activeKey == KEY_4) { 
-            buzzTick(); workerListFromMenu = true; currentState = STATE_WORKER_LIST; 
-            forceFullRedraw = true; needsRedraw = true; return;
+            buzzTick();
+            openSessionHome();
+            return;
         } else if (activeKey == KEY_5) { 
             buzzTick();
-            if (selectedMenuIndex == 0) { 
-                initialMekanikOutCount = (safetyQueue.topIndex > 0) ? safetyQueue.topIndex : 0;
-                if (safetyQueue.topIndex > 0) {
-                    currentState = STATE_MEKANIK_OUT;
-                } else {
-                    currentState = STATE_WAIT_SPV_OUT;
+            if (selectedMenuIndex == 0) {
+                beginTeamExit();
+            } else if (selectedMenuIndex == 1) {
+                // Pekerjaan baru: alurnya sama dengan tapping pertama (pengawas, jumlah, mekanik).
+                if (freeQueueSlots() <= 0) {
+                    buzzFailed();
+                    displayMenuWarning("TIDAK BISA MENAMBAH", "BATAS PERSONEL SUDAH TERCAPAI");
+                    return;
                 }
-            } else if (selectedMenuIndex == 1) { 
-                isAddingFromMenu = true;
-                targetMekanikCount = countQueueMechanics();
-                currentState = STATE_SET_MEKANIK_COUNT;
-            } else if (selectedMenuIndex == 2) { 
-                isAddingFromMenu = true;
+                isAddingFromMenu = false;
+                isAddingTeam = true;
                 currentState = STATE_WAIT_SPV_IN;
+            } else if (selectedMenuIndex == 2) {
+                if (freeQueueSlots() <= 0 || safetyQueue.topIndex < 0) {
+                    buzzFailed();
+                    displayMenuWarning("TIDAK BISA MENAMBAH", safetyQueue.topIndex < 0 ?
+                        "BELUM ADA PEKERJAAN DI UNIT" : "BATAS PERSONEL SUDAH TERCAPAI");
+                    return;
+                }
+                ensureActiveTeam();
+                startAddMechanicsToActiveTeam();
             } else if (selectedMenuIndex == 3) {
                 currentState = STATE_GEOFENCE;
             } else if (selectedMenuIndex == 4) {
-                workerListFromMenu = true;
-                currentState = STATE_WORKER_LIST;
+                openSessionHome();
             }
             forceFullRedraw = true;
             needsRedraw = true;
@@ -5232,20 +5691,31 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
     
     if (hasFooterChoice()) {
         if (currentState == STATE_SET_MEKANIK_COUNT) {
-            if (activeKey == KEY_3) { 
+            if (activeKey == KEY_3) {
                 buzzTick();
-                if (targetMekanikCount < MAX_WORKERS - countQueueSupervisors()) targetMekanikCount++;
+                if (targetMekanikCount < maxTeamMechanicTarget()) targetMekanikCount++;
                 needsRedraw = true;
                 return;
-            } else if (activeKey == KEY_2) { 
+            } else if (activeKey == KEY_2) {
                 buzzTick();
-                int minCount = isAddingFromMenu ? countQueueMechanics() : 0;
+                // Target tidak boleh di bawah mekanik pekerjaan yang sudah tap masuk.
+                int minCount = countTeamMechanics(activeTeam);
                 if (targetMekanikCount > minCount) targetMekanikCount--;
                 needsRedraw = true;
                 return;
             }
         }
-        
+
+        if (currentState == STATE_JOB_LIST) {
+            if (activeKey == KEY_3) {
+                if (selectedJobListIndex > 0) { selectedJobListIndex--; buzzTick(); needsRedraw = true; }
+                return;
+            } else if (activeKey == KEY_2) {
+                if (selectedJobListIndex + 1 < activeTeamCount()) { selectedJobListIndex++; buzzTick(); needsRedraw = true; }
+                return;
+            }
+        }
+
         if (activeKey == KEY_4 || activeKey == KEY_1) {
             uint8_t newAction = (activeKey == KEY_4) ? 0 : 1;
             if (selectedFooterAction != newAction) {
@@ -5259,6 +5729,8 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
                     drawTftFooter("COBA LAGI", "MODE OFFLINE");
                 } else if (currentState == STATE_WORKER_LIST) {
                     drawTftFooterTriple("KEMBALI", "PILIH", "LANJUT");
+                } else if (currentState == STATE_JOB_LIST) {
+                    drawTftFooter("KEMBALI", "PILIH");
                 } else {
                     drawTftFooter("KEMBALI", "LANJUT");
                 }
@@ -5305,7 +5777,7 @@ void drawScreen() {
             } else if (currentState == STATE_BOOT_IP || currentState == STATE_SERVER_OFFLINE ||
                 currentState == STATE_SYSTEM_READY || currentState == STATE_SUPERVISOR_VALID ||
                 currentState == STATE_ALL_WORKERS_REGISTERED || currentState == STATE_SPV_OUT_CONFIRM ||
-                currentState == STATE_WORKER_LIST) {
+                currentState == STATE_WORKER_LIST || currentState == STATE_JOB_LIST) {
                 selectedFooterAction = 1;
             } else {
                 selectedFooterAction = 0;
@@ -5464,7 +5936,7 @@ void drawScreen() {
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        tft.drawString(isAddingFromMenu ? "TAMBAH PENGAWAS" : "TAPPING MASUK", 240, 75);
+        tft.drawString(isAddingTeam ? "TAMBAH PEKERJAAN" : "TAPPING MASUK", 240, 75);
         drawRfidIcon(240, 145, TFT_WHITE);
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -5499,6 +5971,10 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.drawString("JUMLAH MEKANIK", 240, 72);
+        if (activeTeamCount() > 1) {
+            tft.setTextDatum(MC_DATUM);
+            drawTextFit(jobLabel(activeTeam), 240, 98, 440, ELOTO_MUTED, TFT_BLACK, 9);
+        }
         drawArrowIcon(112, 158, TFT_GREEN, true);
         drawArrowIcon(368, 158, TFT_RED, false);
         tft.fillRect(160, 115, 160, 60, TFT_BLACK);
@@ -5510,15 +5986,15 @@ void drawScreen() {
         drawTftFooter("KEMBALI", "LANJUT");
     } 
     else if (currentState == STATE_MEKANIK_IN) {
-        int mekanikMasuk = countQueueMechanics();
+        int mekanikMasuk = countTeamMechanics(activeTeam);
         int sisaMekanik  = targetMekanikCount - mekanikMasuk;
         if (sisaMekanik < 0) sisaMekanik = 0;
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.drawString("TAPPING MASUK", 240, 75);
-        int lastWorkerIndex = safetyQueue.topIndex;
-        if (lastWorkerIndex > 0 && !isQueueSupervisor(lastWorkerIndex)) {
+        int lastWorkerIndex = lastTeamMechanicIndex(activeTeam);
+        if (lastWorkerIndex >= 0 && !isQueueSupervisor(lastWorkerIndex)) {
             WorkerInfo &lastWorker = safetyQueue.workers[lastWorkerIndex];
             tft.fillRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
             tft.drawRect(20, 92, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_WHITE);
@@ -5551,7 +6027,7 @@ void drawScreen() {
         setStoryFont(12);
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("SEMUA MEKANIK MASUK", 240, 72);
-        int totalMekanik = countQueueMechanics();
+        int totalMekanik = countTeamMechanics(activeTeam);
         tft.fillRect(20, 92, 440, 90, ELOTO_BG);
         drawMechanicIconRow(240, 138, totalMekanik);
         tft.setTextDatum(MC_DATUM);
@@ -5567,18 +6043,26 @@ void drawScreen() {
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        int totalPersonel = safetyQueue.topIndex + 1;
-        tft.drawString("DAFTAR PERSONAL (" + String(totalPersonel) + ")", 240, 68);
+        ensureActiveTeam();
+        int totalPersonel = workerListCount();
+        if (activeTeamCount() > 1) {
+            drawTextFit(jobLabel(activeTeam) + " (" + String(totalPersonel) + ")", 240, 68, 440,
+                TFT_YELLOW, TFT_BLACK, 12);
+        } else {
+            tft.drawString("DAFTAR PERSONAL (" + String(totalPersonel) + ")", 240, 68);
+        }
         tft.setTextDatum(TL_DATUM);
         const int MAX_VISIBLE = 5;
         int startIdx = 0;
         if (selectedWorkerIndex >= MAX_VISIBLE) {
             startIdx = selectedWorkerIndex - MAX_VISIBLE + 1;
         }
-        int endIdx = min(startIdx + MAX_VISIBLE - 1, (int)safetyQueue.topIndex);
-        for (int i = startIdx; i <= endIdx; i++) {
-            bool selected = (i == selectedWorkerIndex);
-            int displayRow = i - startIdx;  
+        int endIdx = min(startIdx + MAX_VISIBLE - 1, totalPersonel - 1);
+        for (int pos = startIdx; pos <= endIdx; pos++) {
+            int i = workerListQueueIndex(pos);
+            if (i < 0) break;
+            bool selected = (pos == selectedWorkerIndex);
+            int displayRow = pos - startIdx;
             int rowY = 96 + displayRow * 27;
             String role = safetyQueue.workers[i].role;
             if (selected) {
@@ -5590,17 +6074,17 @@ void drawScreen() {
             uint16_t nameColor = selected ? ELOTO_BG : ELOTO_TEXT;
             uint16_t roleColor = selected ? ELOTO_BG : ELOTO_MUTED;
             uint16_t rowBgColor = selected ? ELOTO_HEADER : ELOTO_BG;
-            String prefix = String(i + 1) + ". ";
+            String prefix = String(pos + 1) + ". ";
             drawTextFit(prefix + safetyQueue.workers[i].name, 22, rowY + 4, 290, nameColor, rowBgColor, 9);
             drawTextFit(role, 340, rowY + 4, 115, roleColor, rowBgColor, 9);
         }
         drawHintBox("TEKAN PILIH UNTUK BUKA DETAIL");
         drawTftFooterTriple("KEMBALI", "PILIH", "LANJUT");
     } 
-    else if (currentState == STATE_WORKER_DETAIL && safetyQueue.topIndex >= 0) {
-        int safeIndex = constrain(selectedWorkerIndex, 0, safetyQueue.topIndex);
-        WorkerInfo &worker = safetyQueue.workers[safeIndex];
-        int totalWorkers = safetyQueue.topIndex + 1;
+    else if (currentState == STATE_WORKER_DETAIL && workerListCount() > 0) {
+        int totalWorkers = workerListCount();
+        int safeIndex = constrain((int)selectedWorkerIndex, 0, totalWorkers - 1);
+        WorkerInfo &worker = safetyQueue.workers[workerListQueueIndex(safeIndex)];
         bool isFirstDraw = (lastRenderedState != STATE_WORKER_DETAIL) || forceFullRedraw;
         if (isFirstDraw) {
             tft.fillRoundRect(14, 54, 452, 204, 6, ELOTO_BG);
@@ -5635,16 +6119,21 @@ void drawScreen() {
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
-        tft.drawString("PILIHAN MENU LOTO", 240, 68);
-        const char *menuItems[] = {
+        if (activeTeamCount() > 1) {
+            ensureActiveTeam();
+            drawTextFit("MENU " + jobLabel(activeTeam), 240, 68, 440, ELOTO_HEADER, ELOTO_BG, 12);
+        } else {
+            tft.drawString("PILIHAN MENU LOTO", 240, 68);
+        }
+        const char *menuItems[MENU_ITEM_COUNT] = {
             "1. KELUAR / SELESAI MAINTENANCE",
-            "2. TAMBAH MEKANIK",
-            "3. TAMBAH PENGAWAS",
+            "2. TAMBAH PEKERJAAN",
+            "3. TAMBAH MEKANIK",
             "4. KONFIRMASI GEOFENCE / BLE",
             "5. KEMBALI"
         };
         tft.setTextDatum(TL_DATUM);
-        for (uint8_t i = 0; i < 5; i++) {
+        for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) {
             bool selected = (i == selectedMenuIndex);
             int rowY = 96 + i * 32;
             if (selected) {
@@ -5660,33 +6149,71 @@ void drawScreen() {
         }
         drawTftFooterSingle("");
     }
+    else if (currentState == STATE_JOB_LIST) {
+        tft.setTextDatum(MC_DATUM);
+        setStoryFont(12);
+        tft.setTextColor(ELOTO_HEADER, ELOTO_BG);
+        tft.drawString("DAFTAR PEKERJAAN (" + String(activeTeamCount()) + ")", 240, 68);
+        int count = activeTeamCount();
+        if (selectedJobListIndex >= count) selectedJobListIndex = max(0, count - 1);
+        const int MAX_VISIBLE = 5;
+        int startIdx = selectedJobListIndex >= MAX_VISIBLE ? selectedJobListIndex - MAX_VISIBLE + 1 : 0;
+        int endIdx = min(startIdx + MAX_VISIBLE - 1, count - 1);
+        tft.setTextDatum(TL_DATUM);
+        for (int pos = startIdx; pos <= endIdx; pos++) {
+            int team = activeTeamAt(pos);
+            if (team < 0) break;
+            bool selected = pos == selectedJobListIndex;
+            int rowY = 96 + (pos - startIdx) * 27;
+            uint16_t textColor = selected ? ELOTO_BG : ELOTO_TEXT;
+            uint16_t mutedColor = selected ? ELOTO_BG : ELOTO_MUTED;
+            uint16_t bgColor   = selected ? ELOTO_HEADER : ELOTO_BG;
+            tft.fillRoundRect(14, rowY, 452, 24, 4, bgColor);
+            drawTextFit(jobLabel((uint8_t)team), 22, rowY + 4, 330, textColor, bgColor, 9);
+            drawTextFit(String(countTeamMembers((uint8_t)team)) + " ORANG", 370, rowY + 4, 90, mutedColor, bgColor, 9);
+        }
+        drawHintBox("PILIH PEKERJAAN UNTUK LIHAT PERSONEL");
+        drawTftFooter("KEMBALI", "PILIH");
+    }
     else if (currentState == STATE_MEKANIK_OUT) {
+        ensureActiveTeam();
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.drawString("TAPPING KELUAR", 240, 75);
+        if (activeTeamCount() > 1) {
+            tft.setTextDatum(MC_DATUM);
+            drawTextFit(jobLabel(activeTeam), 240, 98, 440, ELOTO_MUTED, TFT_BLACK, 9);
+        }
         drawRfidIcon(240, 140, TFT_WHITE);
-        int remainingPersonnel = (safetyQueue.topIndex >= 0) ? safetyQueue.topIndex : 0;
-        String countText = "SISA: " + String(remainingPersonnel) + " PERSONEL";
+        int remainingMechanics = max(0, countTeamMembers(activeTeam) - 1);
+        String countText = "SISA: " + String(remainingMechanics) + " MEKANIK";
         tft.fillRect(40, 180, 400, 30, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.drawString(countText, 240, 195);
         setStoryFont(9);
         tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-        bool isSpvLast = (safetyQueue.topIndex >= 0) && isQueueSupervisor(safetyQueue.topIndex);
-        tft.drawString(isSpvLast ? "TAP PENGAWAS TERAKHIR" : "TAP MEKANIK TERAKHIR", 240, 225);
+        tft.drawString("TAP KARTU MEKANIK (URUTAN BEBAS)", 240, 225);
         drawTftFooterSingle("KEMBALI");
     }
     else if (currentState == STATE_WAIT_SPV_OUT) {
+        ensureActiveTeam();
+        bool lastJob = activeTeamCount() <= 1;
         tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        tft.drawString("OTORISASI AKHIR PENGAWAS", 240, 75);
+        tft.drawString(lastJob ? "OTORISASI AKHIR PENGAWAS" : "PENGAWAS KELUAR", 240, 75);
+        if (!lastJob) {
+            tft.setTextDatum(MC_DATUM);
+            drawTextFit(jobLabel(activeTeam), 240, 98, 440, ELOTO_MUTED, TFT_BLACK, 9);
+        }
         drawRfidIcon(240, 140, TFT_WHITE);
+        tft.setTextDatum(MC_DATUM);
         setStoryFont(12);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("PERSONEL LAIN SUDAH KELUAR", 240, 195);
+        tft.drawString(lastJob ? "PERSONEL LAIN SUDAH KELUAR" : "MEKANIK PEKERJAAN INI SUDAH KELUAR", 240, 195);
         setStoryFont(9);
         tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
         tft.drawString("SILAHKAN TAP KARTU PENGAWAS", 240, 225);
@@ -5792,7 +6319,7 @@ void handleStatus() {
     server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     server.sendHeader("Access-Control-Allow-Headers", "*");
     
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(1536 + (safetyQueue.topIndex + 1) * 192);
     String lcd0; String lcd1;
     getLcdText(lcd0, lcd1);
     doc["lcd0"] = lcd0;
@@ -5801,7 +6328,8 @@ void handleStatus() {
     doc["supervisor_uid"] = supervisorUID; doc["active_fuelman"] = activeFuelmanUID;
     doc["last_uid"] = lastScannedUID; doc["relay_open"] = relayOpen;
     
-    if (gpsHasFix) {
+    bool liveGpsFix = hasValidGpsFix();
+    if (liveGpsFix) {
         doc["lat"] = currentLatitude;
         doc["lon"] = currentLongitude;
         doc["lng"] = currentLongitude;
@@ -5811,12 +6339,19 @@ void handleStatus() {
         doc["lng"] = nullptr;
     }
     
-    doc["gps_fix"] = gpsHasFix; doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+    doc["gps_fix"] = liveGpsFix; doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
     doc["gps_bytes"] = gpsByteCount;
+    doc["gps_uart_baud"] = gpsUartBaud;
     doc["gps_sentences"] = gpsSentenceCount;
     doc["gps_satellites_visible"] = gpsSatellitesInView;
     doc["gps_satellites_used"] = gpsSatellitesUsed;
     doc["gps_hdop"] = gpsHdop;
+    doc["gps_hdop_valid"] = gpsHdopValid;
+    doc["gps_satellites_visible_valid"] = gpsSatellitesVisibleValid;
+    doc["gps_satellites_used_valid"] = gpsSatellitesUsedValid;
+    doc["gps_cn0_max_dbhz"] = gpsCn0Max;
+    doc["gps_cn0_valid"] = gpsCn0Valid;
+    doc["gps_search_elapsed_ms"] = gpsSearchTracking ? (millis() - gpsSearchStartedAt) : 0;
     doc["gps_last_byte_ms"] = gpsLastByteMillis;
     doc["gps_last_fix_ms"] = gpsLastFixMillis;
     doc["gps_respon_valid"] = gpsSentenceCount;
@@ -5838,7 +6373,9 @@ void handleStatus() {
     for (int i = 0; i <= safetyQueue.topIndex; i++) {
         JsonObject o = q.createNestedObject();
         o["uid"]  = safetyQueue.workers[i].uid; o["name"] = safetyQueue.workers[i].name; o["role"] = safetyQueue.workers[i].role;
+        o["team"] = safetyQueue.workers[i].team + 1;
     }
+    doc["teams"] = activeTeamCount();
     String json; serializeJson(doc, json); server.send(200, "application/json", json);
 }
 
@@ -5879,6 +6416,13 @@ void setup() {
         while (true) delay(1000);
     }
 
+    Serial.println("[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V1");
+    gpsSerial.setRxBufferSize(1024);
+    gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+    gpsCommunicationStartedAt = millis();
+    gpsInitStarted = xTaskCreatePinnedToCore(gpsInitTask, "GPSInit", 4096,
+        NULL, 1, NULL, 0) == pdPASS;
+
     if (initializeSDCard()) {
         sdCardMounted = true;
         loadConfigFromSD();
@@ -5906,8 +6450,6 @@ void setup() {
 
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(tft_output);
-    gpsSerial.setRxBufferSize(1024);
-    gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
     
     rd6300Serial.end();
     delay(100);
@@ -6228,11 +6770,14 @@ void getLcdText(String &lcd0, String &lcd1) {
         lcd0 = "IP ADDRESS";
         lcd1 = WiFi.localIP().toString();
     } else if (currentState == STATE_WAIT_SPV_IN) {
-        lcd0 = "TAPPING MASUK";
+        lcd0 = isAddingTeam ? "TAMBAH PEKERJAAN" : "TAPPING MASUK";
         lcd1 = "TAP KARTU PENGAWAS";
     } else if (currentState == STATE_MEKANIK_IN) {
         lcd0 = "TAPPING MASUK";
         lcd1 = "TAP KARTU MEKANIK";
+    } else if (currentState == STATE_JOB_LIST) {
+        lcd0 = "DAFTAR PEKERJAAN";
+        lcd1 = String(activeTeamCount()) + " PEKERJAAN AKTIF";
     } else if (currentState == STATE_WAIT_SPV_OUT) {
         lcd0 = "OTORISASI AKHIR";
         lcd1 = "TAP KARTU PENGAWAS";
@@ -6259,7 +6804,7 @@ void getLcdText(String &lcd0, String &lcd1) {
         lcd1 = "TEKAN OK UNTUK MEMILIH";
     } else if (currentState == STATE_MEKANIK_OUT) {
         lcd0 = "TAPPING KELUAR";
-        lcd1 = isQueueSupervisor(safetyQueue.topIndex) ? "TAP PENGAWAS TERAKHIR" : "TAP MEKANIK TERAKHIR";
+        lcd1 = "TAP KARTU MEKANIK";
     } else if (currentState == STATE_SPV_OUT_CONFIRM) {
         lcd0 = "SUPERVISOR VALID";
         lcd1 = "KONFIRMASI SELESAI";

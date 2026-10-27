@@ -51,21 +51,21 @@ test('GPS receiver starts before SD work and retries only when its AT/GNSS respo
   const setup = firmware.split('void setup() {', 2)[1].split('\n// Jalankan layanan input', 1)[0];
   const serialStart = setup.indexOf('gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX)');
   const taskStart = setup.indexOf('xTaskCreatePinnedToCore(gpsInitTask, "GPSInit"');
-  const sdStart = setup.indexOf('xTaskCreatePinnedToCore(sdMaintenanceTask, "SDMaintenance"');
+  const sdStart = setup.indexOf('if (initializeSDCard())');
   const atCommand = firmware.split('bool kirimPerintahAT(const char* perintah, unsigned long tunggu) {', 2)[1]
     .split('\n// Inisialisasi modem GPS', 1)[0];
   const init = firmware.split('void initGpsModule() {', 2)[1].split('\n// Pulihkan koneksi GPS', 1)[0];
   const poll = firmware.split('void feedGPS() {', 2)[1].split('\n// Bersihkan byte tertunda', 1)[0];
 
   assert.ok(serialStart >= 0 && taskStart > serialStart && sdStart > taskStart);
-  assert.match(atCommand, /response\.indexOf\("\\nOK"\)/);
+  assert.match(atCommand, /if \(line == "OK"\)/);
   assert.match(init, /attempt <= 5/);
   assert.match(init, /AT\+CGNSPWR=1/);
   assert.match(poll, /gpsIsLocked \? GPS_LOCKED_INTERVAL : GPS_POLL_INTERVAL/);
   assert.match(poll, /GPS_NO_RESPONSE_RECOVERY/);
-  assert.match(firmware, /GPS_LOCKED_INTERVAL = 5000/);
+  assert.match(firmware, /GPS_LOCKED_INTERVAL = 1000/);
   assert.match(firmware, /GPS_NO_RESPONSE_RECOVERY = 20000/);
-  assert.match(firmware, /\[GPS\] Acquiring fix status=%s sats_used=%u sats_view=%u hdop=%.2f/);
+  assert.match(firmware, /\[GPS\] Acquiring fix status=%s sats_used=%u sats_view=%u hdop=%s/);
 });
 
 test('firmware reports reset causes and task health for spontaneous reboot diagnosis', () => {
