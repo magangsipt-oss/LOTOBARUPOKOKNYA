@@ -75,9 +75,9 @@ Setelah upload, restart ESP32.
 ### Step 4: Verifikasi firmware dan sinkronisasi SD di Serial Monitor
 Pastikan firmware yang baru di-upload mencetak penanda berikut:
 ```
-[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V1
+[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V2
 ```
-`MULTI_JOB_V1`: menu LOTO punya TAMBAH PEKERJAAN. Dengan lebih dari satu pekerjaan, layar sebelum menu menjadi DAFTAR PEKERJAAN; pilih pekerjaan, mekaniknya tap keluar (urutan bebas), lalu pengawasnya. Relay hanya dibuka saat pengawas pekerjaan terakhir keluar.
+`MULTI_JOB_V2`: menu LOTO punya TAMBAH PEKERJAAN. Dengan lebih dari satu pekerjaan, layar sebelum menu (termasuk setelah tapping masuk selesai) menjadi DAFTAR PEKERJAAN; pilih pekerjaan, mekaniknya tap keluar (urutan bebas), lalu pengawasnya. Relay hanya dibuka saat pengawas pekerjaan terakhir keluar.
 Untuk perbaikan GPS SIM808, periksa log `[GPS AT] ... -> OK`, lalu `[GPS] Acquiring fix ...` atau `[GPS] FIX ...`. Ikuti [diagnosis GPS](docs/TROUBLESHOOTING.md#sim808-berkedip-tetapi-gps-belum-mendapat-posisi) untuk membedakan masalah UART, daya GNSS, dan penerimaan satelit. Kompilasi dan tes simulasi belum membuktikan antena pada alat nyata mendapat fix.
 
 Saat online, backend memverifikasi kartu; cache lokal dipakai ketika Wi-Fi/backend tidak dapat dijangkau, tetapi kartu yang dinyatakan tidak terdaftar oleh backend tetap ditolak. Setelah personel dibuat/diubah dari dashboard, perintah `SYNC_USERS` meminta box menyinkronkan daftar dan foto secara langsung (poll hingga 3 detik); sinkronisasi berkala menjadi cadangan. Foto diunduh di task latar dan disimpan ke `/foto/<SID>.jpg` (atau nama berbasis UID), sehingga tapping tidak menunggu unduhan. Foto yang tersimpan dapat ditampilkan dan digunakan saat offline.

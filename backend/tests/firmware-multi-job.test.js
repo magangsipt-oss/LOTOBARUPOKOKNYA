@@ -64,3 +64,13 @@ test('sessions keep jobs across reboot and resume the menu when personnel are st
   assert.match(firmware, /safetyQueue\.workers\[idx\]\.team = constrain\(\(int\)\(obj\["team"\] \| 0\)/);
   assert.match(firmware, /else if \(safetyQueue\.topIndex >= 0\) \{[\s\S]{0,600}currentState = STATE_MENU;/);
 });
+
+test('finishing tap-in goes to the job list once more than one job is inside', () => {
+  const home = section('void openHomeAfterTapIn() {', '\n}\n');
+  assert.match(home, /if \(activeTeamCount\(\) > 1\) \{\s*openJobList\(\);/);
+  const footer = section('void executeFooterChoice() {', '\n// Jalankan aksi tombol');
+  const registered = footer.split('currentState == STATE_ALL_WORKERS_REGISTERED) {', 2)[1].split('} else if', 2).slice(0, 2).join('} else if');
+  assert.match(registered, /openHomeAfterTapIn\(\);/);
+  const quota = footer.split('currentState == STATE_SET_MEKANIK_COUNT) {', 2)[1].split('currentState == STATE_ALL_WORKERS_REGISTERED', 1)[0];
+  assert.match(quota, /targetMekanikCount <= mekanikDiDalam\) \{\s*openHomeAfterTapIn\(\);/);
+});

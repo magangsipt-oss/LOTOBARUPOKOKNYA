@@ -731,6 +731,7 @@ void openJobList();
 void beginTeamExit();
 void openWorkerList();
 void openSessionHome();
+void openHomeAfterTapIn();
 void startAddMechanicsToActiveTeam();
 void parseGpsResponse(const String &response);
 void feedGPS();
@@ -5241,6 +5242,20 @@ void openSessionHome() {
     else openWorkerList();
 }
 
+// Setelah tapping masuk selesai: satu pekerjaan tetap ke daftar personel seperti dulu,
+// lebih dari satu pekerjaan langsung ke DAFTAR PEKERJAAN.
+void openHomeAfterTapIn() {
+    bool fromMenu = isAddingFromMenu;
+    isAddingFromMenu = false;
+    if (activeTeamCount() > 1) {
+        openJobList();
+        return;
+    }
+    workerListFromMenu = fromMenu;
+    selectedWorkerIndex = 0;
+    currentState = STATE_WORKER_LIST;
+}
+
 void executeFooterChoice() {
     if (currentState == STATE_WELCOME) {
         if (selectedFooterAction == 0) {
@@ -5382,10 +5397,7 @@ void executeFooterChoice() {
         } else {
             int mekanikDiDalam = countTeamMechanics(activeTeam);
             if (targetMekanikCount <= mekanikDiDalam) {
-                workerListFromMenu = isAddingFromMenu;
-                isAddingFromMenu = false;
-                selectedWorkerIndex = 0;
-                currentState = STATE_WORKER_LIST;
+                openHomeAfterTapIn();
             } else {
                 currentState = STATE_MEKANIK_IN;
                 lastMekanikDisplayCount = -99;
@@ -5398,10 +5410,7 @@ void executeFooterChoice() {
             // Tidak menghapus mekanik yang sudah tap masuk; keluar hanya lewat tapping kartu.
             currentState = STATE_SET_MEKANIK_COUNT;
         } else {
-            workerListFromMenu = isAddingFromMenu;
-            isAddingFromMenu = false;
-            selectedWorkerIndex = 0;
-            currentState = STATE_WORKER_LIST;
+            openHomeAfterTapIn();
         }
     } else if (currentState == STATE_WORKER_LIST) {
         if (selectedFooterAction == 0) {
@@ -6416,7 +6425,7 @@ void setup() {
         while (true) delay(1000);
     }
 
-    Serial.println("[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V1");
+    Serial.println("[BUILD] ELOTO_FIXED GPS_SIM808_DIAG_V3 MULTI_JOB_V2");
     gpsSerial.setRxBufferSize(1024);
     gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
     gpsCommunicationStartedAt = millis();
