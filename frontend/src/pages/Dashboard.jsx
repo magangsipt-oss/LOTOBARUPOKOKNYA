@@ -8,6 +8,7 @@ import { useApp } from '../context/useApp';
 import Avatar from '../components/Avatar';
 import BoxCard from '../components/BoxCard';
 import { escapeHtml, STATE_DESC, formatWaktuDowntime, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
+import { groupQueueByJob } from '../utils/jobTeams';
 
 /**
  * Halaman Dashboard - Peta, Box Cards, Telemetri
@@ -519,7 +520,7 @@ export default function Dashboard() {
               <span className="text-[9px] font-mono-tech tracking-widest uppercase text-slate-500">Aktivitas Tapping Terakhir</span>
               <h4 className="text-sm font-black mt-1 text-slate-900">{isHwOnline ? lastTapLabel : 'OFFLINE'}</h4>
               <p className="text-xs text-slate-600 mt-1">{isHwOnline && tapEventLabels[hwData.last_event] ? getUserProfile(hwData.last_uid).nama : (isHwOnline ? 'Belum ada kartu dipindai' : 'Menunggu telemetri boks')}</p>
-              <p className="text-[10px] text-slate-500 mt-1">Mekanik sudah tap: {isHwOnline ? (hwData.mechanics_tapped ?? '—') : '—'} · Personel aktif: {isHwOnline ? (Array.isArray(hwData.queue) ? hwData.queue.length : 0) : '—'}</p>
+              <p className="text-[10px] text-slate-500 mt-1">Mekanik sudah tap: {isHwOnline ? (hwData.mechanics_tapped ?? '—') : '—'} · Personel aktif: {isHwOnline ? liveTapQueue.length : '—'} · Pekerjaan aktif: {isHwOnline ? groupQueueByJob(liveTapQueue, { skipUid: isAdminUid }).length : '—'}</p>
             </div>
           </div>
 
@@ -564,32 +565,34 @@ export default function Dashboard() {
             </div>
             <div className="bg-gray-50 border border-gray-200 p-3 rounded-xl min-h-[50px] flex items-center flex-wrap gap-2">
               {(() => {
-                let queueList = [];
-                if (Array.isArray(hwData.queue)) queueList = hwData.queue;
-                else if (typeof hwData.queue === 'string' && hwData.queue.trim() !== '') { try { queueList = JSON.parse(hwData.queue); } catch { queueList = []; } }
-                queueList = queueList.filter(item => !isAdminUid(typeof item === 'string' ? item : (item.uid || item.last_uid || '')));
+                const jobs = groupQueueByJob(liveTapQueue, { skipUid: isAdminUid });
                 const hasActiveFuelman = hwData.active_fuelman && hwData.active_fuelman !== '';
-                if (isHwOnline && (queueList.length > 0 || hasActiveFuelman)) {
-                  return (<React.Fragment>{queueList.map((item, i) => {
-                    const uidKartu = typeof item === 'string' ? item : (item.uid || item.last_uid || '');
-                    const roleMetode = typeof item === 'object' ? item.role : '';
-                    const isSpv = roleMetode === 'spv' || roleMetode === 'pengawas' || (uidKartu === hwData.supervisor_uid) || (i === 0 && hwData.state !== 'STATE_IDLE' && hwData.state !== 'STATE_REGISTER_RFID');
-                    const profile = getUserProfile(uidKartu);
-                    const namaPersonel = profile.nama;
-                    return (<div key={i} onClick={() => bukaModalUmum(`Data Petugas #${i + 1}`, isSpv ? "fa-heart" : "fa-wrench", <div className="p-3 font-mono text-xs">{namaPersonel} ({uidKartu}) - {isSpv ? 'Pengawas' : 'Mekanik'}</div>)} className="flex items-center gap-1.5 font-mono-tech text-xs cursor-pointer hover:scale-105 transition-transform">
-                      {i > 0 && <span className="text-slate-400 font-bold">→</span>}
-                      <span className={`px-2.5 py-1 rounded-lg border flex items-center gap-1.5 shadow-sm transition-all max-w-[230px] ${isSpv ? 'border-blue-300 bg-blue-50 text-blue-700 font-bold' : 'border-slate-300 bg-white text-slate-800 shadow-sm'}`}>
-                        <Avatar profile={profile} className="w-8 h-8" />
-                        <span className="flex min-w-0 flex-col leading-tight text-left"><span className="truncate">{namaPersonel}</span><span className="text-[9px] text-slate-500 font-normal truncate">{isSpv ? 'PENGAWAS K3' : 'MEKANIK'} · {i === queueList.length - 1 ? 'TOP' : `#${i + 1}`}</span></span>
-                      </span>
+                if (isHwOnline && (jobs.length > 0 || hasActiveFuelman)) {
+                  return (<div className="w-full space-y-2">{jobs.map(job => {
+                    const supervisorName = job.supervisor ? getUserProfile(job.supervisor.uid).nama : '—';
+                    return (<div key={job.key} className="bg-white border border-gray-200 rounded-xl p-2.5 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono-tech font-bold uppercase tracking-wider text-slate-600">
+                        <span className="truncate">Pekerjaan {job.number} ({supervisorName})</span>
+                        <span className="text-slate-400 font-normal">{job.members.length} orang</span>
+                      </div>
+                      <div className="flex items-center flex-wrap gap-2">{job.members.map(member => {
+                        const profile = getUserProfile(member.uid);
+                        const namaPersonel = profile.nama;
+                        const isSpv = member.isSupervisor;
+                        return (<div key={`${job.key}-${member.uid}`} onClick={() => bukaModalUmum(`Data Petugas Pekerjaan ${job.number}`, isSpv ? "fa-heart" : "fa-wrench", <div className="p-3 font-mono text-xs">{namaPersonel} ({member.uid}) - {isSpv ? 'Pengawas' : 'Mekanik'} · Pekerjaan {job.number} ({supervisorName})</div>)} className="flex items-center font-mono-tech text-xs cursor-pointer hover:scale-105 transition-transform">
+                          <span className={`px-2.5 py-1 rounded-lg border flex items-center gap-1.5 shadow-sm transition-all max-w-[230px] ${isSpv ? 'border-blue-300 bg-blue-50 text-blue-700 font-bold' : 'border-slate-300 bg-white text-slate-800 shadow-sm'}`}>
+                            <Avatar profile={profile} className="w-8 h-8" />
+                            <span className="flex min-w-0 flex-col leading-tight text-left"><span className="truncate">{namaPersonel}</span><span className="text-[9px] text-slate-500 font-normal truncate">{isSpv ? 'PENGAWAS K3' : 'MEKANIK'}</span></span>
+                          </span>
+                        </div>);
+                      })}</div>
                     </div>);
-                  })}{hasActiveFuelman && (<div onClick={() => bukaModalUmum("Status Petugas Pengisian BBM (Fuelman)", "fa-gas-pump", <div className="p-3 font-mono text-xs">{getUserProfile(hwData.active_fuelman).nama}</div>)} className="flex items-center gap-2 font-mono-tech text-xs ml-1 cursor-pointer hover:scale-105 transition-transform">
-                    {queueList.length > 0 && <span className="text-slate-400 font-bold">|</span>}
+                  })}{hasActiveFuelman && (<div onClick={() => bukaModalUmum("Status Petugas Pengisian BBM (Fuelman)", "fa-gas-pump", <div className="p-3 font-mono text-xs">{getUserProfile(hwData.active_fuelman).nama}</div>)} className="flex items-center gap-2 font-mono-tech text-xs cursor-pointer hover:scale-105 transition-transform">
                     <span className="px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-bold flex items-center gap-1.5 shadow-sm animate-pulse">
                       <Avatar profile={getUserProfile(hwData.active_fuelman)} className="w-7 h-7" />
                       <span>[BBM] {getUserProfile(hwData.active_fuelman).nama}</span>
                     </span>
-                  </div>)}</React.Fragment>);
+                  </div>)}</div>);
                 }
                 return <span className="text-xs text-slate-500 font-mono-tech italic">{isHwOnline ? 'Tidak ada personel dalam antrean perangkat.' : 'Perangkat offline. Kondisi antrean saat ini belum diketahui.'}</span>;
               })()}

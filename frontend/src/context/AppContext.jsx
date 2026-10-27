@@ -1,6 +1,7 @@
 import { boxHardwareSnapshot } from '../utils/boxHardware.js';
 import { escapeHtml, safeCsvCell } from '../utils/helpers';
 import { buildTappingSessionHistory } from '../utils/tappingSessionHistory';
+import { groupQueueByJob, isSupervisorRole, preferDetailedQueue } from '../utils/jobTeams';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 import userService from '../services/userService';
@@ -443,6 +444,7 @@ export function AppProvider({ children }) {
             return {
               ...extraHw,
               ...b,
+              queue: preferDetailedQueue(extraHw.queue, b.queue),
               is_online: b.source === 'device' || boxIsOnline(b) ? 1 : 0,
               telemetry_online: telemetryOnline ? 1 : 0,
               telemetry_last_ping: telemetryLastPing,
@@ -668,7 +670,7 @@ export function AppProvider({ children }) {
     const mekanikOnly = hwData.queue.filter(item => {
       const itemUid = typeof item === 'string' ? item : item.uid;
       const uObj = userDatabase.find(u => String(u.rfidUid || u.rfid_uid).toUpperCase() === String(itemUid).toUpperCase() || String(u.sid).toUpperCase() === String(itemUid).toUpperCase());
-      const isSpv = (typeof item === 'object' && (item.role === 'spv' || item.role === 'pengawas')) || (uObj && uObj.role === 'pengawas') || (itemUid === hwData.supervisor_uid);
+      const isSpv = (typeof item === 'object' && isSupervisorRole(item.role)) || (uObj && uObj.role === 'pengawas') || (itemUid === hwData.supervisor_uid);
       return !isSpv;
     });
     if (mekanikOnly.length === 0) return "";
@@ -677,12 +679,17 @@ export function AppProvider({ children }) {
 
   const dapatkanPengawasDariLoto = () => {
     if (!selectedBox || !hwData) return "";
+    // Multi-pekerjaan: setiap pekerjaan punya pengawas sendiri; catat semuanya.
+    const jobSupervisors = groupQueueByJob(hwData.queue, { skipUid: isAdminUidLocal })
+      .filter(job => job.supervisor && typeof job.supervisor.item === 'object' && job.supervisor.item.role)
+      .map(job => terjemahkanIdKeNamaLengkapLocal(job.supervisor.uid));
+    if (jobSupervisors.length > 1) return jobSupervisors.join(", ");
     if (hwData.supervisor_uid && hwData.supervisor_uid !== '—' && hwData.supervisor_uid !== '') return terjemahkanIdKeNamaLengkapLocal(hwData.supervisor_uid);
     if (Array.isArray(hwData.queue)) {
       const spvItem = hwData.queue.find(item => {
         const itemUid = typeof item === 'string' ? item : item.uid;
         const uObj = userDatabase.find(u => String(u.rfidUid || u.rfid_uid).toUpperCase() === String(itemUid).toUpperCase() || String(u.sid).toUpperCase() === String(itemUid).toUpperCase());
-        return (typeof item === 'object' && (item.role === 'spv' || item.role === 'pengawas')) || (uObj && uObj.role === 'pengawas');
+        return (typeof item === 'object' && isSupervisorRole(item.role)) || (uObj && uObj.role === 'pengawas');
       });
       if (spvItem) return terjemahkanIdKeNamaLengkapLocal(typeof spvItem === 'string' ? spvItem : spvItem.uid);
     }
@@ -1036,20 +1043,19 @@ export function AppProvider({ children }) {
         });
       });
     }
-    queueList.forEach((qItem, idx) => {
-      const uid = typeof qItem === 'string' ? qItem : (qItem.uid || qItem.last_uid || '');
-      if (isAdminUidLocal(uid)) return;
+    const queueJobs = groupQueueByJob(queueList, { skipUid: isAdminUidLocal });
+    queueJobs.forEach(job => job.members.forEach(({ uid, index: idx, isSupervisor: isSpv }) => {
       const boxId = String(selectedBox?.id || hwData.id_box || '').toLowerCase();
       const tappingKey = `${boxId}::${String(uid).toLowerCase()}`;
       if (latestTappingByPerson.get(tappingKey)?.eventType === 'OUT') return;
-      const isSpv = (uid === hwData.supervisor_uid) || (idx === 0 && hwData.state !== 'STATE_IDLE' && hwData.state !== 'STATE_REGISTER_RFID');
+      const jobSuffix = queueJobs.length > 1 ? ` · PEKERJAAN ${job.number}` : '';
       results.push({
         id: `active-${uid}-${idx}`, uid, nama: getUserProfileLocal(uid).nama, foto: getUserProfileLocal(uid).foto,
-        status: isSpv ? 'PENGAWAS (IN)' : 'MEKANIK (IN)',
+        status: (isSpv ? 'PENGAWAS (IN)' : 'MEKANIK (IN)') + jobSuffix,
         badgeColor: isSpv ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-green-50 text-green-700 border-green-200',
         waktuMasuk: 'Tidak tercatat', waktuKeluar: '— (Sedang di Dalam)', isInside: true
       });
-    });
+    }));
     if (hwData.active_fuelman && hwData.active_fuelman !== '' && !isAdminUidLocal(hwData.active_fuelman)) {
       results.push({
         id: 'fuelman-active', uid: hwData.active_fuelman, nama: getUserProfileLocal(hwData.active_fuelman).nama,
