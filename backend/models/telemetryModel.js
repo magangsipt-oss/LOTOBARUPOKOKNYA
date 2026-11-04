@@ -2,6 +2,87 @@ import pool from '../config/database.js';
 import { normalizeState, eventType, isTap, replayOccurredAt } from '../domain/telemetry.js';
 import { syncSessionDraft } from './dopPlanModel.js';
 
+// Tap masuk BBM ganda dalam jeda ini dihitung satu kali (box baru juga menolak tap keluar secepat ini).
+export const REFUEL_DOUBLE_TAP_SECONDS = 60;
+
+async function fuelmanName(c, uid) {
+  const [rows] = await c.query('SELECT nama FROM users WHERE rfid_uid = ? OR sid = ? LIMIT 1', [uid, uid]);
+  return rows[0]?.nama || null;
+}
+
+// Tap BBM langsung: masuk membuka satu baris, keluar menutup baris milik kartu yang sama.
+async function recordLiveRefuel(c, { idBox, event, uid, lat, lng, session }) {
+  if (event === 'REFUEL_START') {
+    const [open] = await c.query(
+      `SELECT id, TIMESTAMPDIFF(SECOND, start_time, NOW()) AS age_seconds FROM refueling_logs
+       WHERE id_box = ? AND fuelman_uid = ? AND end_time IS NULL ORDER BY start_time DESC, id DESC LIMIT 1`, [idBox, uid]);
+    if (open.length && Number(open[0].age_seconds) < REFUEL_DOUBLE_TAP_SECONDS) return;
+    // Box hanya mengirim tap masuk bila kartu ini tidak sedang mengisi; baris yang masih terbuka
+    // adalah sisa (mis. tap keluar hilang) dan ditutup dulu agar tidak dobel.
+    if (open.length) {
+      await c.query(
+        `UPDATE refueling_logs SET end_time = NOW(), duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
+         WHERE id_box = ? AND fuelman_uid = ? AND end_time IS NULL`, [idBox, uid]);
+    }
+    await c.query(
+      `INSERT INTO refueling_logs (id_box, fuelman_uid, fuelman_name, start_time, latitude, longitude, is_loto_active)
+       VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
+      [idBox, uid, await fuelmanName(c, uid), lat, lng, session ? 1 : 0]);
+    await c.query('UPDATE boxes SET active_fuelman = ? WHERE id_box = ?', [uid, idBox]);
+    return;
+  }
+  const [open] = await c.query(
+    `SELECT id FROM refueling_logs WHERE id_box = ? AND fuelman_uid = ? AND end_time IS NULL
+     ORDER BY start_time DESC, id DESC LIMIT 1`, [idBox, uid]);
+  if (open.length) {
+    await c.query(
+      `UPDATE refueling_logs SET end_time = NOW(), duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
+       WHERE id = ?`, [open[0].id]);
+  }
+  await c.query('UPDATE boxes SET active_fuelman = \'\', last_event = ? WHERE id_box = ?', [event, idBox]);
+}
+
+// Tap BBM offline yang dikirim ulang. Hanya dari firmware yang memasangkan masuk/keluar dan hanya
+// dengan waktu tap asli, supaya baris ditempatkan tepat dan pengisian yang sedang berjalan aman.
+async function recordReplayRefuel(c, { idBox, event, uid, lat, lng, occurredAt }) {
+  if (occurredAt == null) return;
+  if (event === 'REFUEL_START') {
+    const [open] = await c.query(
+      `SELECT id, UNIX_TIMESTAMP(start_time) AS start_epoch FROM refueling_logs
+       WHERE id_box = ? AND fuelman_uid = ? AND end_time IS NULL AND start_time <= FROM_UNIXTIME(?)
+       ORDER BY start_time DESC, id DESC LIMIT 1`, [idBox, uid, occurredAt]);
+    if (open.length && occurredAt - Number(open[0].start_epoch) < REFUEL_DOUBLE_TAP_SECONDS) return;
+    if (open.length) {
+      await c.query(
+        `UPDATE refueling_logs SET end_time = FROM_UNIXTIME(?), duration_seconds = TIMESTAMPDIFF(SECOND, start_time, FROM_UNIXTIME(?))
+         WHERE id_box = ? AND fuelman_uid = ? AND end_time IS NULL AND start_time <= FROM_UNIXTIME(?)`,
+        [occurredAt, occurredAt, idBox, uid, occurredAt]);
+    }
+    // Tap keluar yang lebih dulu sampai secara live menjadi akhir pengisian ini.
+    const [next] = await c.query(
+      `SELECT event_text, UNIX_TIMESTAMP(created_at) AS at_epoch FROM tapping_history
+       WHERE id_box = ? AND rfid_uid = ? AND event_text IN ('REFUEL_START', 'REFUEL_END') AND created_at > FROM_UNIXTIME(?)
+       ORDER BY created_at, id LIMIT 1`, [idBox, uid, occurredAt]);
+    const endEpoch = next[0]?.event_text === 'REFUEL_END' ? Number(next[0].at_epoch) : null;
+    await c.query(
+      `INSERT INTO refueling_logs (id_box, fuelman_uid, fuelman_name, start_time, end_time, duration_seconds, latitude, longitude, is_loto_active)
+       VALUES (?, ?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?), ?, ?, ?, NULL)`,
+      [idBox, uid, await fuelmanName(c, uid), occurredAt, endEpoch, endEpoch == null ? null : endEpoch - occurredAt, lat, lng]);
+    return;
+  }
+  // Tap keluar asli mengakhiri pengisian yang mencakup waktunya, termasuk yang sempat ditutup
+  // otomatis lebih lambat (mis. oleh penutupan sesi LOTO sebelum replay ini sampai).
+  const [rows] = await c.query(
+    `SELECT id FROM refueling_logs WHERE id_box = ? AND fuelman_uid = ? AND start_time <= FROM_UNIXTIME(?)
+     AND (end_time IS NULL OR end_time > FROM_UNIXTIME(?)) ORDER BY start_time DESC, id DESC LIMIT 1`,
+    [idBox, uid, occurredAt, occurredAt]);
+  if (rows.length) {
+    await c.query(
+      `UPDATE refueling_logs SET end_time = FROM_UNIXTIME(?), duration_seconds = TIMESTAMPDIFF(SECOND, start_time, FROM_UNIXTIME(?))
+       WHERE id = ?`, [occurredAt, occurredAt, rows[0].id]);
+  }
+}
+
 export async function recordTelemetry(idBox, body) {
   const c = await pool.getConnection();
   try {
@@ -76,40 +157,21 @@ export async function recordTelemetry(idBox, body) {
       const [buffer] = await c.query('SELECT id FROM rfid_buffer WHERE id_box = ? AND rfid_uid = ? LIMIT 1', [idBox, uid]);
       if (!buffer.length) await c.query('INSERT INTO rfid_buffer (id_box, rfid_uid) VALUES (?, ?)', [idBox, uid]);
     }
-    // ===== REFUELING: Auto-create & end refueling_logs =====
-    if (!body.replay && event === 'REFUEL_START') {
-      const [fuelUser] = await c.query('SELECT nama FROM users WHERE rfid_uid = ? OR sid = ? LIMIT 1', [uid, uid]);
-      const fuelName = fuelUser[0]?.nama || null;
-      const [refResult] = await c.query(
-        `INSERT INTO refueling_logs (id_box, fuelman_uid, fuelman_name, start_time, latitude, longitude, is_loto_active)
-         VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
-        [idBox, uid, fuelName, lat, lng, session ? 1 : 0]
-      );
-      // Store refueling_log_id in active_fuelman so we can end it later
-      await c.query('UPDATE boxes SET active_fuelman = ? WHERE id_box = ?',
-        [`${uid}|${refResult.insertId}`, idBox]);
-    }
-    if (!body.replay && event === 'REFUEL_END') {
-      // Find active refueling session for this box and end it
-      const [activeRefuel] = await c.query(
-        'SELECT id FROM refueling_logs WHERE id_box = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1', [idBox]);
-      if (activeRefuel.length) {
-        await c.query(
-          `UPDATE refueling_logs SET end_time = NOW(),
-           duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
-           WHERE id = ?`, [activeRefuel[0].id]);
-      }
-      // Clear active_fuelman
-      await c.query('UPDATE boxes SET active_fuelman = \'\', last_event = ? WHERE id_box = ?', [event, idBox]);
+    // ===== REFUELING: tap masuk (REFUEL_START) / tap keluar (REFUEL_END) per kartu petugas BBM =====
+    if (event === 'REFUEL_START' || event === 'REFUEL_END') {
+      if (!body.replay) await recordLiveRefuel(c, { idBox, event, uid, lat, lng, session });
+      else if (body.refuel_toggle === true) await recordReplayRefuel(c, { idBox, event, uid, lat, lng, occurredAt });
     }
     if (!body.replay && ['SUPERVISOR_LOG_OUT', 'SESSION_CLOSED_NORMAL'].includes(event)) {
       await c.query('UPDATE boxes SET active_session_id = NULL WHERE id_box = ?', [idBox]);
-      // End any active refueling session when LOTO session closes
+      // Firmware lama menutup pengisian BBM bersama sesi LOTO. Firmware baru tetap melaporkan petugas
+      // BBM yang belum tap keluar (active_fuelman); pengisian miliknya dibiarkan berjalan.
+      const stillRefueling = typeof body.active_fuelman === 'string' ? body.active_fuelman.trim() : '';
       await c.query(
         `UPDATE refueling_logs SET end_time = NOW(),
          duration_seconds = TIMESTAMPDIFF(SECOND, start_time, NOW())
-         WHERE id_box = ? AND end_time IS NULL`, [idBox]);
-      await c.query('UPDATE boxes SET active_fuelman = \'\', last_event = ? WHERE id_box = ?', [event, idBox]);
+         WHERE id_box = ? AND end_time IS NULL AND fuelman_uid <> ?`, [idBox, stillRefueling]);
+      await c.query('UPDATE boxes SET active_fuelman = ?, last_event = ? WHERE id_box = ?', [stillRefueling, event, idBox]);
     }
     await c.commit();
     return { duplicate: false, session_id: session };

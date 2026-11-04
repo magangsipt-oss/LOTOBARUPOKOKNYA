@@ -473,6 +473,11 @@ bool isSessionActive = false;
 
 String activeFuelmanUID = "";
 String activeFuelmanName = "";
+// Pengisian BBM: tap pertama kartu petugas BBM = masuk, tap kedua kartu yang sama = keluar.
+// Tap keluar baru diterima setelah jeda ini, agar tap ganda tidak sengaja tidak langsung menutup pengisian.
+const uint32_t REFUEL_MIN_TAP_OUT_MS = 60000;
+uint32_t activeFuelmanSinceMs = 0;
+bool activeFuelmanSinceKnown = false; // false setelah restart: waktu tap masuk tidak diketahui
 int8_t lastMekanikDisplayCount = -99;
 int8_t initialMekanikOutCount  = -1;
 bool isAddingFromMenu          = false;
@@ -3417,15 +3422,82 @@ void displayMenuWarning(const String &title, const String &hint) {
     needsRedraw = true;
 }
 
-// Catat tap petugas BBM dan tampilkan konfirmasinya.
+// Status pengisian BBM disimpan di NVS, terpisah dari sesi LOTO, agar tap keluar tetap dikenali
+// setelah sesi LOTO selesai atau box restart.
+void saveRefuelState() {
+    Preferences prefs;
+    if (!prefs.begin("eloto_fuel", false)) {
+        Serial.println("[REFUEL] NVS unavailable; refueling state not saved");
+        return;
+    }
+    prefs.putString("uid", activeFuelmanUID);
+    prefs.putString("name", activeFuelmanName);
+    prefs.end();
+}
+
+void loadRefuelState() {
+    Preferences prefs;
+    if (!prefs.begin("eloto_fuel", false)) return;
+    // Tanpa key "uid" (belum pernah disimpan firmware ini) status dari session.json dipakai.
+    if (prefs.isKey("uid")) {
+        activeFuelmanUID = prefs.getString("uid", "");
+        activeFuelmanName = prefs.getString("name", "");
+    }
+    prefs.end();
+    activeFuelmanSinceKnown = false;
+    if (activeFuelmanUID.length() > 0) {
+        Serial.printf("[REFUEL] Restored active refueling uid=%s name=%s\n",
+            activeFuelmanUID.c_str(), activeFuelmanName.c_str());
+    }
+}
+
+// Tap petugas BBM, tanpa perlu pengawas: tap pertama = masuk (REFUEL_START), tap kedua kartu
+// yang sama = keluar (REFUEL_END). Tap keluar sebelum REFUEL_MIN_TAP_OUT_MS dan kartu BBM lain
+// selama pengisian masih aktif ditolak, sehingga tap ganda tidak membuat data masuk/keluar palsu.
 bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     if (!isFuelmanRole(card.role)) return false;
 
-    activeFuelmanUID = uid;
-    activeFuelmanName = card.name;
+    bool refuelingActive = activeFuelmanUID.length() > 0;
+    bool refuelingEnded = refuelingActive && activeFuelmanUID.equalsIgnoreCase(uid);
+    if (refuelingActive && !refuelingEnded) {
+        buzzFailed();
+        Serial.printf("[REFUEL] Rejected uid=%s: refueling still active uid=%s\n",
+            uid.c_str(), activeFuelmanUID.c_str());
+        displayErrorCardPopup(uid, "PENGISIAN BBM AKTIF", card.name, "PETUGAS BBM", card.sid,
+            "MASIH DIPAKAI: " + activeFuelmanName.substring(0, 18));
+        return true;
+    }
+    if (refuelingEnded && activeFuelmanSinceKnown) {
+        uint32_t elapsed = millis() - activeFuelmanSinceMs;
+        if (elapsed < REFUEL_MIN_TAP_OUT_MS) {
+            uint32_t waitSeconds = (REFUEL_MIN_TAP_OUT_MS - elapsed + 999) / 1000;
+            buzzFailed();
+            Serial.printf("[REFUEL] Tap out too soon uid=%s elapsed_ms=%lu\n", uid.c_str(), (unsigned long)elapsed);
+            displayErrorCardPopup(uid, "SUDAH TAP MASUK", card.name, "PETUGAS BBM", card.sid,
+                "TAP KELUAR BISA " + String(waitSeconds) + " DETIK LAGI");
+            return true;
+        }
+    }
+
+    uint32_t durationMinutes = 0;
+    bool durationKnown = refuelingEnded && activeFuelmanSinceKnown;
+    if (durationKnown) durationMinutes = (millis() - activeFuelmanSinceMs) / 60000;
 
     buzzSuccess();
-    logAuditAsync("REFUEL_START", uid);
+    if (refuelingEnded) {
+        logAuditAsync("REFUEL_END", uid);
+        activeFuelmanUID = "";
+        activeFuelmanName = "";
+        activeFuelmanSinceKnown = false;
+    } else {
+        activeFuelmanUID = uid;
+        activeFuelmanName = card.name;
+        activeFuelmanSinceMs = millis();
+        activeFuelmanSinceKnown = true;
+        logAuditAsync("REFUEL_START", uid);
+    }
+    saveRefuelState();
+    Serial.printf("[REFUEL] %s uid=%s\n", refuelingEnded ? "Tap out (REFUEL_END)" : "Tap in (REFUEL_START)", uid.c_str());
 
     tft.fillRoundRect(14, 54, 452, 204, 8, ELOTO_BG);
     tft.drawRoundRect(14, 54, 452, 204, 8, TFT_GREEN);
@@ -3434,7 +3506,7 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     tft.setTextDatum(MC_DATUM);
     setStoryFont(12);
     tft.setTextColor(TFT_GREEN, ELOTO_BG);
-    tft.drawString("PENGISIAN BBM", 240, 72);
+    tft.drawString(refuelingEnded ? "PENGISIAN SELESAI" : "PENGISIAN BBM", 240, 72);
 
     tft.fillRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, ELOTO_BG);
     tft.drawRect(25, 91, PHOTO_FRAME_SIZE, PHOTO_FRAME_SIZE, TFT_GREEN);
@@ -3449,7 +3521,10 @@ bool handleFuelmanTap(const String &uid, WorkerInfo &card) {
     tft.setTextColor(TFT_WHITE, ELOTO_BG);
     drawTextFit("SID      : " + formatSid(card.sid), 190, 138, 260, TFT_WHITE, ELOTO_BG, 9);
     drawTextFit("JABATAN  : PETUGAS BBM", 190, 166, 260, TFT_WHITE, ELOTO_BG, 9);
-    drawTextFit("STATUS   : PENGISIAN BBM", 190, 194, 260, TFT_GREEN, ELOTO_BG, 9);
+    String statusText = refuelingEnded
+        ? (durationKnown ? "STATUS   : KELUAR (" + String(durationMinutes) + " MENIT)" : "STATUS   : KELUAR / SELESAI")
+        : "STATUS   : MASUK / PENGISIAN";
+    drawTextFit(statusText, 190, 194, 260, TFT_GREEN, ELOTO_BG, 9);
 
     drawTftFooter("", "");
 
@@ -4328,6 +4403,8 @@ void uploadOfflineLogsSDCard() {
         doc["is_online"] = true;
         doc["replay"] = true;
         if (occurredAt) doc["occurred_at"] = occurredAt;
+        // Firmware ini memasangkan tap BBM masuk/keluar, jadi backend boleh membentuk riwayat BBM dari replay.
+        doc["refuel_toggle"] = true;
         if (latitude.length() > 0 && longitude.length() > 0) {
             doc["lat"] = latitude.toDouble();
             doc["lon"] = longitude.toDouble();
@@ -5539,7 +5616,7 @@ void executeFooterChoice() {
             
             supervisorUID = ""; supervisorName = ""; supervisorRole = "";
             lastScannedUID = "---"; lastScannedSID = "-----";
-            activeFuelmanUID = ""; activeFuelmanName = "";
+            // Pengisian BBM tidak terikat sesi LOTO: tetap aktif sampai petugas BBM tap keluar.
             safetyQueue.topIndex = -1; targetMekanikCount = 0; isAddingFromMenu = false; workerListFromMenu = false;
             resetTeams();
             clearSessionFromSD();
@@ -5577,7 +5654,10 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
             else if (activeKey == KEY_4) {
                 buzzSuccess(); clearSessionFromSD();
                 supervisorUID = ""; supervisorName = ""; supervisorRole = "";
-                activeFuelmanUID = ""; activeFuelmanName = "";
+                // Reset admin juga menutup pengisian BBM yang masih aktif di dashboard.
+                if (activeFuelmanUID.length() > 0) logAuditAsync("REFUEL_END", activeFuelmanUID);
+                activeFuelmanUID = ""; activeFuelmanName = ""; activeFuelmanSinceKnown = false;
+                saveRefuelState();
                 safetyQueue.topIndex = -1; targetMekanikCount = 0; workerListFromMenu = false; currentState = STATE_BOOT_IP;
                 resetTeams();
                 isSessionActive = false; sessionStartTime = 0;
@@ -6599,7 +6679,8 @@ void setup() {
         currentState = STATE_WELCOME;
         selectedFooterAction = 1; // Default sorot tombol LANJUT
     }
-    
+    loadRefuelState();
+
     if (xTaskCreatePinnedToCore(geoScanTask, "BLEConfirm", 6144,
             NULL, 1, &geoTaskHandle, 0) != pdPASS) {
         geoTaskHandle = NULL;

@@ -26,7 +26,7 @@ export function validateTelemetry(body) {
     if (body[key] != null && (typeof body[key] !== 'string' || body[key].length > max)) invalid(`Invalid ${key}`);
   }
   for (const [key,max] of [['lat',90],['lng',180]]) if (body[key] != null && (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > max)) invalid(`Invalid ${key}`);
-  for (const key of ['gps_fix','relay_open','is_online','replay','sd_card_ok','sd_sync_ok','ble_scan_ok','session_active']) if (body[key] != null && ![true,false,0,1].includes(body[key])) invalid(`Invalid ${key}`);
+  for (const key of ['gps_fix','relay_open','is_online','replay','sd_card_ok','sd_sync_ok','ble_scan_ok','session_active','refuel_toggle']) if (body[key] != null && ![true,false,0,1].includes(body[key])) invalid(`Invalid ${key}`);
   for (const key of ['sd_user_count','ble_tag_count','mechanics_tapped']) if (body[key] != null && (!Number.isSafeInteger(body[key]) || body[key] < 0)) invalid(`Invalid ${key}`);
   if (body.session_elapsed_ms != null && (!Number.isSafeInteger(body.session_elapsed_ms) || body.session_elapsed_ms < 0)) invalid('Invalid session_elapsed_ms');
   if (body.ble_tag_count > 20) invalid('Invalid ble_tag_count');

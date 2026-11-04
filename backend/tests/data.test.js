@@ -69,6 +69,75 @@ test('offline refueling replay cannot open or close a current refueling session'
     assert.equal(state.commits, 1);
   }
 });
+function refuelFixture({open=[], next=[]}={}) {
+  return connectionFixture(sql=>{
+    if(sql.startsWith('SELECT * FROM boxes'))return [[box]];
+    if(sql.startsWith('SELECT event_id'))return [[]];
+    if(sql.startsWith('SELECT nama'))return [[{nama:'Petugas BBM'}]];
+    if(sql.startsWith('SELECT id') && sql.includes('FROM refueling_logs'))return [open];
+    if(sql.startsWith('SELECT event_text'))return [next];
+    return [{affectedRows:1,insertId:7}];
+  });
+}
+const refuelWrites = state => state.queries.filter(([s])=>/^(INSERT INTO refueling_logs|UPDATE refueling_logs)/.test(s));
+test('refuel tap in opens one row; a double tap within the guard window does not open another', async () => {
+  const first=refuelFixture();
+  await recordTelemetry('box-1',{event_id:'fuel-in-1',event:'REFUEL_START',uid:'FUEL-1',active_fuelman:'FUEL-1'});
+  assert.equal(refuelWrites(first).filter(([s])=>s.startsWith('INSERT')).length,1);
+  const doubleTap=refuelFixture({open:[{id:5,age_seconds:3}]});
+  await recordTelemetry('box-1',{event_id:'fuel-in-2',event:'REFUEL_START',uid:'FUEL-1',active_fuelman:'FUEL-1'});
+  assert.equal(refuelWrites(doubleTap).length,0);
+  assert.ok(doubleTap.queries.some(([s])=>s.startsWith('INSERT INTO tapping_history')));
+  const stale=refuelFixture({open:[{id:5,age_seconds:7200}]});
+  await recordTelemetry('box-1',{event_id:'fuel-in-3',event:'REFUEL_START',uid:'FUEL-1'});
+  const writes=refuelWrites(stale);
+  assert.match(writes[0][0],/^UPDATE refueling_logs SET end_time = NOW\(\)/);
+  assert.deepEqual(writes[0][1],['box-1','FUEL-1']);
+  assert.match(writes[1][0],/^INSERT INTO refueling_logs/);
+});
+test('refuel tap out closes only the open row of the same card', async () => {
+  const state=refuelFixture({open:[{id:9}]});
+  await recordTelemetry('box-1',{event_id:'fuel-out-1',event:'REFUEL_END',uid:'FUEL-1',active_fuelman:''});
+  const select=state.queries.find(([s])=>s.startsWith('SELECT id FROM refueling_logs'));
+  assert.deepEqual(select[1],['box-1','FUEL-1']);
+  const writes=refuelWrites(state);
+  assert.equal(writes.length,1);
+  assert.match(writes[0][0],/SET end_time = NOW\(\)/);
+  assert.deepEqual(writes[0][1],[9]);
+});
+test('closing a LOTO session keeps the refueling of a fuelman who has not tapped out', async () => {
+  const state=refuelFixture();
+  await recordTelemetry('box-1',{event_id:'close-1',event:'SESSION_CLOSED_NORMAL',uid:'SYSTEM',active_fuelman:'FUEL-1'});
+  const close=refuelWrites(state)[0];
+  assert.match(close[0],/fuelman_uid <> \?/);
+  assert.deepEqual(close[1],['box-1','FUEL-1']);
+  const legacy=refuelFixture();
+  await recordTelemetry('box-1',{event_id:'close-2',event:'SESSION_CLOSED_NORMAL',uid:'SYSTEM',active_fuelman:''});
+  assert.deepEqual(refuelWrites(legacy)[0][1],['box-1','']);
+});
+test('offline refuel taps from pairing firmware rebuild the refueling row at the original times', async () => {
+  const tapIn=Math.floor(Date.now()/1000)-3600;
+  const start=refuelFixture();
+  await recordTelemetry('box-1',{event_id:'off-in-1',event:'REFUEL_START',uid:'FUEL-1',replay:true,refuel_toggle:true,occurred_at:tapIn});
+  const insert=refuelWrites(start).find(([s])=>s.startsWith('INSERT'));
+  assert.equal(insert[1][3],tapIn);
+  assert.equal(insert[1][4],null);
+  assert.ok(!start.queries.some(([s])=>s.startsWith('UPDATE boxes')));
+  const lateIn=refuelFixture({next:[{event_text:'REFUEL_END',at_epoch:tapIn+900}]});
+  await recordTelemetry('box-1',{event_id:'off-in-2',event:'REFUEL_START',uid:'FUEL-1',replay:true,refuel_toggle:true,occurred_at:tapIn});
+  const paired=refuelWrites(lateIn).find(([s])=>s.startsWith('INSERT'));
+  assert.equal(paired[1][4],tapIn+900);
+  assert.equal(paired[1][5],900);
+  const end=refuelFixture({open:[{id:11}]});
+  await recordTelemetry('box-1',{event_id:'off-out-1',event:'REFUEL_END',uid:'FUEL-1',replay:true,refuel_toggle:true,occurred_at:tapIn+600});
+  const update=refuelWrites(end)[0];
+  assert.match(update[0],/SET end_time = FROM_UNIXTIME\(\?\)/);
+  assert.deepEqual(update[1],[tapIn+600,tapIn+600,11]);
+  assert.ok(!end.queries.some(([s])=>s.startsWith('UPDATE boxes')));
+  const unknownTime=refuelFixture({open:[{id:11}]});
+  await recordTelemetry('box-1',{event_id:'off-out-2',event:'REFUEL_END',uid:'FUEL-1',replay:true,refuel_toggle:true});
+  assert.equal(refuelWrites(unknownTime).length,0);
+});
 test('only a card scanned in registration mode is queued for personnel registration', async () => {
   const state = telemetryFixture();
   await recordTelemetry('box-1', {

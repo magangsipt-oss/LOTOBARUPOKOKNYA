@@ -35,14 +35,20 @@ test('dashboard refreshes refueling history while it remains open', () => {
 test('second tap by the active fuelman ends refueling and reports REFUEL_END', () => {
   const fuelman = firmware.split('bool handleFuelmanTap(const String &uid, WorkerInfo &card) {', 2)[1]
     .split('\n// Pulihkan antrean', 1)[0];
-  assert.match(fuelman, /bool refuelingEnded = activeFuelmanUID\.equalsIgnoreCase\(uid\)/);
+  assert.match(fuelman, /bool refuelingEnded = refuelingActive && activeFuelmanUID\.equalsIgnoreCase\(uid\)/);
   assert.match(fuelman, /if \(refuelingEnded\) \{\s*logAuditAsync\("REFUEL_END", uid\);\s*activeFuelmanUID = "";\s*activeFuelmanName = "";/);
-  assert.match(fuelman, /else \{\s*activeFuelmanUID = uid;\s*activeFuelmanName = card\.name;\s*logAuditAsync\("REFUEL_START", uid\);/);
+  assert.match(fuelman, /else \{\s*activeFuelmanUID = uid;\s*activeFuelmanName = card\.name;[\s\S]{0,120}logAuditAsync\("REFUEL_START", uid\);/);
   assert.match(fuelman, /refuelingEnded \? "PENGISIAN SELESAI" : "PENGISIAN BBM"/);
-  assert.match(fuelman, /refuelingEnded \? "STATUS   : SELESAI" : "STATUS   : PENGISIAN BBM"/);
+  // Tap keluar terlalu cepat dan kartu BBM lain saat pengisian aktif ditolak tanpa mengirim event.
+  const tooSoon = fuelman.split('if (elapsed < REFUEL_MIN_TAP_OUT_MS) {', 2)[1].split('return true;', 1)[0];
+  assert.doesNotMatch(tooSoon, /logAuditAsync/);
+  const otherCard = fuelman.split('if (refuelingActive && !refuelingEnded) {', 2)[1].split('return true;', 1)[0];
+  assert.doesNotMatch(otherCard, /logAuditAsync/);
+  assert.match(firmware, /const uint32_t REFUEL_MIN_TAP_OUT_MS = 60000;/);
+  assert.match(fuelman, /saveRefuelState\(\);/);
 
-  const endHandler = telemetry.split('if (!body.replay && event === \'REFUEL_END\')', 2)[1]
-    .split('\n    if (!body.replay &&', 1)[0];
+  const endHandler = telemetry.split('async function recordLiveRefuel(', 2)[1]
+    .split('\n// Tap BBM offline', 1)[0].split("if (event === 'REFUEL_START') {", 2)[1].split('\n    return;\n  }', 2)[1];
   assert.match(endHandler, /UPDATE refueling_logs SET end_time = NOW\(\)/);
   assert.match(endHandler, /UPDATE boxes SET active_fuelman =/);
 });

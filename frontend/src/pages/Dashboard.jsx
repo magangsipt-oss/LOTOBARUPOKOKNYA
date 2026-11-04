@@ -732,8 +732,11 @@ export default function Dashboard() {
                 <tr><td colSpan="8" className="p-6 text-center text-slate-400 italic"><i className="fa-solid fa-spinner fa-spin mr-1"></i> Memuat data...</td></tr>
               ) : refuelingLogs.length > 0 ? refuelingLogs.map((log) => {
                 const fmtTime = v => v ? new Date(String(v).replace(' ', 'T')).toLocaleString('id-ID') : '—';
+                const detik = Math.max(0, Number(log.duration_seconds) || 0);
                 const durasi = log.duration_seconds != null
-                  ? `${Math.floor(log.duration_seconds / 60)}j ${log.duration_seconds % 60}d`
+                  ? (detik >= 3600
+                    ? `${Math.floor(detik / 3600)}j ${Math.floor((detik % 3600) / 60)}m`
+                    : `${Math.floor(detik / 60)}m ${detik % 60}d`)
                   : (log.end_time ? '—' : 'Sedang berlangsung');
                 return (
                   <tr key={log.id} className="border-b border-amber-100 hover:bg-amber-50/60">
