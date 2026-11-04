@@ -25,6 +25,7 @@
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
 #include <Preferences.h>
+#include <esp_system.h>
 
 // ============================================================================
 // DEFINISI WARNA TEMA E-LOTO
@@ -435,6 +436,13 @@ struct NetworkJob {
 uint32_t offlineBootId = 0;
 // Jaringan task boleh menunggu SD lebih lama (mis. selama relay aktif) agar event offline tidak hilang.
 const uint32_t OFFLINE_LOG_SAVE_WAIT_MS = 15000;
+// Lama menyala: dihitung dari daya masuk sampai daya putus. Restart tanpa daya putus (software,
+// crash, watchdog, brownout) melanjutkan hitungan. Siklus sebelumnya = ketahanan baterai terakhir.
+const uint32_t POWER_CHECKPOINT_MS = 60000;
+uint32_t powerOnBaseS = 0;           // detik menyala dari boot sebelumnya pada siklus daya yang sama
+bool lastPowerCycleKnown = false;
+uint32_t lastPowerCycleS = 0;
+bool lastPowerCycleBrownout = false; // ada brownout (tegangan drop) sebelum daya putus
 
 struct PhotoSyncJob {
     char uid[16];
@@ -726,6 +734,8 @@ void drawTftFooter(const String &leftText, const String &rightText);
 void drawTftFooterSingle(const String &btnText);
 void drawTftFooterTriple(const String &leftText, const String &midText, const String &rightText);     
 void updateHeaderClock(bool forceRedraw = false);
+uint32_t powerOnSeconds();
+String formatPowerOnTime(uint32_t seconds);
 void drawSinglePersonIcon(int16_t x, int16_t y, float scale, uint16_t color, bool withOutline = false, uint16_t outlineColor = TFT_BLACK);
 void drawPhotoPending(int16_t boxX, int16_t boxY, uint16_t boxSize, uint16_t color = ELOTO_HEADER);
 uint8_t readADKeypadRaw();
@@ -1195,14 +1205,18 @@ String twoDigits(unsigned long value) {
     return value < 10 ? String("0") + String(value) : String(value);
 }
 
-// Perbarui jam sesi pada header TFT.
+// Perbarui jam sesi pada header TFT. Di luar sesi LOTO, header menampilkan lama box menyala.
 void updateHeaderClock(bool forceRedraw) {
     static String lastClockText = "";
     if (!isSessionActive) {
-        if (!forceRedraw && lastClockText.length() > 0) {
-            tft.fillRect(135, 4, 105, 34, TFT_NAVY);
-        }
-        lastClockText = "";
+        String powerText = "NYALA " + formatPowerOnTime(powerOnSeconds());
+        if (!forceRedraw && powerText == lastClockText) return;
+        lastClockText = powerText;
+        tft.fillRect(76, 4, 164, 34, TFT_NAVY);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
+        setStoryFont(9);
+        tft.drawString(powerText, 158, 21);
         return;
     }
 
@@ -1214,7 +1228,7 @@ void updateHeaderClock(bool forceRedraw) {
     if (!forceRedraw && clockText == lastClockText) return;
     lastClockText = clockText;
 
-    tft.fillRect(135, 4, 105, 34, TFT_NAVY);
+    tft.fillRect(76, 4, 164, 34, TFT_NAVY);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
     setStoryFont(9);
@@ -3420,6 +3434,66 @@ void displayMenuWarning(const String &title, const String &hint) {
     digitalWrite(PIN_BUZZER, LOW);
     lastRenderedState = STATE_SYSTEM_ERROR;
     needsRedraw = true;
+}
+
+// Detik menyala pada siklus daya ini.
+uint32_t powerOnSeconds() {
+    return powerOnBaseS + millis() / 1000;
+}
+
+// Format lama menyala untuk layar, mis. "7j 05m".
+String formatPowerOnTime(uint32_t seconds) {
+    uint32_t minutes = seconds / 60;
+    return String(minutes / 60) + "j " + twoDigits(minutes % 60) + "m";
+}
+
+// Saat boot: tentukan apakah daya sempat putus. Bila ya, siklus sebelumnya ditutup dan disimpan
+// sebagai "nyala terakhir"; bila tidak, lama menyala dilanjutkan.
+void initPowerOnTime() {
+    esp_reset_reason_t reason = esp_reset_reason();
+    Preferences prefs;
+    if (!prefs.begin("eloto_pwr", false)) {
+        Serial.println("[POWER] NVS unavailable; power-on time not recorded");
+        return;
+    }
+    uint32_t previousTotal = prefs.getUInt("base", 0) + prefs.getUInt("up", 0);
+    bool brownoutSeen = prefs.getUChar("bo", 0) != 0;
+    bool samePowerCycle = reason == ESP_RST_SW || reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
+        reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT || reason == ESP_RST_BROWNOUT;
+    if (samePowerCycle) {
+        powerOnBaseS = previousTotal;
+        if (reason == ESP_RST_BROWNOUT) brownoutSeen = true;
+    } else {
+        if (prefs.isKey("up")) {
+            prefs.putUInt("last", previousTotal);
+            prefs.putUChar("lastbo", brownoutSeen ? 1 : 0);
+        }
+        powerOnBaseS = 0;
+        brownoutSeen = false;
+    }
+    prefs.putUInt("base", powerOnBaseS);
+    prefs.putUInt("up", 0);
+    prefs.putUChar("bo", brownoutSeen ? 1 : 0);
+    lastPowerCycleKnown = prefs.isKey("last");
+    lastPowerCycleS = prefs.getUInt("last", 0);
+    lastPowerCycleBrownout = prefs.getUChar("lastbo", 0) != 0;
+    prefs.end();
+    Serial.printf("[POWER] reset_reason=%d continue=%d on_base=%lus last_cycle=%lus brownout=%d\n",
+        (int)reason, samePowerCycle, (unsigned long)powerOnBaseS,
+        (unsigned long)lastPowerCycleS, lastPowerCycleBrownout);
+}
+
+// Simpan lama menyala tiap menit; saat daya putus, nilai terakhir menjadi lama nyala siklus ini.
+void servicePowerCheckpoint() {
+    static uint32_t lastCheckpointAt = 0;
+    static bool checkpointStarted = false;
+    if (checkpointStarted && millis() - lastCheckpointAt < POWER_CHECKPOINT_MS) return;
+    checkpointStarted = true;
+    lastCheckpointAt = millis();
+    Preferences prefs;
+    if (!prefs.begin("eloto_pwr", false)) return;
+    prefs.putUInt("up", millis() / 1000);
+    prefs.end();
 }
 
 // Status pengisian BBM disimpan di NVS, terpisah dari sesi LOTO, agar tap keluar tetap dikenali
@@ -5980,6 +6054,13 @@ void drawScreen() {
         tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
         tft.drawString("LOCKOUT / TAGOUT", 240, 195);
         drawDecorativeLine(220, ELOTO_DARK_RED);
+        if (lastPowerCycleKnown) {
+            // Lama nyala siklus daya sebelumnya = ketahanan baterai terakhir.
+            String lastPowerText = "NYALA TERAKHIR " + formatPowerOnTime(lastPowerCycleS) +
+                (lastPowerCycleBrownout ? " (BATERAI LEMAH)" : " (DAYA PUTUS)");
+            tft.setTextDatum(MC_DATUM);
+            drawTextFit(lastPowerText, 240, 240, 440, TFT_LIGHTGREY, TFT_BLACK, 9);
+        }
         drawTftFooter("DAFTAR KARTU", "LANJUT");
     }
     else if (currentState == STATE_BOOT_IP) {
@@ -6572,6 +6653,7 @@ void setup() {
             offlineBootId = esp_random() | 0x80000000UL;
         }
     }
+    initPowerOnTime();
     pinMode(TFT_CS_PIN, OUTPUT);
     digitalWrite(TFT_CS_PIN, HIGH);
     pinMode(SD_CS_PIN, OUTPUT);
@@ -6778,6 +6860,7 @@ void loop() {
     server.handleClient();
     feedGPS();
     serviceGeofence();
+    servicePowerCheckpoint();
 
     // Auto-Online Recovery: Jika di layar offline tapi jaringan WiFi sudah siap/terhubung, otomatis beralih ke Mode Online
     static unsigned long lastBackendRecoveryAttempt = 0;
