@@ -1209,14 +1209,14 @@ String twoDigits(unsigned long value) {
 void updateHeaderClock(bool forceRedraw) {
     static String lastClockText = "";
     if (!isSessionActive) {
-        String powerText = "NYALA " + formatPowerOnTime(powerOnSeconds());
+        String powerText = formatPowerOnTime(powerOnSeconds());
         if (!forceRedraw && powerText == lastClockText) return;
         lastClockText = powerText;
         tft.fillRect(76, 4, 164, 34, TFT_NAVY);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
         setStoryFont(9);
-        tft.drawString(powerText, 158, 21);
+        tft.drawString(powerText, 185, 21);
         return;
     }
 
@@ -3441,10 +3441,9 @@ uint32_t powerOnSeconds() {
     return powerOnBaseS + millis() / 1000;
 }
 
-// Format lama menyala untuk layar, mis. "7j 05m".
+// Format lama menyala untuk layar: jam:menit:detik, mis. "07:05:32".
 String formatPowerOnTime(uint32_t seconds) {
-    uint32_t minutes = seconds / 60;
-    return String(minutes / 60) + "j " + twoDigits(minutes % 60) + "m";
+    return twoDigits(seconds / 3600) + ":" + twoDigits((seconds / 60) % 60) + ":" + twoDigits(seconds % 60);
 }
 
 // Saat boot: tentukan apakah daya sempat putus. Bila ya, siklus sebelumnya ditutup dan disimpan
@@ -6056,7 +6055,8 @@ void drawScreen() {
         drawDecorativeLine(220, ELOTO_DARK_RED);
         if (lastPowerCycleKnown) {
             // Lama nyala siklus daya sebelumnya = ketahanan baterai terakhir.
-            String lastPowerText = "NYALA TERAKHIR " + formatPowerOnTime(lastPowerCycleS) +
+            uint32_t lastMinutes = lastPowerCycleS / 60;
+            String lastPowerText = "NYALA TERAKHIR " + String(lastMinutes / 60) + "j " + twoDigits(lastMinutes % 60) + "m" +
                 (lastPowerCycleBrownout ? " (BATERAI LEMAH)" : " (DAYA PUTUS)");
             tft.setTextDatum(MC_DATUM);
             drawTextFit(lastPowerText, 240, 240, 440, TFT_LIGHTGREY, TFT_BLACK, 9);
