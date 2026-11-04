@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeState, validateTelemetry, eventType, isTap } from '../domain/telemetry.js';
+import { normalizeState, validateTelemetry, eventType, isTap, replayOccurredAt } from '../domain/telemetry.js';
+
+test('offline replay keeps the original event time only when it is plausible', () => {
+  const nowMs = Date.UTC(2026, 10, 4, 3, 0, 0);
+  const now = nowMs / 1000;
+  assert.equal(replayOccurredAt({ replay: true, occurred_at: now - 3 * 3600 }, nowMs), now - 3 * 3600);
+  assert.equal(replayOccurredAt({ replay: false, occurred_at: now - 60 }, nowMs), null);
+  assert.equal(replayOccurredAt({ occurred_at: now - 60 }, nowMs), null);
+  assert.equal(replayOccurredAt({ replay: true }, nowMs), null);
+  assert.equal(replayOccurredAt({ replay: true, occurred_at: '1792121297' }, nowMs), null);
+  assert.equal(replayOccurredAt({ replay: true, occurred_at: now + 3600 }, nowMs), null);
+  assert.equal(replayOccurredAt({ replay: true, occurred_at: now - 400 * 86400 }, nowMs), null);
+});
 
 // ============================================================================
 // ESP32 stateToString() output vs backend aliases — full coverage
@@ -370,7 +382,8 @@ test('validateTelemetry accepts device health snapshots and rejects invalid coun
     mechanics_tapped: 3
   }));
   assert.throws(() => validateTelemetry({ event_id: 'evt-bad-ble-count', ble_tag_count: 21 }), /ble_tag_count/);
-  assert.throws(() => validateTelemetry({ event_id: 'evt-bad-tap-count', mechanics_tapped: 11 }), /mechanics_tapped/);
+  assert.doesNotThrow(() => validateTelemetry({ event_id: 'evt-multi-job-tap-count', mechanics_tapped: 19 }));
+  assert.throws(() => validateTelemetry({ event_id: 'evt-bad-tap-count', mechanics_tapped: 21 }), /mechanics_tapped/);
   assert.throws(() => validateTelemetry({ event_id: 'evt-bad-sd-count', sd_user_count: -1 }), /sd_user_count/);
   assert.throws(() => validateTelemetry({ event_id: 'evt-bad-ble-state', ble_scan_ok: 'yes' }), /ble_scan_ok/);
 });

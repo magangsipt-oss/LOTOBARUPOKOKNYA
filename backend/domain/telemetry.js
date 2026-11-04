@@ -4,6 +4,17 @@ export const normalizeState = state => aliases[state] || (state.startsWith('STAT
 const normalizedEvent = event => String(event || '').trim().toUpperCase();
 export const eventType = event => ['SUPERVISOR_LOCK_IN', 'SUPERVISOR_EXTRA_LOCK_IN', 'MECHANIC_LOG_IN', 'REFUEL_START'].includes(normalizedEvent(event)) ? 'IN' : ['SUPERVISOR_LOG_OUT', 'SUPERVISOR_EXTRA_LOG_OUT', 'MECHANIC_LOG_OUT', 'REFUEL_END'].includes(normalizedEvent(event)) ? 'OUT' : 'CHECK';
 export const isTap = event => eventType(event) !== 'CHECK';
+// Event offline membawa waktu kejadian asli dari box (epoch detik UTC). Nilai yang tidak
+// wajar diabaikan, sehingga record tetap tersimpan dengan waktu terima server seperti dulu.
+export const REPLAY_MAX_AGE_SECONDS = 366 * 24 * 60 * 60;
+export const REPLAY_MAX_FUTURE_SECONDS = 300;
+export function replayOccurredAt(body, nowMs = Date.now()) {
+  if (!body?.replay || !Number.isSafeInteger(body.occurred_at)) return null;
+  const now = Math.floor(nowMs / 1000);
+  if (body.occurred_at > now + REPLAY_MAX_FUTURE_SECONDS) return null;
+  if (body.occurred_at < now - REPLAY_MAX_AGE_SECONDS) return null;
+  return body.occurred_at;
+}
 export function validateTelemetry(body) {
   const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid('Invalid telemetry');
@@ -19,7 +30,8 @@ export function validateTelemetry(body) {
   for (const key of ['sd_user_count','ble_tag_count','mechanics_tapped']) if (body[key] != null && (!Number.isSafeInteger(body[key]) || body[key] < 0)) invalid(`Invalid ${key}`);
   if (body.session_elapsed_ms != null && (!Number.isSafeInteger(body.session_elapsed_ms) || body.session_elapsed_ms < 0)) invalid('Invalid session_elapsed_ms');
   if (body.ble_tag_count > 20) invalid('Invalid ble_tag_count');
-  if (body.mechanics_tapped > 10) invalid('Invalid mechanics_tapped');
+  // Firmware menampung MAX_WORKERS = 20 personel untuk semua pekerjaan di satu unit.
+  if (body.mechanics_tapped > 20) invalid('Invalid mechanics_tapped');
   if (body.gps_fix && (body.lat == null || body.lng == null)) invalid('GPS fix requires lat and lng');
   if (body.queue != null && (!Array.isArray(body.queue) || body.queue.length > 100 || body.queue.some(x => !x || typeof x.uid !== 'string' || x.uid.length > 50 || typeof x.name !== 'string' || x.name.length > 100 || typeof x.role !== 'string' || x.role.length > 50))) invalid('Invalid queue');
   if (body.uptime_ms != null && (!Number.isSafeInteger(body.uptime_ms) || body.uptime_ms < 0)) invalid('Invalid uptime');

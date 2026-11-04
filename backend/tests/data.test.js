@@ -45,6 +45,21 @@ test('offline replay records evidence without resetting state or opening a new l
   const tap=state.queries.find(([s])=>s.startsWith('INSERT INTO tapping_history'));
   assert.equal(tap[1][1],null);assert.equal(state.commits,1);
 });
+test('offline replay stores the original tap time; live telemetry keeps server time',async()=>{
+  const occurredAt=Math.floor(Date.now()/1000)-2*3600;
+  const replay=telemetryFixture();
+  await recordTelemetry('box-1',{event_id:'offline-time-1',event:'MECHANIC_LOG_IN',uid:'ABC',replay:true,occurred_at:occurredAt});
+  for (const table of ['audit_logs','tapping_history']) {
+    const insert=replay.queries.find(([s])=>s.startsWith(`INSERT INTO ${table}`));
+    assert.match(insert[0],/COALESCE\(FROM_UNIXTIME\(\?\), NOW\(\)\)/);
+    assert.equal(insert[1].at(-1),occurredAt);
+  }
+  const live=telemetryFixture();
+  await recordTelemetry('box-1',{event_id:'live-time-1',event:'MECHANIC_LOG_IN',uid:'ABC',occurred_at:occurredAt});
+  for (const table of ['audit_logs','tapping_history']) {
+    assert.equal(live.queries.find(([s])=>s.startsWith(`INSERT INTO ${table}`))[1].at(-1),null);
+  }
+});
 test('offline refueling replay cannot open or close a current refueling session', async () => {
   for (const event of ['REFUEL_START', 'REFUEL_END']) {
     const state = telemetryFixture();

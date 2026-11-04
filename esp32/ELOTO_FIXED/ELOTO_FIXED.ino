@@ -24,6 +24,7 @@
 #include <SD.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
+#include <Preferences.h>
 
 // ============================================================================
 // DEFINISI WARNA TEMA E-LOTO
@@ -427,7 +428,13 @@ struct AuditEntry {
 struct NetworkJob {
     char event[48];
     char uid[16];
+    uint32_t epoch;    // Waktu UTC saat event terjadi; 0 bila jam belum sinkron (NTP/GPS)
+    uint32_t eventMs;  // millis() saat event terjadi, untuk menghitung waktu bila jam sinkron belakangan
 };
+// Nomor boot (NVS): millis() di log offline hanya berarti pada boot yang sama.
+uint32_t offlineBootId = 0;
+// Jaringan task boleh menunggu SD lebih lama (mis. selama relay aktif) agar event offline tidak hilang.
+const uint32_t OFFLINE_LOG_SAVE_WAIT_MS = 15000;
 
 struct PhotoSyncJob {
     char uid[16];
@@ -692,7 +699,8 @@ String checkRfidSensor();
 bool syncDatabaseToSDCard(bool syncPhotos = false);
 WorkerInfo searchUserFromSDCard(String uid);
 void cacheUserInRAM(const WorkerInfo &card);
-void saveOfflineLogToSDCard(String event, String uid, const String &eventId);
+bool saveOfflineLogToSDCard(String event, String uid, const String &eventId,
+    uint32_t eventEpoch = 0, uint32_t eventMs = 0, uint32_t maxWaitMs = 150);
 void uploadOfflineLogsSDCard();
 void saveSessionToSD();
 void clearSessionFromSD();
@@ -4094,21 +4102,60 @@ WorkerInfo searchUserFromSDCard(String uid) {
 }
 
 // Simpan event yang belum terkirim agar dapat dicoba ulang.
-void saveOfflineLogToSDCard(String event, String uid, const String &eventId) {
-    if (!sdCardMounted || sdMutex == NULL) return;
-    if (takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
-        File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
-        if (logFile) {
-            String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
-            String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
-            String stableId = eventId.length() > 0 ? eventId :
-                                "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
-            logFile.println(stableId + "," + event + "," + uid + "," + latitude + "," + longitude);
-            logFile.close();
-        } 
-        digitalWrite(SD_CS_PIN, HIGH);
-        giveSd();
+// Format baris: id,event,uid,lat,lon,epoch,millis,boot. Waktu kejadian ikut disimpan agar
+// riwayat di dashboard memakai jam tap asli, bukan jam saat jaringan kembali.
+bool saveOfflineLogToSDCard(String event, String uid, const String &eventId,
+        uint32_t eventEpoch, uint32_t eventMs, uint32_t maxWaitMs) {
+    if (!sdCardMounted || sdMutex == NULL) {
+        Serial.printf("[TELEMETRY] Offline save failed event=%s uid=%s reason=sd_unavailable\n",
+            event.c_str(), uid.c_str());
+        return false;
     }
+    if (eventMs == 0) eventMs = millis();
+    // Jam baru sinkron setelah event terjadi (boot yang sama): hitung mundur dari sekarang.
+    if (eventEpoch == 0 && systemClockReady()) {
+        eventEpoch = (uint32_t)time(nullptr) - uint32_t(millis() - eventMs) / 1000;
+    }
+    String latitude = hasValidGpsFix() ? String(currentLatitude, 6) : "";
+    String longitude = hasValidGpsFix() ? String(currentLongitude, 6) : "";
+    String stableId = eventId.length() > 0 ? eventId :
+                        "off-" + String(millis()) + "-" + String(random(0x7fffffff), HEX);
+    String record = stableId + "," + event + "," + uid + "," + latitude + "," + longitude + "," +
+        (eventEpoch ? String(eventEpoch) : String("")) + "," + String(eventMs) + "," +
+        String(offlineBootId, HEX);
+
+    // SD bisa sedang dipakai layar foto atau dikunci selama relay aktif: coba lagi selama batas waktu.
+    // Ulangi hanya bila belum ada byte yang ditulis, agar tidak muncul baris ganda/terpotong.
+    uint32_t startedAt = millis();
+    const char *reason = "sd_busy";
+    uint8_t fileFailures = 0;
+    for (;;) {
+        if (takeSd(pdMS_TO_TICKS(150)) == pdTRUE) {
+            File logFile = SD.open("/offline_logs.csv", FILE_APPEND);
+            bool opened = static_cast<bool>(logFile);
+            size_t written = 0;
+            if (opened) {
+                written = logFile.println(record);
+                logFile.close();
+            }
+            digitalWrite(SD_CS_PIN, HIGH);
+            giveSd();
+            if (written == record.length() + 2) return true;
+            if (written > 0) {
+                Serial.printf("[TELEMETRY] Offline save incomplete event=%s uid=%s written=%u\n",
+                    event.c_str(), uid.c_str(), (unsigned int)written);
+                return false;
+            }
+            reason = opened ? "write_failed" : "open_failed";
+            // Kartu bermasalah (bukan sekadar sibuk): jangan tahan task jaringan terlalu lama.
+            if (++fileFailures >= 3) break;
+        }
+        if (uint32_t(millis() - startedAt) + 100 >= maxWaitMs) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    Serial.printf("[TELEMETRY] Offline save failed event=%s uid=%s reason=%s waited_ms=%lu\n",
+        event.c_str(), uid.c_str(), reason, (unsigned long)(millis() - startedAt));
+    return false;
 }
 
 // Buang bagian awal antrean offline yang sudah terkirim; baris baru di akhir berkas tetap aman.
@@ -4232,8 +4279,31 @@ void uploadOfflineLogsSDCard() {
         String uid = line.substring(p2 + 1, p3 >= 0 ? p3 : line.length());
         int p4 = p3 >= 0 ? line.indexOf(',', p3 + 1) : -1;
         String latitude = p3 >= 0 ? line.substring(p3 + 1, p4 >= 0 ? p4 : line.length()) : "";
-        String longitude = p4 >= 0 ? line.substring(p4 + 1) : "";
+        int p5 = p4 >= 0 ? line.indexOf(',', p4 + 1) : -1;
+        String longitude = p4 >= 0 ? line.substring(p4 + 1, p5 >= 0 ? p5 : line.length()) : "";
         uid.trim(); latitude.trim(); longitude.trim();
+
+        // Format baru menambah epoch,millis,boot. Baris lama tanpa waktu tetap dikirim seperti dulu
+        // (backend memakai waktu terima).
+        uint32_t occurredAt = 0;
+        int p6 = p5 >= 0 ? line.indexOf(',', p5 + 1) : -1;
+        int p7 = p6 >= 0 ? line.indexOf(',', p6 + 1) : -1;
+        if (p7 > p6 && p6 > p5 && p5 > p4) {
+            String epochText = line.substring(p5 + 1, p6);
+            String msText = line.substring(p6 + 1, p7);
+            String bootText = line.substring(p7 + 1);
+            epochText.trim(); msText.trim(); bootText.trim();
+            uint32_t savedEpoch = strtoul(epochText.c_str(), nullptr, 10);
+            uint32_t savedMs = strtoul(msText.c_str(), nullptr, 10);
+            uint32_t savedBoot = strtoul(bootText.c_str(), nullptr, 16);
+            // Batas sama dengan systemClockReady(): epoch di bawahnya berarti jam belum benar.
+            if (savedEpoch >= 1792121297UL) {
+                occurredAt = savedEpoch;
+            } else if (msText.length() > 0 && bootText.length() > 0 &&
+                       savedBoot == offlineBootId && systemClockReady()) {
+                occurredAt = (uint32_t)time(nullptr) - uint32_t(millis() - savedMs) / 1000;
+            }
+        }
 
         bool legacyId = eventId.length() > 0;
         for (size_t i = 0; i < eventId.length(); i++) {
@@ -4257,6 +4327,7 @@ void uploadOfflineLogsSDCard() {
         doc["is_register_scan"] = event.indexOf("REGISTER_NEW_CARD") != -1;
         doc["is_online"] = true;
         doc["replay"] = true;
+        if (occurredAt) doc["occurred_at"] = occurredAt;
         if (latitude.length() > 0 && longitude.length() > 0) {
             doc["lat"] = latitude.toDouble();
             doc["lon"] = longitude.toDouble();
@@ -4280,8 +4351,8 @@ void uploadOfflineLogsSDCard() {
             httpCode = http.POST(payload);
             http.end();
         }
-        Serial.printf("[TELEMETRY] Offline replay event=%s uid=%s => HTTP %d\n",
-            event.c_str(), uid.c_str(), httpCode);
+        Serial.printf("[TELEMETRY] Offline replay event=%s uid=%s occurred_at=%lu => HTTP %d\n",
+            event.c_str(), uid.c_str(), (unsigned long)occurredAt, httpCode);
 
         // 4xx selain timeout/rate-limit tidak akan pernah diterima; buang agar antrean tidak macet.
         bool permanentReject = httpCode >= 400 && httpCode < 500 && httpCode != 408 && httpCode != 429;
@@ -4654,7 +4725,8 @@ void networkTaskCore0(void * pvParameters) {
                     heartbeatFailCount = 0;
                 } else {
                     heartbeatFailCount++;
-                    saveOfflineLogToSDCard(String(job.event), String(job.uid), eventId);
+                    saveOfflineLogToSDCard(String(job.event), String(job.uid), eventId,
+                        job.epoch, job.eventMs, OFFLINE_LOG_SAVE_WAIT_MS);
                     if (heartbeatFailCount >= 3 && String(job.event) == "HEARTBEAT_SYNC") {
                         heartbeatFailCount = 0;
                         server_host = "";
@@ -4662,7 +4734,8 @@ void networkTaskCore0(void * pvParameters) {
                     }
                 }
             } else if (WiFi.status() != WL_CONNECTED) {
-                saveOfflineLogToSDCard(String(job.event), String(job.uid), String());
+                saveOfflineLogToSDCard(String(job.event), String(job.uid), String(),
+                    job.epoch, job.eventMs, OFFLINE_LOG_SAVE_WAIT_MS);
                 heartbeatFailCount++;
             } else {
                 if (WiFi.status() == WL_CONNECTED) {
@@ -4670,7 +4743,8 @@ void networkTaskCore0(void * pvParameters) {
                         job.event, WiFi.status(), server_host.length() > 0,
                         (unsigned int)ESP.getFreeHeap(), (unsigned int)MIN_HEAP_TO_POST_TELEMETRY);
                 }
-                saveOfflineLogToSDCard(String(job.event), String(job.uid), String());
+                saveOfflineLogToSDCard(String(job.event), String(job.uid), String(),
+                    job.epoch, job.eventMs, OFFLINE_LOG_SAVE_WAIT_MS);
             }
         }
 
@@ -4762,14 +4836,16 @@ void networkTaskCore0(void * pvParameters) {
 // Antrekan event agar pengiriman jaringan tidak menahan tap.
 void logAuditAsync(String event, String uid) {
     NetworkJob job; memset(&job, 0, sizeof(NetworkJob));
-    event.toCharArray(job.event, sizeof(job.event)); 
+    event.toCharArray(job.event, sizeof(job.event));
     uid.toCharArray(job.uid, sizeof(job.uid));
+    job.eventMs = millis();
+    job.epoch = systemClockReady() ? (uint32_t)time(nullptr) : 0;
     if (networkQueue == NULL || xQueueSend(networkQueue, &job, 0) != pdTRUE) {
         if (isTapEventName(event)) {
             Serial.printf("[TELEMETRY] Queue failed event=%s uid=%s queue_ready=%d\n",
                 event.c_str(), uid.c_str(), networkQueue != NULL);
         }
-        saveOfflineLogToSDCard(event, uid, String());
+        saveOfflineLogToSDCard(event, uid, String(), job.epoch, job.eventMs);
     } else if (isTapEventName(event)) {
         Serial.printf("[TELEMETRY] Queued tap event=%s uid=%s\n", event.c_str(), uid.c_str());
     }
@@ -6405,6 +6481,17 @@ void handleNotFound() {
 void setup() {
     Serial.begin(115200);
     delay(50);
+    {
+        // Nomor boot di NVS; esp_random() sebelum Wi-Fi/BLE aktif belum tentu berbeda tiap boot.
+        Preferences bootPrefs;
+        if (bootPrefs.begin("eloto_boot", false)) {
+            offlineBootId = bootPrefs.getUInt("count", 0) + 1;
+            bootPrefs.putUInt("count", offlineBootId);
+            bootPrefs.end();
+        } else {
+            offlineBootId = esp_random() | 0x80000000UL;
+        }
+    }
     pinMode(TFT_CS_PIN, OUTPUT);
     digitalWrite(TFT_CS_PIN, HIGH);
     pinMode(SD_CS_PIN, OUTPUT);

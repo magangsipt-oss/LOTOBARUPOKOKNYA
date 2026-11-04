@@ -1,5 +1,5 @@
 import pool from '../config/database.js';
-import { normalizeState, eventType, isTap } from '../domain/telemetry.js';
+import { normalizeState, eventType, isTap, replayOccurredAt } from '../domain/telemetry.js';
 import { syncSessionDraft } from './dopPlanModel.js';
 
 export async function recordTelemetry(idBox, body) {
@@ -62,12 +62,14 @@ export async function recordTelemetry(idBox, body) {
         }
       }
     }
-    if (event !== 'HEARTBEAT_SYNC') await c.query('INSERT INTO audit_logs (id_box, event, rfid_uid, lat, lng, tanggal) VALUES (?, ?, ?, ?, ?, NOW())', [idBox, event, uid, lat ?? 0, lng ?? 0]);
+    // Replay offline memakai waktu tap asli dari box; selain itu tetap waktu terima server.
+    const occurredAt = replayOccurredAt(body);
+    if (event !== 'HEARTBEAT_SYNC') await c.query('INSERT INTO audit_logs (id_box, event, rfid_uid, lat, lng, tanggal) VALUES (?, ?, ?, ?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))', [idBox, event, uid, lat ?? 0, lng ?? 0, occurredAt]);
     if (isTap(event)) {
       // Offline events with no trustworthy session remain explicitly unassigned.
       const [users] = await c.query('SELECT nama FROM users WHERE rfid_uid = ? OR sid = ? LIMIT 1', [uid, uid]);
       await c.query(`INSERT INTO tapping_history (id_box, session_id, rfid_uid, nama, event_type, event_text, lat, lng, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [idBox, body.replay ? null : session, uid, users[0]?.nama || null, eventType(event), event, lat, lng]);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))`, [idBox, body.replay ? null : session, uid, users[0]?.nama || null, eventType(event), event, lat, lng, occurredAt]);
     }
     // Only scans explicitly made in the card-registration screen enter this queue.
     if (event === 'REGISTER_NEW_CARD') {
