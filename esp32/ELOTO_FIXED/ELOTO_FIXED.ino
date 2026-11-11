@@ -5509,10 +5509,29 @@ void goBackFromSessionHome() {
 }
 
 // KEMBALI dari DAFTAR PERSONEL: ke DAFTAR PEKERJAAN bila ada beberapa pekerjaan (daftar ini dibuka
-// dari sana), selain itu ke layar sebelum beranda.
+// dari sana), selain itu selalu ke SEMUA MEKANIK MASUK pekerjaan tersebut.
 void goBackFromWorkerList() {
-    if (activeTeamCount() > 1) openJobList();
-    else goBackFromSessionHome();
+    if (activeTeamCount() > 1) {
+        openJobList();
+        return;
+    }
+    bool freshTapIn = homeBackState == STATE_SET_MEKANIK_COUNT || homeBackState == STATE_ALL_WORKERS_REGISTERED;
+    uint8_t team = freshTapIn ? homeBackTeam : activeTeam;
+    homeBackState = STATE_MENU;
+    if (teamLeadIndex(team) < 0) {
+        currentState = STATE_MENU;
+        return;
+    }
+    activeTeam = team;
+    if (freshTapIn) {
+        isAddingFromMenu = homeBackFromMenu;
+    } else {
+        // Dibuka dari MENU (sesi sudah berjalan): diperlakukan seperti TAMBAH MEKANIK dari menu,
+        // sehingga KEMBALI berikutnya berhenti di MENU dan tidak membatalkan pengawas yang sudah masuk.
+        isAddingFromMenu = true;
+        targetMekanikCount = countTeamMechanics(activeTeam);
+    }
+    currentState = STATE_ALL_WORKERS_REGISTERED;
 }
 
 void executeFooterChoice() {
