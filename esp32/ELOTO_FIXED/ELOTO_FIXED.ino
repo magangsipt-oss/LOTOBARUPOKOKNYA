@@ -634,6 +634,13 @@ uint8_t selectedMenuIndex = 0;
 uint8_t selectedFooterAction = 0; // Default: 0 = DAFTAR KARTU
 SystemState stateBeforeNotification = STATE_IDLE;
 SystemState lastRenderedState = STATE_SYSTEM_ERROR;
+// Tujuan KEMBALI dari beranda sesi (DAFTAR PERSONEL/PEKERJAAN): layar tapping terakhir bila beranda
+// dibuka setelah tapping masuk selesai, MENU bila dibuka dari MENU.
+SystemState homeBackState = STATE_MENU;
+bool homeBackFromMenu = false;
+uint8_t homeBackTeam = 0;
+// Tujuan KEMBALI dari tap pengawas pertama: layar yang memulai sesi (SISTEM SIAP atau MODE OFFLINE).
+SystemState sessionStartBackState = STATE_SYSTEM_READY;
 int8_t lastRenderedWorkerIndex = -1;
 String notificationTitle = "";
 String notificationMessage = "";
@@ -5464,6 +5471,7 @@ void openWorkerList() {
 // Layar sebelum MENU LOTO: daftar personel seperti dulu, atau DAFTAR PEKERJAAN bila
 // ada lebih dari satu pekerjaan di unit.
 void openSessionHome() {
+    homeBackState = STATE_MENU;
     if (activeTeamCount() > 1) openJobList();
     else openWorkerList();
 }
@@ -5472,6 +5480,9 @@ void openSessionHome() {
 // lebih dari satu pekerjaan langsung ke DAFTAR PEKERJAAN.
 void openHomeAfterTapIn() {
     bool fromMenu = isAddingFromMenu;
+    homeBackState = currentState;  // SET_MEKANIK_COUNT atau ALL_WORKERS_REGISTERED
+    homeBackFromMenu = fromMenu;
+    homeBackTeam = activeTeam;
     isAddingFromMenu = false;
     if (activeTeamCount() > 1) {
         openJobList();
@@ -5480,6 +5491,28 @@ void openHomeAfterTapIn() {
     workerListFromMenu = fromMenu;
     selectedWorkerIndex = 0;
     currentState = STATE_WORKER_LIST;
+}
+
+// KEMBALI dari beranda sesi: mundur ke layar sebelum beranda dibuka.
+void goBackFromSessionHome() {
+    SystemState target = homeBackState;
+    homeBackState = STATE_MENU;
+    if (target == STATE_SET_MEKANIK_COUNT || target == STATE_ALL_WORKERS_REGISTERED) {
+        if (teamLeadIndex(homeBackTeam) < 0) {
+            target = STATE_MENU;  // pekerjaan itu sudah tidak ada
+        } else {
+            activeTeam = homeBackTeam;
+            isAddingFromMenu = homeBackFromMenu;
+        }
+    }
+    currentState = target;
+}
+
+// KEMBALI dari DAFTAR PERSONEL: ke DAFTAR PEKERJAAN bila ada beberapa pekerjaan (daftar ini dibuka
+// dari sana), selain itu ke layar sebelum beranda.
+void goBackFromWorkerList() {
+    if (activeTeamCount() > 1) openJobList();
+    else goBackFromSessionHome();
 }
 
 void executeFooterChoice() {
@@ -5524,6 +5557,7 @@ void executeFooterChoice() {
             relayPulseActive = true;
             digitalWrite(PIN_RELAY, HIGH);
             logAuditAsync("OFFLINE_MODE_START", "---");
+            sessionStartBackState = STATE_SERVER_OFFLINE;
 
             tft.fillRect(0, 270, 480, 50, ELOTO_BG);
             tft.drawFastHLine(0, 270, 480, ELOTO_DARK_RED);
@@ -5563,6 +5597,7 @@ void executeFooterChoice() {
             relayPulseActive = true;
             digitalWrite(PIN_RELAY, HIGH);
             logAuditAsync("LOCK_INITIALIZED", "---");
+            sessionStartBackState = STATE_SYSTEM_READY;
 
             isSessionActive = true;
             sessionStartTime = millis();
@@ -5588,10 +5623,12 @@ void executeFooterChoice() {
             // Batalkan hanya pengawas yang baru tap dan timnya masih kosong. Personel yang
             // sudah masuk wajib tapping keluar dengan kartunya sendiri.
             int top = safetyQueue.topIndex;
+            bool cancelled = false;
             if (top >= 0 && isQueueSupervisor(top)) {
                 if (countTeamMembers(safetyQueue.workers[top].team) == 1) {
                     logAuditAsync("SUPERVISOR_TAP_CANCELLED", safetyQueue.workers[top].uid);
                     removeQueueAt(top);
+                    cancelled = true;
                 }
             }
             if (safetyQueue.topIndex < 0) {
@@ -5600,10 +5637,16 @@ void executeFooterChoice() {
             } else {
                 syncMainSupervisor();
             }
-            bool returnToMenu = isAddingFromMenu || isAddingTeam || safetyQueue.topIndex >= 0;
-            currentState = returnToMenu ? STATE_MENU : STATE_WAIT_SPV_IN;
-            isAddingFromMenu = false;
-            isAddingTeam = false;
+            if (cancelled) {
+                // Mundur ke layar tap pengawas; status TAMBAH PEKERJAAN dipertahankan sehingga
+                // KEMBALI berikutnya dari sana kembali ke MENU.
+                currentState = STATE_WAIT_SPV_IN;
+            } else {
+                bool returnToMenu = isAddingFromMenu || isAddingTeam || safetyQueue.topIndex >= 0;
+                currentState = returnToMenu ? STATE_MENU : STATE_WAIT_SPV_IN;
+                isAddingFromMenu = false;
+                isAddingTeam = false;
+            }
             saveSessionToSD();
         } else {
             isAddingTeam = false;
@@ -5640,9 +5683,7 @@ void executeFooterChoice() {
         }
     } else if (currentState == STATE_WORKER_LIST) {
         if (selectedFooterAction == 0) {
-            if (!workerListFromMenu) currentState = STATE_ALL_WORKERS_REGISTERED;
-            else if (activeTeamCount() > 1) openJobList();
-            else currentState = STATE_MENU;
+            goBackFromWorkerList();
         } else if (selectedFooterAction == 1) {
             currentState = STATE_WORKER_DETAIL;
         } else if (selectedFooterAction == 2) {
@@ -5660,7 +5701,9 @@ void executeFooterChoice() {
         }
     } else if (currentState == STATE_JOB_LIST) {
         int team = activeTeamAt(selectedJobListIndex);
-        if (selectedFooterAction == 0 || team < 0) {
+        if (selectedFooterAction == 0) {
+            goBackFromSessionHome();
+        } else if (team < 0) {
             currentState = STATE_MENU;
         } else {
             activeTeam = (uint8_t)team;
@@ -5767,11 +5810,12 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
         if (activeKey == KEY_5 || activeKey == KEY_4) {
             buzzTick();
             bool returnToMenu = isAddingFromMenu || isAddingTeam || safetyQueue.topIndex >= 0;
-            currentState = returnToMenu ? STATE_MENU : STATE_SYSTEM_READY;
+            // Sesi baru mundur ke layar yang memulainya: SISTEM SIAP (online) atau SERVER OFFLINE.
+            currentState = returnToMenu ? STATE_MENU : sessionStartBackState;
             isAddingFromMenu = false;
             isAddingTeam = false;
 
-            if (currentState == STATE_SYSTEM_READY) {
+            if (!returnToMenu) {
                 isSessionActive = false;
                 sessionStartTime = 0;
             }
@@ -5837,9 +5881,7 @@ void executeSystemAction(uint8_t activeKey, bool isHoldAction) {
         } else if (activeKey == KEY_5) {
             buzzTick();
             if (selectedFooterAction == 0) {
-                if (!workerListFromMenu) currentState = STATE_ALL_WORKERS_REGISTERED;
-                else if (activeTeamCount() > 1) openJobList();
-                else currentState = STATE_MENU;
+                goBackFromWorkerList();
             } else if (selectedFooterAction == 1) {
                 currentState = STATE_WORKER_DETAIL;
             } else if (selectedFooterAction == 2) {
