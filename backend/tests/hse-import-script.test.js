@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import bcrypt from 'bcryptjs';
 
 const hseBody = {
   count: 3,
@@ -33,7 +34,7 @@ function runImport(args, existing = []) {
         };
         pool.getConnection = async () => ({
           beginTransaction: async () => {},
-          query: async (sql, params) => { calls.writes.push([sql.split(' ').slice(0, 2).join(' '), params[0], params.length]); return [{}]; },
+          query: async (sql, params) => { calls.writes.push([sql.split(' ').slice(0, 2).join(' '), params[0], params.length, sql.startsWith('INSERT') ? params[4] : null]); return [{}]; },
           commit: async () => { calls.commits++; },
           rollback: async () => { calls.rollbacks++; },
           release: () => {},
@@ -71,6 +72,13 @@ test('--apply writes updates then inserts in one transaction and asks boxes to r
   assert.equal(calls.commits, 1);
   assert.equal(calls.rollbacks, 0);
   assert.deepEqual(calls.synced, [['BOX-1', 'SYNC_USERS']]);
+});
+
+test('--apply gives new accounts their SID as the initial password', async () => {
+  const { calls } = runImport(['<file>', '--apply']);
+  const [, sid, , hash] = calls.writes.find(([verb]) => verb === 'INSERT INTO');
+  assert.equal(sid, 'NEW01');
+  assert.equal(await bcrypt.compare('NEW01', hash), true);
 });
 
 test('missing file argument fails with usage and closes the pool', () => {

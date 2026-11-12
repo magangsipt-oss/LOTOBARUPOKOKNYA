@@ -2,14 +2,12 @@
 // Default dry-run: hanya menampilkan rencana. Tambahkan --apply untuk menulis ke database.
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import pool from '../config/database.js';
 import CommandModel from '../models/commandModel.js';
 import { extractHseRecords, toLotoUser, planHseImport } from '../domain/hseEmployees.js';
 
 const SALT_ROUNDS = 12;
-const RANDOM_PASSWORD_BYTES = 32;
 const USAGE = 'Pakai: pnpm --filter backend run import:hse -- <file-hse.json> [--apply]';
 
 function parseArgs(argv) {
@@ -38,11 +36,11 @@ function printSummary({ total, users }, plan) {
   for (const { sid, reason } of plan.skipped) console.log(`  Dilewati/dikoreksi ${sid}: ${reason}`);
 }
 
-// Password acak tidak dicetak: akun impor tidak bisa login sampai admin mereset password.
+// Password awal akun baru = SID (konvensi akun E-LOTO); admin dapat menggantinya kapan saja.
 async function hashInserts(inserts) {
   const hashed = [];
   for (const user of inserts) {
-    const password = await bcrypt.hash(randomBytes(RANDOM_PASSWORD_BYTES).toString('base64url'), SALT_ROUNDS);
+    const password = await bcrypt.hash(user.sid, SALT_ROUNDS);
     hashed.push({ ...user, password });
   }
   return hashed;

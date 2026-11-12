@@ -48,7 +48,7 @@ Skrip `import:hse` membaca JSON hasil `getEmployee` HSE Automation dan mengisi t
 | Mekanik/Technician | `MEKANIK` | Tapping sebagai pekerja |
 | Safety/HSE | `SAFETY` | Tidak tapping; kartu tidak disimpan; dashboard hanya baca |
 
-Data HSE menimpa nama, role, dan kartu RFID pengguna yang sudah ada. Akun `ADMIN` tidak pernah diubah. Password, foto, dan fingerprint lokal tetap. Akun baru mendapat password acak yang tidak dicetak; reset password sebelum akun dipakai login.
+Data HSE menimpa nama, role, dan kartu RFID pengguna yang sudah ada. Akun `ADMIN` tidak pernah diubah. Password, foto, dan fingerprint lokal tetap. Akun baru memakai SID sebagai password awal. SID bukan rahasia, jadi ganti password akun pengawas dan safety melalui menu admin bila akun dipakai login.
 
 ```bash
 pnpm db:import:hse -- hse-export/mtl-employees.hse.json          # dry-run, tidak menulis
