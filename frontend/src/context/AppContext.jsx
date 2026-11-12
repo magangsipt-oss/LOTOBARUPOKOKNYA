@@ -991,6 +991,7 @@ export function AppProvider({ children }) {
   const groupPengawas = filteredUsers.filter(u => u.role === 'pengawas' || u.role === 'spv');
   const groupTeknisi = filteredUsers.filter(u => u.role === 'teknisi' || u.role === 'mekanik');
   const groupFuelman = filteredUsers.filter(u => u.role === 'fuelman' || u.role === 'bbm');
+  const groupSafety = filteredUsers.filter(u => u.role === 'safety');
   const groupAdmin = filteredUsers.filter(u => u.role === 'admin');
   const filteredTeamMechanics = groupTeknisi.filter(user => {
     const searchText = `${user.nama} ${user.sid} ${user.rfidUid || user.rfid_uid || ''}`.toLowerCase();
@@ -1180,7 +1181,7 @@ export function AppProvider({ children }) {
     mapContainerRef, leafletMapInstanceRef, markersRef, geoAddressCacheRef,
     lastCenteredBoxIdRef, excelFileInputRef,
     // Derived data
-    filteredUsers, groupPengawas, groupTeknisi, groupFuelman, groupAdmin,
+    filteredUsers, groupPengawas, groupTeknisi, groupFuelman, groupSafety, groupAdmin,
     filteredTeamMechanics, filteredBoxes,
     logsYgDitampilkan, filteredAuditLogs,
     dataTappingProcessed, filteredTappingData,

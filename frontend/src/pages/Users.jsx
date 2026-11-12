@@ -7,7 +7,7 @@ import Avatar from '../components/Avatar';
  */
 export default function Users() {
   const {
-    userDatabase, groupPengawas, groupTeknisi, groupFuelman,
+    userDatabase, groupPengawas, groupTeknisi, groupFuelman, groupSafety,
     adminSearchTerm, setAdminSearchTerm,
     showAddUserForm, setShowAddUserForm,
     formAdminNewUser, setFormAdminNewUser,
@@ -78,6 +78,7 @@ export default function Users() {
                     <option value="teknisi">TEKNISI / MEKANIK</option>
                     <option value="pengawas">PENGAWAS K3 (SUPERVISOR)</option>
                     <option value="fuelman">PETUGAS BBM (FUELMAN)</option>
+                    <option value="safety">SAFETY (PENGAMAT, TANPA TAPPING)</option>
                   </select>
                 </div>
                 <div>
@@ -108,61 +109,12 @@ export default function Users() {
             {adminSearchTerm && <button type="button" onClick={() => setAdminSearchTerm('')} className="text-slate-400 hover:text-red-600 text-[10px] uppercase font-bold font-mono-tech">Clear</button>}
           </div>
 
-          {/* 3 KOLOM KELOMPOK DIVISI PERSONEL */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 font-mono-tech text-xs">
-            {/* PENGAWAS K3 */}
-            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
-              <h5 className="font-bold text-red-600 border-b pb-2">👮 PENGAWAS K3 ({groupPengawas.length})</h5>
-              {groupPengawas.map(u => (
-                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
-                  <Avatar profile={u} className="w-9 h-9" />
-                  <div className="truncate flex-1 pl-2">
-                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
-                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* TEKNISI / MEKANIK */}
-            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
-              <h5 className="font-bold text-red-600 border-b pb-2">🔧 TEKNISI / MEKANIK ({groupTeknisi.length})</h5>
-              {groupTeknisi.map(u => (
-                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
-                  <Avatar profile={u} className="w-9 h-9" />
-                  <div className="truncate flex-1 pl-2">
-                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
-                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* PETUGAS BBM */}
-            <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
-              <h5 className="font-bold text-red-600 border-b pb-2">⛽ PETUGAS BBM ({groupFuelman.length})</h5>
-              {groupFuelman.map(u => (
-                <div key={u.sid} onClick={() => handleBukaModalEditUser(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
-                  <Avatar profile={u} className="w-9 h-9" />
-                  <div className="truncate flex-1 pl-2">
-                    <p className="font-bold text-slate-950 truncate">{u.nama}</p>
-                    <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleBukaModalEditUser(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); handleHapusUser(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
-                  </div>
-                </div>
-              ))}
-            </div>
+          {/* KELOMPOK DIVISI PERSONEL */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 font-mono-tech text-xs">
+            <PersonnelGroup title="👮 PENGAWAS K3" users={groupPengawas} onEdit={handleBukaModalEditUser} onDelete={handleHapusUser} />
+            <PersonnelGroup title="🔧 TEKNISI / MEKANIK" users={groupTeknisi} onEdit={handleBukaModalEditUser} onDelete={handleHapusUser} />
+            <PersonnelGroup title="⛽ PETUGAS BBM" users={groupFuelman} onEdit={handleBukaModalEditUser} onDelete={handleHapusUser} />
+            <PersonnelGroup title="🦺 SAFETY (PENGAMAT)" users={groupSafety} onEdit={handleBukaModalEditUser} onDelete={handleHapusUser} />
           </div>
         </div>
       )}
@@ -216,6 +168,28 @@ export default function Users() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Satu kolom daftar personel per jabatan. */
+function PersonnelGroup({ title, users, onEdit, onDelete }) {
+  return (
+    <div className="bg-white border border-gray-200 p-4 rounded-xl space-y-2 shadow-sm">
+      <h5 className="font-bold text-red-600 border-b pb-2">{title} ({users.length})</h5>
+      {users.map(u => (
+        <div key={u.sid} onClick={() => onEdit(u)} className="p-2.5 rounded-lg border bg-gray-50 flex justify-between items-center hover:border-red-400 cursor-pointer transition-colors">
+          <Avatar profile={u} className="w-9 h-9" />
+          <div className="truncate flex-1 pl-2">
+            <p className="font-bold text-slate-950 truncate">{u.nama}</p>
+            <p className="text-[10px] text-slate-500">SID: {u.sid} | RFID: <span className="font-bold">{u.rfidUid || '—'}</span></p>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(u); }} className="text-slate-400 hover:text-blue-600 p-1"><i className="fa-solid fa-pen-to-square"></i></button>
+            <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(u.sid); }} className="text-slate-400 hover:text-red-600 p-1"><i className="fa-solid fa-trash-can"></i></button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

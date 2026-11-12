@@ -216,7 +216,7 @@ function AppContent() {
           {activeTab === 'team-tab' && sessionUser?.role === 'pengawas' && <Supervisors />}
 
           {/* TAB: DASHBOARD (admin / pengawas) */}
-          {activeTab === 'dashboard' && (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && <Dashboard />}
+          {activeTab === 'dashboard' && ['admin', 'pengawas', 'safety'].includes(sessionUser?.role) && <Dashboard />}
 
           {/* TAB: DOP PLAN (admin / pengawas) */}
           {dopPlanVisited && (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') && (

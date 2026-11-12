@@ -218,6 +218,7 @@ export function ModalEditUser({ show, onClose, formEditUser, setFormEditUser, on
               <option value="teknisi">TEKNISI / MEKANIK</option>
               <option value="pengawas">PENGAWAS K3 (SUPERVISOR)</option>
               <option value="fuelman">PETUGAS BBM (FUELMAN)</option>
+              <option value="safety">SAFETY (PENGAMAT, TANPA TAPPING)</option>
             </select>
           </div>
           <div>

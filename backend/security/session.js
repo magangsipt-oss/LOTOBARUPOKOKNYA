@@ -32,5 +32,7 @@ export function normalizeRole(value) {
   if (/^(pengawas|supervisor|spv|k3)([ _-].*)?$/.test(role)) return 'pengawas';
   if (/^(fuelman|fuel|bbm|refuel)$/.test(role)) return 'fuelman';
   if (/^(worker|teknisi|mekanik|mechanic)([ _-].*)?$/.test(role)) return 'teknisi';
+  // Safety hanya mengawasi: bisa membaca dashboard, tidak tapping dan tidak mengubah data.
+  if (role === 'safety') return 'safety';
   return null;
 }

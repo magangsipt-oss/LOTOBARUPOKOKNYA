@@ -28,6 +28,11 @@ backend/uploads/*
 
 graphify-out/
 
+# Ekspor HSE Automation berisi data pribadi karyawan (KTP, tanggal lahir)
+*.hse.json
+hse-export/
+*.postman_collection.json
+
 # Local Python artifacts and device credentials
 __pycache__/
 *.pyc

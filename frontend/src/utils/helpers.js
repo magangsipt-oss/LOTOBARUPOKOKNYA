@@ -160,6 +160,7 @@ export const normalizeUserRole = (role) => {
   if (rLower.includes('supervisor') || rLower.includes('pengawas') || rLower.includes('spv') || rLower.includes('k3')) return 'pengawas';
   if (rLower.includes('fuel') || rLower.includes('bbm') || rLower.includes('refuel')) return 'fuelman';
   if (rLower.includes('admin')) return 'admin';
+  if (rLower.trim() === 'safety') return 'safety';
   return 'teknisi';
 };
 

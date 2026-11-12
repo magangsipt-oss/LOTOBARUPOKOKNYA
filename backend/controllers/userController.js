@@ -122,7 +122,11 @@ const userController = {
       return res.status(200).json({
         success: true,
         message: 'Data seluruh pengguna berhasil diambil',
-        data: req.auth?.type === 'device' ? users.map(({ sid, nama, role, rfid_uid, fp_id }) => ({ sid, nama, role, rfid_uid, fp_id })) : users,
+        data: req.auth?.type === 'device'
+          ? users
+            .filter(user => normalizeRole(user.role) !== 'safety')
+            .map(({ sid, nama, role, rfid_uid, fp_id }) => ({ sid, nama, role, rfid_uid, fp_id }))
+          : users,
       });
     } catch (error) {
       console.error('Error getAllUsers:', error.message);

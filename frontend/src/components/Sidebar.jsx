@@ -64,6 +64,9 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
     navItems.push({ id: 'dop-plan', icon: 'fa-clipboard-list', label: 'DOP Plan' });
+  } else if (sessionUser?.role === 'safety') {
+    // Safety hanya mengawasi status boks.
+    navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
   }
   if (['admin', 'teknisi', 'mekanik'].includes(sessionUser?.role)) {
     navItems.push({ id: 'teknisi-tab', icon: 'fa-screwdriver-wrench', label: 'Laporan Servis' });

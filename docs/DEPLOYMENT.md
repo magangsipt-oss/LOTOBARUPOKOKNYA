@@ -37,6 +37,26 @@ unset ELOTO_NEW_PASSWORD
 
 Untuk database baru tanpa administrator, isi `ELOTO_USER_SID` dan `ELOTO_NEW_PASSWORD` lalu jalankan `pnpm --filter backend run bootstrap-admin`. Password minimal 12 karakter, maksimal 72 byte, dan tidak boleh sama dengan SID. `seed` adalah data demo dan ditolak pada production.
 
+## Import personel dari HSE Automation
+
+Skrip `import:hse` membaca JSON hasil `getEmployee` HSE Automation dan mengisi tabel `users`. Hanya karyawan berstatus `AKTIF` atau `BARU` dengan jabatan relevan yang diimpor:
+
+| Jabatan HSE | Role E-LOTO | Perilaku di boks |
+| --- | --- | --- |
+| Supervisor/Superintendent | `PENGAWAS` | Lock-in dan lock-out sesi |
+| Foreman/Group Leader | `MEKANIK FOREMAN` | Tapping sebagai pekerja |
+| Mekanik/Technician | `MEKANIK` | Tapping sebagai pekerja |
+| Safety/HSE | `SAFETY` | Tidak tapping; kartu tidak disimpan; dashboard hanya baca |
+
+Data HSE menimpa nama, role, dan kartu RFID pengguna yang sudah ada. Akun `ADMIN` tidak pernah diubah. Password, foto, dan fingerprint lokal tetap. Akun baru mendapat password acak yang tidak dicetak; reset password sebelum akun dipakai login.
+
+```bash
+pnpm db:import:hse -- hse-export/mtl-employees.hse.json          # dry-run, tidak menulis
+pnpm db:import:hse -- hse-export/mtl-employees.hse.json --apply  # tulis + kirim SYNC_USERS ke semua boks
+```
+
+File ekspor HSE berisi data pribadi. Simpan di `hse-export/` atau dengan akhiran `.hse.json`; keduanya diabaikan Git.
+
 ## Identitas perangkat dan counting
 
 Daftarkan ID boks di database, lalu gunakan ID yang sama sebagai `ELOTO_DEVICE_ID` pada firmware ESP32 dan `ELOTO_BOX_ID` pada counting. Perangkat mengirim header `X-Device-Id`; tidak ada token perangkat atau kolom token di database. Karena ID bukan rahasia, batasi akses backend perangkat ke LAN tepercaya atau proxy HTTPS yang sesuai. Untuk production BiznetGIO, masukkan SSID/password Wi-Fi pada `network_secrets.local.h` dan ID boks pada `device_secrets.override.h`, lalu upload firmware. URL `https://103.197.188.61` dan root CA ISRG Root X1 sudah menjadi default firmware, sehingga `config.txt` dan `server_ca.pem` tidak wajib di SD. Alternatifnya, gunakan `/config.txt` untuk mengatur beberapa profil Wi-Fi atau override endpoint; CA khusus dapat diletakkan di `/server_ca.pem`. Pastikan Wi-Fi ESP32 2,4 GHz dan jaringan dapat menjangkau NTP serta TCP 443. Jangan mengekspos backend port `5002` ke internet. HTTP hanya untuk IP privat di LAN tepercaya.
