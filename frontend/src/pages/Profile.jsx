@@ -7,7 +7,7 @@ import Avatar from '../components/Avatar';
  * Halaman Profil Saya
  */
 export default function Profile() {
-  const { sessionUser, activeTab, setActiveTab } = useAuth();
+  const { sessionUser, activeTab } = useAuth();
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -57,9 +57,6 @@ export default function Profile() {
           <p role="status">{message}</p>
         </form>
       )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {(sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') && <button type="button" onClick={() => setActiveTab('teknisi-tab')} className="bg-white hover:bg-red-50 border border-red-200 text-red-600 p-3 rounded-xl font-bold text-xs font-mono-tech"><i className="fa-solid fa-screwdriver-wrench mr-2"></i>Form Laporan Servis</button>}
-      </div>
     </div>
   );
 }

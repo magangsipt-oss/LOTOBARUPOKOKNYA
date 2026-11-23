@@ -19,7 +19,7 @@ export function AuthProvider({ children }) {
         setCsrfToken(data.csrfToken);
         const user = normalize(data.data);
         setSessionUser(user);
-        setActiveTab(user.role === 'teknisi' ? 'teknisi-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
+        setActiveTab(user.role === 'teknisi' ? 'riwayat-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
       }
     }).catch(() => {});
     return () => { active = false; window.removeEventListener('eloto-session-expired', expire); };
@@ -32,7 +32,7 @@ export function AuthProvider({ children }) {
       const user = normalize(result.data);
       setCsrfToken(result.csrfToken);
       setSessionUser(user);
-      setActiveTab(user.role === 'teknisi' ? 'teknisi-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
+      setActiveTab(user.role === 'teknisi' ? 'riwayat-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
       toast(`Selamat Datang: ${user.nama}`, 'ok');
     } catch (error) {
       if (version !== getSessionVersion()) return;

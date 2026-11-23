@@ -6,7 +6,7 @@ import { AppProvider } from './context/AppContext';
 import { useApp } from './context/useApp';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
-import { ModalUmum, ModalRadar, ModalCropPhoto, ModalEditUser, PrintDocument } from './components/Modals';
+import { ModalUmum, ModalRadar, ModalCropPhoto, ModalEditUser } from './components/Modals';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Profile = lazy(() => import('./pages/Profile'));
 const Supervisors = lazy(() => import('./pages/Supervisors'));
@@ -161,7 +161,7 @@ function AppContent() {
     showEditUserModal, setShowEditUserModal,
     formEditUser, setFormEditUser, handleSimpanEditUser,
     hwData, handleProfilePhotoUpload, handleSelectBox,
-    filteredBoxes, printActiveLog
+    filteredBoxes
   } = useApp();
 
   useEffect(() => {
@@ -229,9 +229,6 @@ function AppContent() {
           {/* TAB: IZIN LOTO F-PLT-116 (admin / pengawas; safety hanya membaca) */}
           {activeTab === 'izin-loto' && ['admin', 'pengawas', 'safety'].includes(sessionUser?.role) && <LotoPermit />}
 
-          {/* TAB: FORM LAPORAN SERVIS (teknisi) */}
-          {activeTab === 'teknisi-tab' && (sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') && <Logs />}
-
           {/* TAB: RIWAYAT LAPORAN */}
           {activeTab === 'riwayat-tab' && <Logs />}
 
@@ -243,7 +240,6 @@ function AppContent() {
         </Suspense>
         </main>
 
-        <PrintDocument printActiveLog={printActiveLog} />
       </div>
     </React.Fragment>
   );

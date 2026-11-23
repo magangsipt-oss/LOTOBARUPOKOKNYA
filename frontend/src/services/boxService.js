@@ -27,24 +27,6 @@ const boxService = {
   deleteBox: async (idBox) => {
     const response = await api.delete(`/boxes/${encodeURIComponent(idBox)}`);
     return response.data;
-  },
-
-  // Mengambil semua maintenance log
-  getAllMaintenance: async () => {
-    const response = await api.get('/maintenance');
-    return response.data;
-  },
-
-  // Membuat maintenance log baru
-  createMaintenance: async (maintenanceData) => {
-    const response = await api.post('/maintenance', maintenanceData);
-    return response.data;
-  },
-
-  // Menghapus maintenance log
-  deleteMaintenance: async (id) => {
-    const response = await api.delete(`/maintenance/${id}`);
-    return response.data;
   }
 };
 

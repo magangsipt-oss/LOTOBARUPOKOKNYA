@@ -1,7 +1,7 @@
 import { boxHardwareSnapshot } from '../utils/boxHardware.js';
-import { escapeHtml, safeCsvCell } from '../utils/helpers';
+import { safeCsvCell } from '../utils/helpers';
 import { buildTappingSessionHistory } from '../utils/tappingSessionHistory';
-import { groupQueueByJob, isSupervisorRole, preferDetailedQueue } from '../utils/jobTeams';
+import { groupQueueByJob, preferDetailedQueue } from '../utils/jobTeams';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 import userService from '../services/userService';
@@ -66,7 +66,6 @@ export function AppProvider({ children }) {
 
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [userDatabase, setUserDatabase] = useState([]);
-  const [logPemeliharaan, setLogPemeliharaan] = useState([]);
   const [rfidBufferList, setRfidBufferList] = useState([]);
   const [tappingHistory, setTappingHistory] = useState([]);
   const [localAuditLog, setLocalAuditLog] = useState([]);
@@ -81,12 +80,10 @@ export function AppProvider({ children }) {
   const [radarModalSearch, setRadarModalSearch] = useState('');
   const [radarDetailBox, setRadarDetailBox] = useState(null);
 
-  const [photoBase64, setPhotoBase64] = useState('');
   const [cropPhotoSrc, setCropPhotoSrc] = useState('');
   const [cropTargetSetter, setCropTargetSetter] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [printActiveLog, setPrintActiveLog] = useState(null);
-  const [subTabMaintenance, setSubTabMaintenance] = useState('form-mekanik');
+  const [subTabMaintenance, setSubTabMaintenance] = useState('realtime-status');
   const [subTabAdmin, setSubTabAdmin] = useState('daftar-personel');
 
   // Refs
@@ -104,17 +101,12 @@ export function AppProvider({ children }) {
 
   // Form states
   const [formData, setFormData] = useState({ sid: '', password: '' });
-  const [formDeskripsi, setFormDeskripsi] = useState('');
-  const [tipeKerusakan, setTipeKerusakan] = useState('Mekanikal');
-  const [estimasiWaktu, setEstimasiWaktu] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
   const [formAlatBerat, setFormAlatBerat] = useState({ id: '', unit: '', ip: '', lat: '', lng: '' });
   const [editingBoxId, setEditingBoxId] = useState('');
   const [formAdminNewUser, setFormAdminNewUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', password: '', foto: '' });
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [formEditUser, setFormEditUser] = useState({ sid: '', nama: '', role: 'teknisi', rfidUid: '', foto: '' });
-  const [manualMekanik, setManualMekanik] = useState('');
-  const [pengawasLoto, setPengawasLoto] = useState('');
 
   // Search terms
   const [boxSearchTerm, setBoxSearchTerm] = useState('');
@@ -122,8 +114,6 @@ export function AppProvider({ children }) {
   const [mechanicSearchTerm, setMechanicSearchTerm] = useState('');
   const [tappingSearchTerm, setTappingSearchTerm] = useState('');
   const [auditSearchTerm, setAuditSearchTerm] = useState('');
-  const [maintenanceSearchTerm, setMaintenanceSearchTerm] = useState('');
-  const [maintenanceTypeFilter, setMaintenanceTypeFilter] = useState('');
 
   // Team management (pengawas)
   const [selectedMechanicSids, setSelectedMechanicSids] = useState([]);
@@ -207,37 +197,6 @@ export function AppProvider({ children }) {
     setShowRadarModal(true);
   };
 
-  // Profile photo upload handler
-  const handleCaptureKamera = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      pemicuToast("Mengompresi foto bukti...", "ok");
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const max_width = 800;
-          let width = img.width;
-          let height = img.height;
-          if (width > max_width) {
-            height = Math.round((height * max_width) / width);
-            width = max_width;
-          }
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
-          setPhotoBase64(compressedBase64);
-          pemicuToast(" ✓ Foto Berhasil Direkam!", "ok");
-        };
-        img.src = event.target.result;
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
   // ==================== EFFECTS ====================
 
   // Load user database
@@ -274,7 +233,6 @@ export function AppProvider({ children }) {
       pending = true;
       try {
         await Promise.allSettled([
-          [() => boxService.getAllMaintenance(), setLogPemeliharaan],
           [() => logService.getRfidBuffer(), setRfidBufferList],
           [() => logService.getTappingHistory(200), setTappingHistory],
           [() => logService.getAllBleTags(), setBleTags]
@@ -665,37 +623,6 @@ export function AppProvider({ children }) {
     setIsSyncing(false);
   };
 
-  const dapatkanMekanikDariAntreanLoto = () => {
-    if (!selectedBox || !hwData || !Array.isArray(hwData.queue) || hwData.queue.length === 0) return "";
-    const mekanikOnly = hwData.queue.filter(item => {
-      const itemUid = typeof item === 'string' ? item : item.uid;
-      const uObj = userDatabase.find(u => String(u.rfidUid || u.rfid_uid).toUpperCase() === String(itemUid).toUpperCase() || String(u.sid).toUpperCase() === String(itemUid).toUpperCase());
-      const isSpv = (typeof item === 'object' && isSupervisorRole(item.role)) || (uObj && uObj.role === 'pengawas') || (itemUid === hwData.supervisor_uid);
-      return !isSpv;
-    });
-    if (mekanikOnly.length === 0) return "";
-    return mekanikOnly.map(m => terjemahkanIdKeNamaLengkapLocal(typeof m === 'string' ? m : m.uid)).join(", ");
-  };
-
-  const dapatkanPengawasDariLoto = () => {
-    if (!selectedBox || !hwData) return "";
-    // Multi-pekerjaan: setiap pekerjaan punya pengawas sendiri; catat semuanya.
-    const jobSupervisors = groupQueueByJob(hwData.queue, { skipUid: isAdminUidLocal })
-      .filter(job => job.supervisor && typeof job.supervisor.item === 'object' && job.supervisor.item.role)
-      .map(job => terjemahkanIdKeNamaLengkapLocal(job.supervisor.uid));
-    if (jobSupervisors.length > 1) return jobSupervisors.join(", ");
-    if (hwData.supervisor_uid && hwData.supervisor_uid !== '—' && hwData.supervisor_uid !== '') return terjemahkanIdKeNamaLengkapLocal(hwData.supervisor_uid);
-    if (Array.isArray(hwData.queue)) {
-      const spvItem = hwData.queue.find(item => {
-        const itemUid = typeof item === 'string' ? item : item.uid;
-        const uObj = userDatabase.find(u => String(u.rfidUid || u.rfid_uid).toUpperCase() === String(itemUid).toUpperCase() || String(u.sid).toUpperCase() === String(itemUid).toUpperCase());
-        return (typeof item === 'object' && isSupervisorRole(item.role)) || (uObj && uObj.role === 'pengawas');
-      });
-      if (spvItem) return terjemahkanIdKeNamaLengkapLocal(typeof spvItem === 'string' ? spvItem : spvItem.uid);
-    }
-    return "";
-  };
-
   const handleSaveMechanicTeam = async (event) => {
     event.preventDefault();
     if (!teamBoxId || loadedTeamBoxId !== teamBoxId) {
@@ -711,7 +638,6 @@ export function AppProvider({ children }) {
         maintenance_type: teamMaintenanceType, mechanic_sids: selectedMechanicSids
       });
       if (!result || (!result.success && result.status !== 'success')) throw new Error(result?.message || 'Gagal menyimpan tim.');
-      setManualMekanik(selectedNames.join(', '));
       pemicuToast(`${selectedNames.length} mekanik dipilih untuk ${teamBoxId}.`, 'ok');
     } catch (error) { pemicuToast(error.message || 'Gagal menyimpan tim mekanik.', 'fail'); }
     finally { teamSavePendingRef.current = false; }
@@ -869,44 +795,6 @@ export function AppProvider({ children }) {
     }
   };
 
-  const handleSimpanKerusakan = async (e) => {
-    e.preventDefault();
-    const mekanikFinal = manualMekanik.trim() || dapatkanMekanikDariAntreanLoto();
-    if (!mekanikFinal || mekanikFinal.startsWith("TIDAK ADA MEKANIK")) { pemicuToast("GAGAL: Nama mekanik penanggung jawab wajib diisi atau di-tap!", "fail"); return; }
-    const pengawasFinal = pengawasLoto.trim() || dapatkanPengawasDariLoto();
-    if (!selectedBox || !pengawasFinal) { pemicuToast('Pilih boks dan isi nama pengawas.', 'fail'); return; }
-    const cleanDeskripsi = formDeskripsi.replace(/[<>]/g, "").trim();
-    const cleanEstimasi = estimasiWaktu.replace(/[<>]/g, "").trim();
-    const statusKerjaAktif = (manualMekanik.trim() || (isHwOnline && hwData.queue && hwData.queue.length > 0)) ? 'PROSES' : 'SELESAI';
-    const dataLaporanBaru = {
-      waktu: new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }),
-      mesin: selectedBox ? selectedBox.id : 'Universal Box', id_box: selectedBox ? selectedBox.id : 'Universal Box',
-      jenis: tipeKerusakan, estimasi: cleanEstimasi || '4 Jam', teknisi: mekanikFinal, pengawas: pengawasFinal,
-      deskripsi: cleanDeskripsi, status: statusKerjaAktif, foto: photoBase64
-    };
-    try {
-      const hasil = await boxService.createMaintenance(dataLaporanBaru);
-      if (hasil.success || hasil.status === 'success') {
-        setLogPemeliharaan(prev => [{ ...dataLaporanBaru, id: hasil.data.id }, ...prev]);
-        setFormDeskripsi(''); setEstimasiWaktu(''); setPhotoBase64('');
-        setManualMekanik(''); setPengawasLoto('');
-        pemicuToast(hasil.message || "Tersimpan", "ok");
-      } else { pemicuToast(hasil.message || "Gagal menyimpan laporan!", "fail"); }
-    } catch { pemicuToast("Gagal menyimpan laporan kerusakan ke MySQL!", "fail"); }
-  };
-
-  const handleHapusLogPemeliharaan = async (idLog) => {
-    if (window.confirm("Apakah Anda yakin ingin menghapus arsip riwayat maintenance ini?")) {
-      try {
-        const hasil = await boxService.deleteMaintenance(idLog);
-        if (hasil.success || hasil.status === 'success') {
-          setLogPemeliharaan(logPemeliharaan.filter(log => log.id !== idLog));
-          pemicuToast(hasil.message || "Terhapus", "ok");
-        } else { pemicuToast(hasil.message, "fail"); }
-      } catch { pemicuToast("Gagal menghubungi server hapus log.", "fail"); }
-    }
-  };
-
   const handleHapusRiwayatTapping = async (idRiwayat, eventIds = [idRiwayat]) => {
     if (!window.confirm("Hapus sesi tapping ini secara permanen?")) return;
     try {
@@ -928,37 +816,6 @@ export function AppProvider({ children }) {
         pemicuToast(hasil.message || "Terhapus", "ok");
       } else { pemicuToast(hasil.message || "Gagal menghapus log aktivitas.", "fail"); }
     } catch { pemicuToast("Gagal terhubung ke server hapus log.", "fail"); }
-  };
-
-  const triggerSimulasiExcel = (logItem) => {
-    pemicuToast(" ⚡ Memproses Format Excel K3 + Injeksi Foto...", "ok");
-    setTimeout(() => {
-      const fotoContent = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(logItem.foto || '') ? `<img src="${escapeHtml(logItem.foto)}" onerror="this.onerror=null;this.src='assets/default-avatar.png';" style="max-width:140px; max-height:100px; display:block; border:1px solid #cbd5e1;" />` : "Tidak Ada Lampiran Foto Bukti";
-      const excelTemplate = `
-        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-        <head><style>table { border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; } th { background-color: #dc2626; color: white; font-weight: bold; font-size: 13px; text-align: center; padding: 12px; border: 1px solid #94a3b8; } td { padding: 8px; border: 1px solid #cbd5e1; font-size: 12px; vertical-align: middle; } .lbl-header { background-color: #f1f5f9; font-weight: bold; color: #334155; }</style></head>
-        <body><table><thead><tr><th colspan="2">DOKUMEN MANIFES K3 INDUSTRI - EKSPOR LAPORAN LOTO</th></tr></thead>
-        <tbody>
-          <tr><td class="lbl-header" width="180">Waktu Laporan</td><td>${escapeHtml(logItem.waktu)}</td></tr>
-          <tr><td class="lbl-header">ID Smart Box / Mesin</td><td style="font-weight: bold; color: #b91c1c;">${escapeHtml(logItem.mesin)}</td></tr>
-          <tr><td class="lbl-header">Teknisi PIC</td><td>${escapeHtml(logItem.teknisi)}</td></tr>
-          <tr><td class="lbl-header">Pengawas K3</td><td>${escapeHtml(logItem.pengawas || "—")}</td></tr>
-          <tr><td class="lbl-header">Klasifikasi Gangguan</td><td>${escapeHtml(logItem.jenis)}</td></tr>
-          <tr><td class="lbl-header">Estimasi Downtime</td><td>${escapeHtml(logItem.estimasi)}</td></tr>
-          <tr><td class="lbl-header">Rincian Deskripsi K3</td><td>${escapeHtml(logItem.deskripsi || "-")}</td></tr>
-          <tr><td class="lbl-header">Status Akhir Sesi</td><td style="font-weight:bold; color:${logItem.status === 'PROSES' ? '#d97706' : '#15803d'}">${escapeHtml(logItem.status)}</td></tr>
-          <tr style="height: 110px;"><td class="lbl-header">Bukti Visual Kerusakan</td><td>${fotoContent}</td></tr>
-        </tbody></table></body></html>`;
-      const blob = new Blob([excelTemplate], { type: "application/vnd.ms-excel;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `Manifes_K3_LOTO_${escapeHtml(logItem.mesin)}_${logItem.id || 'Arsip'}.xls`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 600);
   };
 
   const exportAuditTrailToCSV = () => {
@@ -1131,52 +988,37 @@ export function AppProvider({ children }) {
     return count;
   })();
 
-  const filteredMaintenanceLogs = Array.isArray(logPemeliharaan)
-    ? logPemeliharaan.filter(log => (
-      String(log.mesin || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase()) ||
-      String(log.teknisi || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase()) ||
-      String(log.pengawas || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase()) ||
-      String(log.jenis || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase()) ||
-      String(log.deskripsi || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase()) ||
-      String(log.status || '').toLowerCase().includes(maintenanceSearchTerm.toLowerCase())
-    ) && (!maintenanceTypeFilter || String(log.jenis || '').trim().toLowerCase() === maintenanceTypeFilter.toLowerCase()))
-    : [];
-
   const value = {
     // State
     isLoggedIn, sessionUser, activeTab, setActiveTab,
     boxes, setBoxes, selectedBox, setSelectedBox,
     isHwOnline, hwData,
     userDatabase, setUserDatabase,
-    logPemeliharaan, setLogPemeliharaan,
     rfidBufferList, setRfidBufferList,
     tappingHistory, setTappingHistory,
     lotoCompliance, lotoComplianceHistory, bleTags, setBleTags,
     localAuditLog, setLocalAuditLog,
     deletedAuditIds, setDeletedAuditIds,
     downtimeSeconds, isTrackingDowntime,
-    photoBase64, setPhotoBase64, cropPhotoSrc, setCropPhotoSrc,
-    isSyncing, printActiveLog, setPrintActiveLog,
+    cropPhotoSrc, setCropPhotoSrc,
+    isSyncing,
     subTabMaintenance, setSubTabMaintenance, subTabAdmin, setSubTabAdmin,
     toast, modalInfo, setModalInfo,
     showRadarModal, setShowRadarModal, radarModalSearch, setRadarModalSearch,
     radarDetailBox, setRadarDetailBox,
     // Form states
-    formData, setFormData, formDeskripsi, setFormDeskripsi,
-    tipeKerusakan, setTipeKerusakan, estimasiWaktu, setEstimasiWaktu,
+    formData, setFormData,
     showAddUserForm, setShowAddUserForm,
     formAlatBerat, setFormAlatBerat, editingBoxId, setEditingBoxId,
     formAdminNewUser, setFormAdminNewUser,
     showEditUserModal, setShowEditUserModal,
     formEditUser, setFormEditUser,
-    manualMekanik, setManualMekanik, pengawasLoto, setPengawasLoto,
     selectedMechanicSids, setSelectedMechanicSids,
     teamBoxId, setTeamBoxId, teamMaintenanceType, setTeamMaintenanceType,
     // Search terms
     boxSearchTerm, setBoxSearchTerm, adminSearchTerm, setAdminSearchTerm,
     mechanicSearchTerm, setMechanicSearchTerm, tappingSearchTerm, setTappingSearchTerm,
-    auditSearchTerm, setAuditSearchTerm, maintenanceSearchTerm, setMaintenanceSearchTerm,
-    maintenanceTypeFilter, setMaintenanceTypeFilter,
+    auditSearchTerm, setAuditSearchTerm,
     // Refs
     mapContainerRef, leafletMapInstanceRef, markersRef, geoAddressCacheRef,
     lastCenteredBoxIdRef, excelFileInputRef,
@@ -1186,23 +1028,20 @@ export function AppProvider({ children }) {
     logsYgDitampilkan, filteredAuditLogs,
     dataTappingProcessed, filteredTappingData,
     sessionHistoryRows, filteredSessionHistory,
-    totalOrangMasukOtomatis, filteredMaintenanceLogs,
+    totalOrangMasukOtomatis,
     isLiveTapPhotoVisible,
     // Helper functions
     pemicuToast, bukaModalUmum, bukaModalRadar,
     getUserProfile: getUserProfileLocal, isSystemUid: isSystemUidLocal,
     isAdminUid: isAdminUidLocal, terjemahkanIdKeNamaLengkap: terjemahkanIdKeNamaLengkapLocal,
     handleProfilePhotoUpload, handleConfirmProfileCrop, handleCancelProfileCrop,
-    handleCaptureKamera,
     // Action handlers
     handleSelectBox, handleTambahAlatBerat, handleEditAlatBerat,
     handleBatalEditAlatBerat, handleHapusAlatBerat, handleAutoGps,
-    dapatkanMekanikDariAntreanLoto, dapatkanPengawasDariLoto,
     handleSaveMechanicTeam, handleIndukTambahUser, handleImportExcel,
     handleBukaModalEditUser, handleSimpanEditUser, handleHapusUser,
-    handleHapusBuffer, handleSimpanKerusakan,
-    handleHapusLogPemeliharaan, handleHapusRiwayatTapping, handleHapusAudit,
-    triggerSimulasiExcel, exportAuditTrailToCSV
+    handleHapusBuffer, handleHapusRiwayatTapping, handleHapusAudit,
+    exportAuditTrailToCSV
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

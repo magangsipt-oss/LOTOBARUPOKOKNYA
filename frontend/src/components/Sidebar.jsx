@@ -70,9 +70,6 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
     navItems.push({ id: 'izin-loto', icon: 'fa-file-signature', label: 'Izin LOTO' });
   }
-  if (['admin', 'teknisi', 'mekanik'].includes(sessionUser?.role)) {
-    navItems.push({ id: 'teknisi-tab', icon: 'fa-screwdriver-wrench', label: 'Laporan Servis' });
-  }
   navItems.push({ id: 'riwayat-tab', icon: 'fa-clock-rotate-left', label: 'Riwayat' });
   if (sessionUser?.role === 'admin') {
     navItems.push({ id: 'admin-tab', icon: 'fa-users-gear', label: 'Personel' });
