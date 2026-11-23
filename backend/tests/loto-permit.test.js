@@ -84,6 +84,23 @@ test('validation drops blank rows and ignores server-managed fields from the bro
   assert.equal(payload.shiftOtomatis, undefined);
 });
 
+test('the document header is filled per permit, starts from the current form revision and must not be blank', () => {
+  const defaults = validateLotoPermitPayload(activePayload());
+  assert.deepEqual(defaults.dokumen, { nomor: 'F-PLT-116', tanggalEfektif: '2017-11-16', revisi: '0', halaman: '1 dari 1' });
+  assert.equal(buildPermitDraft({ unit: 'U1', people: [], now: new Date('2026-11-23T01:00:00Z') }).dokumen.nomor, 'F-PLT-116');
+
+  const revised = validateLotoPermitPayload({ ...activePayload(), dokumen: { nomor: ' F-PLT-116 ', tanggalEfektif: '2026-01-05', revisi: '1', halaman: '1 dari 1' } });
+  assert.deepEqual(revised.dokumen, { nomor: 'F-PLT-116', tanggalEfektif: '2026-01-05', revisi: '1', halaman: '1 dari 1' });
+  assert.equal(resolvePermitStatus(revised), 'AKTIF');
+
+  const blank = validateLotoPermitPayload({ ...activePayload(), dokumen: { nomor: '', tanggalEfektif: '', revisi: '', halaman: '' } });
+  assert.ok(activationGaps(blank).some(g => g.startsWith('kepala dokumen')));
+  assert.equal(resolvePermitStatus(blank), 'DRAFT');
+
+  assert.throws(() => validateLotoPermitPayload({ ...activePayload(), dokumen: { tanggalEfektif: '16 Nov 2017' } }), /Tanggal Efektif/);
+  assert.throws(() => validateLotoPermitPayload({ ...activePayload(), dokumen: 'F-PLT-116' }), /kepala dokumen/);
+});
+
 test('a permit stays DRAFT until isolation is complete, then becomes AKTIF', () => {
   assert.equal(status(activePayload()), 'AKTIF');
 

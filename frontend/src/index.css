@@ -267,6 +267,13 @@ textarea,
   text-align: center !important;
   font-weight: bold !important;
   font-size: 9pt;
+  padding: 2px !important;
+}
+.loto-print .lp-company img {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  max-height: 17mm;
 }
 .loto-print .lp-head td:nth-last-child(2) {
   width: 15%;

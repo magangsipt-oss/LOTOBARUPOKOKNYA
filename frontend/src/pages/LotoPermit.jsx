@@ -3,11 +3,15 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '../context/useAuth';
 import lotoPermitService from '../services/lotoPermitService';
 import { livePoll } from '../services/live';
+import logoMtl from '../assets/logo-mtl.png';
 
 // Izin LOTO digital: pengganti formulir kertas F-PLT-116 "Izin Penguncian Mesin, Alat, Unit/Instalasi".
 // Aturan keselamatan (kapan LOTO boleh ditarik, kapan izin boleh ditutup) ditegakkan di backend.
 
 const SHIFTS = ['I', 'II', 'III'];
+// Nilai awal kepala dokumen (revisi formulir kertas yang berlaku); tetap bisa diubah per izin.
+const DEFAULT_DOKUMEN = { nomor: 'F-PLT-116', tanggalEfektif: '2017-11-16', revisi: '0', halaman: '1 dari 1' };
+const BULAN = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
 const MAX_MESIN = 10;
 const MAX_TITIK = 20;
 const STATUS = {
@@ -34,6 +38,7 @@ const edLabel = 'shrink-0 pt-1.5 text-xs font-bold sm:pt-0';
 const edInput = 'block min-h-10 w-full min-w-0 resize-none border-0 bg-transparent px-2 py-1.5 text-sm text-slate-900 placeholder:text-slate-300 hover:bg-amber-50/50 focus:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-500/50 disabled:text-slate-600';
 const inlineLabelCls = 'flex flex-col pl-2 sm:flex-row sm:items-center sm:gap-1';
 const blockLabelCls = 'block pl-2 pt-1.5';
+const docInputCls = 'block min-h-8 w-full min-w-0 border-0 bg-transparent px-1.5 py-1 text-[11px] text-slate-900 hover:bg-amber-50/50 focus:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-500/50 disabled:text-slate-600 sm:px-2 sm:text-xs';
 const rowNoCls = 'w-7 shrink-0 pl-2 text-xs font-semibold text-slate-600';
 const rowDeleteCls = 'min-h-10 shrink-0 px-2.5 text-slate-300 hover:text-red-600 focus:text-red-600';
 const addRowCls = 'min-h-9 w-full px-2 text-left text-xs font-bold text-red-600 hover:bg-red-50';
@@ -42,6 +47,7 @@ const toast = (msg, type = 'ok') => window.dispatchEvent(new CustomEvent('eloto-
 const errorMessage = error => error?.response?.data?.message || error?.message || 'Gagal berkomunikasi dengan server.';
 const todayLocal = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Makassar' }).format(new Date());
 const formatDate = iso => (/^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? iso.split('-').reverse().join('/') : '');
+const formatDocDate = iso => (/^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? `${Number(iso.slice(8, 10))} ${BULAN[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}` : '');
 const blankMesin = () => ({ nama: '', terisolasi: false, kembaliNormal: false });
 const blankTitik = () => ({ nama: '', dipasang: false, ditarik: false });
 const blankShift = () => ({ teknisi: '', groupLeader: '', tanggal: '', waktu: '' });
@@ -54,6 +60,7 @@ function toForm(permit) {
   const alt = p.alternatif || {};
   const selesai = p.selesai || {};
   return {
+    dokumen: { ...DEFAULT_DOKUMEN, ...(p.dokumen || {}) },
     projectNo: p.projectNo || '',
     tanggalISO: p.tanggalISO || todayLocal(),
     lokasi: p.lokasi || '',
@@ -126,13 +133,13 @@ function PermitPrint({ permit }) {
       <table className="lp-table lp-head">
         <tbody>
           <tr>
-            <td rowSpan={4} className="lp-company">MUTIARA<br />TANJUNG LESTARI</td>
+            <td rowSpan={4} className="lp-company"><img src={logoMtl} alt="Mutiara Tanjung Lestari" /></td>
             <td className="lp-center lp-bold">BERAU COAL GREEN MINING SYSTEM</td>
-            <td>No. Dokumen</td><td>F-PLT-116</td>
+            <td>No. Dokumen</td><td>{p.dokumen.nomor}</td>
           </tr>
-          <tr><td className="lp-center lp-bold">FORMULIR</td><td>Tanggal Efektif</td><td>16 Nov 2017</td></tr>
-          <tr><td rowSpan={2} className="lp-center lp-bold"><i>Lock Out &amp; Tag Out</i></td><td>Revisi</td><td>0</td></tr>
-          <tr><td>Halaman</td><td>1 dari 1</td></tr>
+          <tr><td className="lp-center lp-bold">FORMULIR</td><td>Tanggal Efektif</td><td>{formatDocDate(p.dokumen.tanggalEfektif)}</td></tr>
+          <tr><td rowSpan={2} className="lp-center lp-bold"><i>Lock Out &amp; Tag Out</i></td><td>Revisi</td><td>{p.dokumen.revisi}</td></tr>
+          <tr><td>Halaman</td><td>{p.dokumen.halaman}</td></tr>
         </tbody>
       </table>
 
@@ -309,6 +316,7 @@ export default function LotoPermit() {
     ...f, [list]: pad(f[list].filter((_, i) => i !== index), MIN_ROWS[list], blank)
   }));
   const setShift = (s, key, value) => setForm(f => ({ ...f, shift: { ...f.shift, [s]: { ...f.shift[s], [key]: value } } }));
+  const setDok = (key, value) => setForm(f => ({ ...f, dokumen: { ...f.dokumen, [key]: value } }));
   const setAlt = (key, value) => setForm(f => ({ ...f, alternatif: { ...f.alternatif, [key]: value } }));
   const setSelesai = (key, value) => setForm(f => ({ ...f, selesai: { ...f.selesai, [key]: value } }));
 
@@ -471,27 +479,27 @@ export default function LotoPermit() {
         {/* Lembar formulir: tata letak dan urutan mengikuti dokumen kertas F-PLT-116. */}
         <div className={sheetCls}>
           <table className={`${edTable} table-fixed text-[10px] sm:text-xs`}>
-            <colgroup><col className="w-[22%]" /><col className="w-[40%]" /><col className="w-[20%]" /><col className="w-[18%]" /></colgroup>
+            <colgroup><col className="w-[18%]" /><col className="w-[30%] sm:w-[34%]" /><col className="w-[20%]" /><col className="w-[32%] sm:w-[28%]" /></colgroup>
             <tbody>
               <tr>
-                <td rowSpan={4} className={`${edCell} px-1 text-center font-black leading-tight`}>MUTIARA<br />TANJUNG LESTARI</td>
+                <td rowSpan={4} className={`${edCell} p-1 text-center`}><img src={logoMtl} alt="Mutiara Tanjung Lestari" className="mx-auto h-auto max-h-20 w-full max-w-[150px] object-contain" /></td>
                 <td className={`${edCell} px-2 py-1 text-center font-bold`}>BERAU COAL GREEN MINING SYSTEM</td>
                 <td className={`${edCell} px-2 py-1`}>No. Dokumen</td>
-                <td className={`${edCell} px-2 py-1`}>F-PLT-116</td>
+                <td className={edCell}><input aria-label="No. Dokumen" className={docInputCls} maxLength={50} value={form.dokumen.nomor} onChange={e => setDok('nomor', e.target.value)} /></td>
               </tr>
               <tr>
                 <td className={`${edCell} px-2 py-1 text-center font-bold`}>FORMULIR</td>
                 <td className={`${edCell} px-2 py-1`}>Tanggal Efektif</td>
-                <td className={`${edCell} px-2 py-1`}>16 Nov 2017</td>
+                <td className={edCell}><input aria-label="Tanggal Efektif" type="date" className={docInputCls} value={form.dokumen.tanggalEfektif} onChange={e => setDok('tanggalEfektif', e.target.value)} /></td>
               </tr>
               <tr>
                 <td rowSpan={2} className={`${edCell} px-2 py-1 text-center font-bold italic`}>Lock Out &amp; Tag Out</td>
                 <td className={`${edCell} px-2 py-1`}>Revisi</td>
-                <td className={`${edCell} px-2 py-1`}>0</td>
+                <td className={edCell}><input aria-label="Revisi" className={docInputCls} maxLength={10} value={form.dokumen.revisi} onChange={e => setDok('revisi', e.target.value)} /></td>
               </tr>
               <tr>
                 <td className={`${edCell} px-2 py-1`}>Halaman</td>
-                <td className={`${edCell} px-2 py-1`}>1 dari 1</td>
+                <td className={edCell}><input aria-label="Halaman" className={docInputCls} maxLength={20} value={form.dokumen.halaman} onChange={e => setDok('halaman', e.target.value)} /></td>
               </tr>
             </tbody>
           </table>

@@ -5,6 +5,8 @@ export const SHIFTS = ['I', 'II', 'III'];
 const MAX_MESIN = 10;
 const MAX_TITIK = 20;
 const LOTO_TIMEZONE = process.env.LOTO_TIMEZONE || process.env.DOP_TIMEZONE || 'Asia/Makassar';
+// Kepala dokumen diisi per izin; nilai awal mengikuti revisi formulir kertas yang berlaku.
+export const DEFAULT_DOKUMEN = Object.freeze({ nomor: 'F-PLT-116', tanggalEfektif: '2017-11-16', revisi: '0', halaman: '1 dari 1' });
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 
@@ -60,6 +62,7 @@ function rows(value, label, max, map) {
 
 export function emptyPermitPayload(tanggalISO = '') {
   return {
+    dokumen: { ...DEFAULT_DOKUMEN },
     projectNo: '',
     tanggalISO,
     lokasi: '',
@@ -87,7 +90,14 @@ export function validateLotoPermitPayload(value) {
   const selesaiStatus = text(selesai.status, 'status pekerjaan', 7);
   if (!['', 'SELESAI', 'BELUM'].includes(selesaiStatus)) fail('Status pekerjaan selesai tidak valid.');
 
+  const dokumen = value.dokumen === undefined ? { ...DEFAULT_DOKUMEN } : object(value.dokumen, 'kepala dokumen');
   const payload = {
+    dokumen: {
+      nomor: text(dokumen.nomor, 'No. Dokumen', 50),
+      tanggalEfektif: isoDate(dokumen.tanggalEfektif, 'Tanggal Efektif'),
+      revisi: text(dokumen.revisi, 'Revisi', 10),
+      halaman: text(dokumen.halaman, 'Halaman', 20)
+    },
     projectNo: text(value.projectNo, 'Project No.', 50),
     tanggalISO: isoDate(value.tanggalISO, 'Tanggal', true),
     lokasi: text(value.lokasi, 'Lokasi', 200),
@@ -146,6 +156,8 @@ export function validateLotoPermitPayload(value) {
 // Hal yang masih kurang sebelum izin boleh dianggap AKTIF (LOTO sudah terpasang dan sah dikerjakan).
 export function activationGaps(p) {
   const gaps = [];
+  const dok = p.dokumen || DEFAULT_DOKUMEN;
+  if (!dok.nomor || !dok.tanggalEfektif || !dok.revisi) gaps.push('kepala dokumen (No. Dokumen, Tanggal Efektif, Revisi)');
   if (!p.pekerjaan) gaps.push('penjelasan pekerjaan');
   if (!p.lokasi) gaps.push('lokasi');
   if (!p.inspeksi) gaps.push('hasil inspeksi lapangan');
