@@ -1,0 +1,59 @@
+# Shared site rules for the E-LOTO dashboard, imported inside a site block.
+# Mirrors the old Nginx site: SPA + /api proxy, internal /health, no dotfiles, no PHP.
+header -Server
+request_body {
+	max_size 8MB
+}
+
+@health path /health /health/*
+@dotfiles path_regexp /\.
+@php path *.php
+
+# route keeps the order below exactly as written.
+route {
+	respond @health 403
+	respond @dotfiles 403
+	respond @php 410
+
+	# No compression here: it would buffer the /api/live event stream.
+	handle /api/* {
+		reverse_proxy backend:5002
+	}
+
+	handle /dop-plan.html {
+		root * /srv/www
+		encode zstd gzip
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			Content-Security-Policy "frame-ancestors 'self'"
+			Cache-Control no-cache
+		}
+		file_server
+	}
+
+	# Vite asset names carry a content hash, so they can be cached for a long time.
+	handle /assets/* {
+		root * /srv/www
+		encode zstd gzip
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			Cache-Control "public, max-age=31536000, immutable"
+		}
+		file_server
+	}
+
+	handle {
+		root * /srv/www
+		encode zstd gzip
+		header {
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+			Referrer-Policy strict-origin-when-cross-origin
+			Cache-Control no-cache
+		}
+		try_files {path} /index.html
+		file_server
+	}
+}

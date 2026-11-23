@@ -1,5 +1,9 @@
 # Menjalankan dan memasang E-LOTO
 
+> Sejak 23 November 2026 production berjalan di Docker pada VPS `103.139.192.146`
+> (lihat [DOCKER.md](DOCKER.md)). Bagian VPS BiznetGIO/systemd di bawah hanya
+> berlaku untuk VPS lama `103.197.188.61`.
+
 ## Development
 
 Gunakan workspace root dan lockfile root:

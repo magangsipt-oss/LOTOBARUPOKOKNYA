@@ -1,0 +1,9 @@
+# Laptop test: self-signed certificate for https://localhost (browser will warn).
+{
+	local_certs
+	skip_install_trust
+}
+
+localhost {
+	import /etc/caddy/eloto.caddy
+}

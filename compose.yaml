@@ -1,0 +1,123 @@
+# E-LOTO in Docker: MySQL + backend API + Caddy (dashboard, HTTPS, /api proxy).
+# Settings come from .env next to this file (copy .env.example). Guide: docs/DOCKER.md
+name: eloto
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: mysql:8.0.46
+    restart: unless-stopped
+    command: ["--default-time-zone=+08:00"]
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-eloto_db}
+      MYSQL_USER: ${DB_USER:-eloto_app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      TZ: Asia/Makassar
+    volumes:
+      - db_data:/var/lib/mysql
+    # Loopback only: reach it through an SSH tunnel (DBeaver), never from the internet.
+    ports:
+      - "127.0.0.1:${DB_PUBLISH_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [eloto]
+    logging: *logging
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    image: eloto-backend:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "5002"
+      FRONTEND_URL: ${FRONTEND_URL:-https://${ELOTO_DOMAIN:?Set ELOTO_DOMAIN in .env}}
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-eloto_db}
+      DB_USER: ${DB_USER:-eloto_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      # Caddy reaches the backend from this Docker subnet, not from loopback.
+      TRUST_PROXY: 172.30.10.0/24
+      MJPEG_PORTS: ${MJPEG_PORTS:-}
+      TZ: Asia/Makassar
+    volumes:
+      - uploads:/app/backend/uploads
+      - legacy_uploads:/app/backend/legacy-uploads
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [eloto]
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    image: eloto-web:latest
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      ELOTO_DOMAIN: ${ELOTO_DOMAIN:?Set ELOTO_DOMAIN in .env}
+      ELOTO_IP: ${ELOTO_IP:?Set ELOTO_IP in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # Certificates and the ACME account live here; losing it means re-issuing.
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    networks: [eloto]
+    logging: *logging
+
+  # One-off jobs: docker compose run --rm migrate
+  migrate:
+    image: eloto-backend:latest
+    profiles: [tools]
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["node", "scripts/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-eloto_db}
+      DB_USER: ${DB_USER:-eloto_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    networks: [eloto]
+
+volumes:
+  db_data:
+  uploads:
+  legacy_uploads:
+  caddy_data:
+  caddy_config:
+
+networks:
+  eloto:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24

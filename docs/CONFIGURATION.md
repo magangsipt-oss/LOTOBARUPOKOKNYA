@@ -66,7 +66,7 @@ Pastikan nilai itu valid sebelum upload. Firmware memakai kredensial dari header
 | Kunci / file | Fungsi |
 | --- | --- |
 | `WIFI_1_SSID` … `WIFI_5_SSID` dan `WIFI_1_PASS` … `WIFI_5_PASS` | Hingga lima profil Wi-Fi; perangkat mencoba profil berurutan dan berpindah setelah 15 detik tanpa koneksi. Format lama `SSID`/`PASS` tetap didukung; nilai contoh seperti `your-...` diabaikan. ESP32 hanya mendukung Wi-Fi 2,4 GHz |
-| `SERVER` | Opsional override endpoint; default production `https://103.197.188.61`. LAN tepercaya: `http://192.168.1.10:5002` |
+| `SERVER` | Opsional override endpoint; default production `https://103.139.192.146` (sebelum 23 Nov 2026: `https://103.197.188.61`). LAN tepercaya: `http://192.168.1.10:5002` |
 | `/server_ca.pem` | Opsional override root CA TLS. Default production memakai ISRG Root X1 yang tertanam di firmware |
 
 `ELOTO_FIXED` memverifikasi sertifikat TLS dan handshake boks sebelum memakai API. Jam ESP32 harus tersinkron melalui NTP. Jangan mematikan verifikasi sertifikat. HTTP hanya diterima untuk host privat yang ditetapkan eksplisit. Langkah provisioning ada di [deployment](DEPLOYMENT.md).

@@ -1,0 +1,26 @@
+# Keep the build context small and free of secrets or local data.
+**/node_modules
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/cookies*.txt
+# HSE exports hold personal data (see .gitignore); never bake them into an image.
+**/*.hse.json
+**/hse-export
+**/*.postman_collection.json
+.git
+.github
+.claude
+.vscode
+.idea
+graphify-out
+docs
+esp32
+counting
+!counting/package.json
+frontend/dist
+backend/uploads
+backend/tests
+backend/test.js
+backend/patch.cjs

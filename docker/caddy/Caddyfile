@@ -1,0 +1,34 @@
+# Production: Let's Encrypt certificates for the domain and for the server IP.
+{
+	# The box connects by IP and TLS sends no SNI for IPs; answer with the IP certificate.
+	default_sni {$ELOTO_IP}
+}
+
+{$ELOTO_DOMAIN} {
+	import /etc/caddy/eloto.caddy
+}
+
+www.{$ELOTO_DOMAIN} {
+	redir https://{$ELOTO_DOMAIN}{uri} permanent
+}
+
+# Used by the box firmware (https://<IP>/api/...). Let's Encrypt issues IP
+# certificates only under the 6-day "shortlived" profile; Caddy renews them itself.
+{$ELOTO_IP} {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+	header -Server
+	@dotfiles path_regexp /\.
+	route {
+		respond @dotfiles 403
+		handle /api/* {
+			reverse_proxy backend:5002
+		}
+		handle {
+			redir https://{$ELOTO_DOMAIN}{uri} permanent
+		}
+	}
+}
