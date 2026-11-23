@@ -459,11 +459,15 @@ export default function LotoPermit() {
       {editing.status === 'DITUTUP' && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Izin sudah ditutup dan tidak bisa diubah lagi.</p>}
 
       <fieldset disabled={readOnly || saving} className="min-w-0 space-y-4">
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] text-slate-600 sm:grid-cols-4">
-          <span><b className="text-slate-800">Formulir</b> Lock Out &amp; Tag Out</span>
-          <span><b className="text-slate-800">No. Dokumen</b> F-PLT-116</span>
-          <span><b className="text-slate-800">Tanggal Efektif</b> 16 Nov 2017</span>
-          <span><b className="text-slate-800">Revisi</b> 0</span>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] text-slate-600">
+          <p className="font-bold uppercase tracking-wide text-slate-800">Berau Coal Green Mining System · Mutiara Tanjung Lestari</p>
+          <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-5">
+            <span><b className="text-slate-800">Formulir</b> Lock Out &amp; Tag Out</span>
+            <span><b className="text-slate-800">No. Dokumen</b> F-PLT-116</span>
+            <span><b className="text-slate-800">Tanggal Efektif</b> 16 Nov 2017</span>
+            <span><b className="text-slate-800">Revisi</b> 0</span>
+            <span><b className="text-slate-800">Halaman</b> 1 dari 1</span>
+          </div>
         </div>
         <section className={sectionCls}>
           <h2 className="text-sm font-bold text-slate-800">Izin penguncian mesin, alat, unit/instalasi</h2>
@@ -559,11 +563,12 @@ export default function LotoPermit() {
           <h2 className="text-sm font-bold text-slate-800">Shift I, II, III: dilakukan oleh &amp; penanggung jawab</h2>
           <p className="text-xs text-slate-500">Kolom shift berjalan terisi otomatis dari tap kartu di box. Shift I = 06.00–17.59, Shift II = 18.00–05.59; Shift III untuk pekerjaan lanjutan.</p>
           <div className={tableWrapCls}>
-            <table className="w-full min-w-[620px] table-fixed border-collapse">
+            <table className="w-full min-w-[780px] table-fixed border-collapse">
               <thead>
                 <tr>
                   <th scope="col" className={`${thCls} w-40 text-left`}><span className="sr-only">Isian</span></th>
                   {SHIFTS.map(s => <th key={s} scope="col" className={thCls}>Shift {s}</th>)}
+                  <th scope="col" className={thCls}>Keterangan</th>
                 </tr>
               </thead>
               <tbody>
@@ -572,7 +577,7 @@ export default function LotoPermit() {
                   ['groupLeader', 'Penanggung jawab (group leader)', 'text'],
                   ['tanggal', 'Tanggal', 'date'],
                   ['waktu', 'Waktu', 'time']
-                ].map(([field, label, type]) => (
+                ].map(([field, label, type], row) => (
                   <tr key={field}>
                     <th scope="row" className={`${thCls} text-left`}>{label}</th>
                     {SHIFTS.map(s => (
@@ -582,12 +587,16 @@ export default function LotoPermit() {
                           : <input aria-label={`${label}, shift ${s}`} type={type} className={cellInputCls} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />}
                       </td>
                     ))}
+                    {row === 0 && (
+                      <td rowSpan={4} className={`${tdCls} relative`}>
+                        <textarea id="lp-ket" aria-label="Keterangan" className={`${cellInputCls} absolute inset-0 h-full`} maxLength={500} value={form.keterangan} onChange={e => set('keterangan', e.target.value)} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div><label className={labelCls} htmlFor="lp-ket">Keterangan</label><textarea id="lp-ket" rows={2} className={inputCls} maxLength={500} value={form.keterangan} onChange={e => set('keterangan', e.target.value)} /></div>
           {latest?.personel?.length > 0 && (
             <div>
               <p className={labelCls}>Personel yang tap di box</p>
