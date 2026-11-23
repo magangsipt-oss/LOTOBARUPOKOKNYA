@@ -2,7 +2,7 @@
 
 namespace eloto {
 
-constexpr char DEFAULT_SERVER_BASE[] = "https://103.197.188.61/";
+constexpr char DEFAULT_SERVER_BASE[] = "https://103.139.192.146/";
 constexpr bool LOCAL_ONLY_MODE = false;
 
 // Retained only for explicitly configured HTTPS endpoints.
