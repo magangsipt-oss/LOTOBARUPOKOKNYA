@@ -33,6 +33,9 @@ const formatDate = iso => (/^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? iso.split('-'
 const blankMesin = () => ({ nama: '', terisolasi: false, kembaliNormal: false });
 const blankTitik = () => ({ nama: '', dipasang: false, ditarik: false });
 const blankShift = () => ({ teknisi: '', groupLeader: '', tanggal: '', waktu: '' });
+// Formulir kertas punya 3 baris mesin dan 5 baris titik isolasi; baris kosong dibuang saat disimpan.
+const MIN_ROWS = { mesin: 3, titik: 5 };
+const pad = (rows, min, blank) => [...rows, ...Array.from({ length: Math.max(0, min - rows.length) }, blank)];
 
 function toForm(permit) {
   const p = permit || {};
@@ -46,8 +49,8 @@ function toForm(permit) {
     inspeksi: p.inspeksi || '',
     defisiensi: p.defisiensi || '',
     diperbaiki: Boolean(p.diperbaiki),
-    mesin: p.mesin?.length ? p.mesin.map(m => ({ ...blankMesin(), ...m })) : [blankMesin()],
-    titik: p.titik?.length ? p.titik.map(t => ({ ...blankTitik(), ...t })) : [blankTitik()],
+    mesin: pad((p.mesin || []).map(m => ({ ...blankMesin(), ...m })), MIN_ROWS.mesin, blankMesin),
+    titik: pad((p.titik || []).map(t => ({ ...blankTitik(), ...t })), MIN_ROWS.titik, blankTitik),
     alternatif: {
       blockControlSwitch: Boolean(alt.blockControlSwitch), pullwire: Boolean(alt.pullwire),
       handleValve: Boolean(alt.handleValve), lainnya: Boolean(alt.lainnya), lainnyaKet: alt.lainnyaKet || ''
@@ -279,10 +282,9 @@ export default function LotoPermit() {
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
   const setRow = (list, index, patch) => setForm(f => ({ ...f, [list]: f[list].map((row, i) => (i === index ? { ...row, ...patch } : row)) }));
   const addRow = (list, blank, max) => setForm(f => (f[list].length >= max ? f : { ...f, [list]: [...f[list], blank()] }));
-  const removeRow = (list, index, blank) => setForm(f => {
-    const next = f[list].filter((_, i) => i !== index);
-    return { ...f, [list]: next.length ? next : [blank()] };
-  });
+  const removeRow = (list, index, blank) => setForm(f => ({
+    ...f, [list]: pad(f[list].filter((_, i) => i !== index), MIN_ROWS[list], blank)
+  }));
   const setShift = (s, key, value) => setForm(f => ({ ...f, shift: { ...f.shift, [s]: { ...f.shift[s], [key]: value } } }));
   const setAlt = (key, value) => setForm(f => ({ ...f, alternatif: { ...f.alternatif, [key]: value } }));
   const setSelesai = (key, value) => setForm(f => ({ ...f, selesai: { ...f.selesai, [key]: value } }));
@@ -356,9 +358,20 @@ export default function LotoPermit() {
 
         {loadError && <p role="alert" className="rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">{loadError}</p>}
         {loading ? <p role="status" className="text-sm text-slate-500">Memuat izin LOTO…</p> : shown.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-            {permits.length === 0 ? 'Belum ada izin LOTO. Draft muncul otomatis saat sesi LOTO dimulai di box.' : 'Tidak ada izin dengan status ini.'}
-          </div>
+          permits.length === 0 ? (
+            <div className="space-y-3 rounded-2xl border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-600 sm:p-8">
+              <p className="font-bold text-slate-800">Belum ada izin LOTO. Alurnya:</p>
+              <ol className="list-decimal space-y-1.5 pl-5 text-xs sm:text-sm">
+                <li><b>Pengawas tap kartu di box</b> → izin otomatis terbuat dengan tanggal, unit, nama teknisi &amp; group leader, dan jam tap.</li>
+                <li><b>Pengawas melengkapi di sini</b>: lokasi, pekerjaan, inspeksi, titik isolasi, lalu centang <i>LOTO Dipasang</i> → status <b>Aktif</b>.</li>
+                <li><b>Setelah semua personel tap keluar</b> di box: centang <i>LOTO Ditarik</i> &amp; <i>Kembali Normal</i>, isi bagian III → status <b>Ditutup</b>.</li>
+                <li>Cetak formulir F-PLT-116 bila perlu tanda tangan basah.</li>
+              </ol>
+              <p className="text-xs text-slate-500">Pekerjaan tanpa box: pakai tombol <b>Izin manual (tanpa box)</b>.</p>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Tidak ada izin dengan status ini.</div>
+          )
         ) : (
           <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {shown.map(p => (
@@ -425,6 +438,12 @@ export default function LotoPermit() {
       {editing.status === 'DITUTUP' && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Izin sudah ditutup dan tidak bisa diubah lagi.</p>}
 
       <fieldset disabled={readOnly || saving} className="min-w-0 space-y-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] text-slate-600 sm:grid-cols-4">
+          <span><b className="text-slate-800">Formulir</b> Lock Out &amp; Tag Out</span>
+          <span><b className="text-slate-800">No. Dokumen</b> F-PLT-116</span>
+          <span><b className="text-slate-800">Tanggal Efektif</b> 16 Nov 2017</span>
+          <span><b className="text-slate-800">Revisi</b> 0</span>
+        </div>
         <section className={sectionCls}>
           <h2 className="text-sm font-bold text-slate-800">Izin penguncian mesin, alat, unit/instalasi</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -444,12 +463,8 @@ export default function LotoPermit() {
               </label>
             ))}
           </div>
-          {form.inspeksi === 'NOT_OK' && (
-            <>
-              <div><label className={labelCls} htmlFor="lp-defisiensi">Penjelasan defisiensi</label><textarea id="lp-defisiensi" rows={3} className={inputCls} maxLength={2000} value={form.defisiensi} onChange={e => set('defisiensi', e.target.value)} /></div>
-              <Check checked={form.diperbaiki} onChange={v => set('diperbaiki', v)} label="Diperbaiki" />
-            </>
-          )}
+          <div><label className={labelCls} htmlFor="lp-defisiensi">Penjelasan defisiensi <span className="font-normal text-slate-400">(wajib bila Not OK)</span></label><textarea id="lp-defisiensi" rows={3} className={inputCls} maxLength={2000} value={form.defisiensi} onChange={e => set('defisiensi', e.target.value)} /></div>
+          <Check checked={form.diperbaiki} onChange={v => set('diperbaiki', v)} label="Diperbaiki" />
         </section>
 
         <section className={sectionCls}>
@@ -492,7 +507,7 @@ export default function LotoPermit() {
         </section>
 
         <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">Pelaksana per shift</h2>
+          <h2 className="text-sm font-bold text-slate-800">Shift I, II, III: dilakukan oleh &amp; penanggung jawab</h2>
           <p className="text-xs text-slate-500">Kolom shift berjalan terisi otomatis dari tap kartu di box. Shift I = 06.00–17.59, Shift II = 18.00–05.59; Shift III untuk pekerjaan lanjutan.</p>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             {SHIFTS.map(s => (
@@ -532,8 +547,7 @@ export default function LotoPermit() {
               </label>
             ))}
           </div>
-          {form.selesai.status && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {[['teknisi', 'teknisiTanggal', 'teknisiWaktu', 'Teknisi'], ['pjTeknis', 'pjTanggal', 'pjWaktu', 'Penanggung jawab teknis']].map(([name, date, time, label]) => (
                 <div key={name} className="space-y-2 rounded-xl border border-slate-200 p-3">
                   <div><label className={labelCls} htmlFor={`lp-${name}`}>{label}</label><input id={`lp-${name}`} className={inputCls} maxLength={100} value={form.selesai[name]} onChange={e => setSelesai(name, e.target.value)} /></div>
@@ -543,9 +557,8 @@ export default function LotoPermit() {
                   </div>
                 </div>
               ))}
-              <p className="text-[11px] text-slate-500 sm:col-span-2">Tanggal dan waktu yang dikosongkan diisi otomatis dengan waktu simpan. Setelah ditutup, izin tidak bisa diubah.</p>
-            </div>
-          )}
+              <p className="text-[11px] text-slate-500 sm:col-span-2">Diisi saat pekerjaan berhenti. Tanggal dan waktu yang dikosongkan diisi otomatis dengan waktu simpan. Setelah ditutup, izin tidak bisa diubah.</p>
+          </div>
         </section>
       </fieldset>
 
