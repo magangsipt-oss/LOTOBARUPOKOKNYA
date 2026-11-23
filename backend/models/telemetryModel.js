@@ -2,6 +2,7 @@ import pool from '../config/database.js';
 import { normalizeState, eventType, isTap, replayOccurredAt } from '../domain/telemetry.js';
 import { syncSessionDraft } from './dopPlanModel.js';
 import { syncSessionPermit } from './lotoPermitModel.js';
+import { syncSessionBriefing } from './briefingModel.js';
 
 // Tap masuk BBM ganda dalam jeda ini dihitung satu kali (box baru juga menolak tap keluar secepat ini).
 export const REFUEL_DOUBLE_TAP_SECONDS = 60;
@@ -147,6 +148,13 @@ export async function recordTelemetry(idBox, body) {
           catch (error) {
             await c.query('ROLLBACK TO SAVEPOINT loto_permit_draft');
             console.error('LOTO permit draft sync failed:', error.code || error.message);
+          }
+          // Daftar hadir sosialisasi (F-HSE-105) dari tap kartu yang sama.
+          await c.query('SAVEPOINT briefing_draft');
+          try { await syncSessionBriefing(c, { idBox, session }); }
+          catch (error) {
+            await c.query('ROLLBACK TO SAVEPOINT briefing_draft');
+            console.error('Briefing attendance sync failed:', error.code || error.message);
           }
         }
       }

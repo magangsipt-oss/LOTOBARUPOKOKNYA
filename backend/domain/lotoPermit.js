@@ -1,5 +1,10 @@
 // Izin LOTO digital, mengikuti formulir kertas F-PLT-116 "Izin Penguncian Mesin, Alat, Unit/Instalasi".
 // Status dihitung dari isi formulir; aturan keselamatan ditegakkan di sini, bukan di browser.
+// Peran: mekanik mengisi dan memasang LOTO ("Dilakukan oleh"), foreman/group leader menyetujui
+// ("Penanggung jawab"), foreman/pengawas menutup bagian III ("Penanggung Jawab Teknis").
+import { createHash } from 'node:crypto';
+import { isLeader, leaderNames, namesOf, seesAllForms, signatureOf } from './personnel.js';
+import { clock, fail, flag, isoDate, object, text } from './formFields.js';
 
 export const SHIFTS = ['I', 'II', 'III'];
 const MAX_MESIN = 10;
@@ -7,45 +12,6 @@ const MAX_TITIK = 20;
 const LOTO_TIMEZONE = process.env.LOTO_TIMEZONE || process.env.DOP_TIMEZONE || 'Asia/Makassar';
 // Kepala dokumen diisi per izin; nilai awal mengikuti revisi formulir kertas yang berlaku.
 export const DEFAULT_DOKUMEN = Object.freeze({ nomor: 'F-PLT-116', tanggalEfektif: '2017-11-16', revisi: '0', halaman: '1 dari 1' });
-
-const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
-
-function text(value, field, max) {
-  if (value === undefined || value === null) return '';
-  if (typeof value !== 'string' || value.length > max) fail(`Kolom ${field} tidak valid.`);
-  return value.trim();
-}
-
-function flag(value, field) {
-  if (value === undefined) return false;
-  if (typeof value !== 'boolean') fail(`Kolom ${field} tidak valid.`);
-  return value;
-}
-
-function isoDate(value, field, required = false) {
-  const v = text(value, field, 10);
-  if (!v) {
-    if (required) fail(`Kolom ${field} wajib diisi.`);
-    return '';
-  }
-  const date = new Date(`${v}T00:00:00.000Z`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== v) {
-    fail(`Kolom ${field} tidak valid.`);
-  }
-  return v;
-}
-
-function clock(value, field) {
-  const v = text(value, field, 5);
-  if (v && !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) fail(`Kolom ${field} tidak valid.`);
-  return v;
-}
-
-function object(value, field) {
-  if (value === undefined) return {};
-  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`Kolom ${field} tidak valid.`);
-  return value;
-}
 
 // Baris kosong (tanpa nama dan tanpa centang) dibuang; baris bercentang tanpa nama ditolak.
 function rows(value, label, max, map) {
@@ -173,18 +139,49 @@ export function activationGaps(p) {
   return gaps;
 }
 
-// DRAFT -> AKTIF -> DITUTUP. Melepas LOTO selama sesi box masih berjalan selalu ditolak:
-// box baru menutup sesi setelah semua mekanik tap keluar dan pengawas tap keluar.
+// Sidik isi isolasi yang disetujui penanggung jawab. Mengubah lokasi, pekerjaan, inspeksi, mesin, titik,
+// atau langkah tambahan membatalkan persetujuan; mencentang "Ditarik"/"Kembali Normal" tidak.
+// Disusun sebagai array berurutan tetap: kolom JSON MySQL mengurutkan ulang key objek saat disimpan.
+export function isolationFingerprint(p) {
+  const d = p.dokumen || {};
+  const a = p.alternatif || {};
+  const core = [
+    [d.nomor, d.tanggalEfektif, d.revisi, d.halaman],
+    p.lokasi, p.pekerjaan, p.inspeksi, p.defisiensi, Boolean(p.diperbaiki),
+    [Boolean(a.blockControlSwitch), Boolean(a.pullwire), Boolean(a.handleValve), Boolean(a.lainnya), a.lainnyaKet || ''],
+    (p.mesin || []).map(m => [m.nama, Boolean(m.terisolasi)]),
+    (p.titik || []).map(t => [t.nama, Boolean(t.dipasang)])
+  ];
+  return createHash('sha256').update(JSON.stringify(core)).digest('hex').slice(0, 32);
+}
+
+export const approvalValid = p => Boolean(p.persetujuan?.sidik) && p.persetujuan.sidik === isolationFingerprint(p);
+
+// Tanda tangan "Penanggung jawab": foreman/group leader (atau pengawas/admin) menyetujui isi isolasi.
+export function approvePermit(p, viewer, now = new Date()) {
+  if (!isLeader(viewer)) fail('Persetujuan izin dilakukan foreman/group leader atau pengawas.', 403);
+  const gaps = activationGaps(p);
+  if (gaps.length) fail(`Izin belum lengkap, belum bisa disetujui: ${gaps.join(', ')}.`);
+  return { ...p, persetujuan: { ...signatureOf(viewer, now), sidik: isolationFingerprint(p) } };
+}
+
+// DRAFT -> MENUNGGU (lengkap, menunggu persetujuan) -> AKTIF (disetujui) -> DITUTUP.
+// Melepas LOTO selama sesi box masih berjalan selalu ditolak: box baru menutup sesi setelah
+// semua mekanik tap keluar dan pengawas tap keluar.
 export function resolvePermitStatus(p, { sessionActive = false } = {}) {
   // Menutup izin (SELESAI maupun BELUM) juga berarti tidak ada lagi personel di area isolasi.
   const releasing = p.titik.some(t => t.ditarik) || p.mesin.some(m => m.kembaliNormal) || Boolean(p.selesai.status);
   if (releasing && sessionActive) {
     fail('Sesi LOTO di box masih berjalan. LOTO baru boleh ditarik dan izin baru boleh ditutup setelah semua personel tap keluar dan pengawas menutup sesi di box.', 409);
   }
-  if (!p.selesai.status) return activationGaps(p).length ? 'DRAFT' : 'AKTIF';
+  if (!p.selesai.status) {
+    if (activationGaps(p).length) return 'DRAFT';
+    return approvalValid(p) ? 'AKTIF' : 'MENUNGGU';
+  }
 
   const gaps = activationGaps(p);
   if (gaps.length) fail(`Izin belum lengkap, belum bisa ditutup: ${gaps.join(', ')}.`);
+  if (!approvalValid(p)) fail('Izin belum disetujui penanggung jawab (foreman/pengawas), belum bisa ditutup.', 409);
   if (!p.selesai.teknisi || !p.selesai.pjTeknis) fail('Bagian III: nama teknisi dan penanggung jawab teknis wajib diisi.');
   if (p.selesai.status === 'SELESAI') {
     if (p.titik.some(t => !t.ditarik)) fail('Pekerjaan selesai: semua titik isolasi harus dicentang "LOTO Ditarik".');
@@ -201,19 +198,23 @@ export function localParts(now = new Date()) {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}`, hour: Number(parts.hour) };
 }
 
-// Tanggal & waktu tanda tangan bagian III diisi waktu simpan bila dikosongkan.
-export function stampClosing(p, now = new Date()) {
+// Tanggal & waktu tanda tangan bagian III diisi waktu simpan bila dikosongkan. Saat ditutup lewat akun,
+// akun penutup tercatat sebagai tanda tangan Penanggung Jawab Teknis; nama teknisi diambil dari
+// mekanik yang tap di box bila belum diisi.
+export function stampClosing(p, now = new Date(), closer = null) {
   if (!p.selesai.status) return p;
   const { date, time } = localParts(now);
   const s = { ...p.selesai };
+  if (closer) {
+    if (!s.pjTeknis) s.pjTeknis = String(closer.nama || '').slice(0, 100);
+    if (!s.teknisi) s.teknisi = namesOf(p.personel, 'mekanik').join(', ').slice(0, 100);
+  }
   if (!s.teknisiTanggal) s.teknisiTanggal = date;
   if (!s.teknisiWaktu) s.teknisiWaktu = time;
   if (!s.pjTanggal) s.pjTanggal = date;
   if (!s.pjWaktu) s.pjWaktu = time;
-  return { ...p, selesai: s };
+  return { ...p, selesai: s, ...(closer ? { penutupan: signatureOf(closer, now) } : {}) };
 }
-
-const namesOf = (people, role) => people.filter(p => p.role === role).map(p => p.nama).filter(Boolean);
 
 function appendNames(current, names) {
   const known = new Set(String(current || '').split(',').map(n => n.trim()).filter(Boolean));
@@ -222,45 +223,60 @@ function appendNames(current, names) {
   return [current, ...added].filter(Boolean).join(', ').slice(0, 1000);
 }
 
-// Draft dari sesi box: tanggal, unit, kolom shift berjalan, dan personel yang tap. Sisanya diisi pengawas.
+// Draft dari sesi box: tanggal, unit, kolom shift berjalan, dan personel yang tap. Sisanya diisi mekanik.
 // Shift I = 06.00-17.59, Shift II = 18.00-05.59 waktu lokal (pola 2 shift sistem); Shift III untuk lanjutan.
+// "Dilakukan oleh" = mekanik; "Penanggung jawab" = foreman/group leader (pengawas bila tidak ada foreman).
 export function buildPermitDraft({ unit, people, now = new Date() }) {
   const { date, time, hour } = localParts(now);
   const column = hour >= 6 && hour < 18 ? 'I' : 'II';
   const payload = emptyPermitPayload(date);
   const unitName = String(unit || '').trim().slice(0, 100);
   if (unitName) payload.mesin = [{ nama: unitName, terisolasi: false, kembaliNormal: false }];
-  payload.shift[column] = {
-    teknisi: appendNames('', namesOf(people, 'teknisi')),
-    groupLeader: appendNames('', namesOf(people, 'pengawas')),
-    tanggal: date,
-    waktu: time
-  };
+  const groupLeader = appendNames('', leaderNames(people));
+  payload.shift[column] = { teknisi: appendNames('', namesOf(people, 'mekanik')), groupLeader, tanggal: date, waktu: time };
   payload.shiftOtomatis = column;
+  payload.glOtomatis = groupLeader;
   payload.personel = people;
   return payload;
 }
 
 // Personel yang tap belakangan ditambahkan sekali; nama ikut ke kolom shift selama izin masih DRAFT.
+// Pengawas yang terisi otomatis sebagai penanggung jawab digantikan foreman yang tap belakangan,
+// kecuali kolom itu sudah diubah manual.
 export function mergePermitPeople(payload, people, isDraft) {
   const known = new Set((payload.personel || []).map(p => p.sid));
   const added = people.filter(p => !known.has(p.sid));
   if (!added.length) return null;
-  const next = { ...payload, personel: [...(payload.personel || []), ...added] };
+  const personel = [...(payload.personel || []), ...added];
+  const next = { ...payload, personel };
   const column = payload.shiftOtomatis;
   if (isDraft && SHIFTS.includes(column)) {
     const row = payload.shift?.[column] || { teknisi: '', groupLeader: '', tanggal: '', waktu: '' };
-    next.shift = {
-      ...payload.shift,
-      [column]: {
-        ...row,
-        teknisi: appendNames(row.teknisi, namesOf(added, 'teknisi')),
-        groupLeader: appendNames(row.groupLeader, namesOf(added, 'pengawas'))
-      }
-    };
+    const untouched = (row.groupLeader || '') === (payload.glOtomatis ?? row.groupLeader ?? '');
+    const groupLeader = untouched ? appendNames('', leaderNames(personel)) : appendNames(row.groupLeader, namesOf(added, 'foreman'));
+    next.shift = { ...payload.shift, [column]: { ...row, teknisi: appendNames(row.teknisi, namesOf(added, 'mekanik')), groupLeader } };
+    if (untouched) next.glOtomatis = groupLeader;
   }
   return next;
 }
+
+// Mekanik dan foreman hanya melihat/mengubah izin yang ia ikuti (tap di sesinya) atau ia buat.
+export function permitInvolves(row, payload, viewer) {
+  return row.created_by === viewer.sid || (payload.personel || []).some(p => p.sid === viewer.sid);
+}
+
+export function permitPermissions(row, payload, viewer) {
+  const closed = row.status === 'DITUTUP';
+  const writer = ['admin', 'pengawas'].includes(viewer.role) || (viewer.role === 'teknisi' && permitInvolves(row, payload, viewer));
+  return {
+    ubah: writer && !closed,
+    setujui: writer && isLeader(viewer) && row.status === 'MENUNGGU',
+    tutup: writer && isLeader(viewer) && !closed,
+    hapus: viewer.role === 'admin' || (viewer.role === 'pengawas' && row.status === 'DRAFT')
+  };
+}
+
+export const canSeePermit = (row, payload, viewer) => seesAllForms(viewer) || permitInvolves(row, payload, viewer);
 
 export function parsePermitPayload(row) {
   let payload = row.payload;
@@ -276,11 +292,13 @@ function gapsOf(payload) {
   catch { return []; }
 }
 
-export function formatPermit(row) {
+export function formatPermit(row, { viewer = null, taps = [] } = {}) {
   const payload = parsePermitPayload(row);
   return {
     ...payload,
     kekurangan: row.status === 'DRAFT' ? gapsOf(payload) : [],
+    tapKartu: taps,
+    izin: viewer ? permitPermissions(row, payload, viewer) : { ubah: false, setujui: false, tutup: false, hapus: false },
     id: Number(row.id),
     status: row.status,
     idBox: row.id_box ?? null,

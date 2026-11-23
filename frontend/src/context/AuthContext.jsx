@@ -3,7 +3,13 @@ import api, { setCsrfToken, getSessionVersion, beginAuthChange, cancelAuthChange
 import userService from '../services/userService';
 import { normalizeUserRole } from '../utils/helpers';
 import { AuthContext } from './AuthState';
-const normalize = user => ({ ...user, rfidUid: user.rfid_uid || '', role: normalizeUserRole(user.role) });
+// Foreman/group leader tersimpan sebagai "MEKANIK FOREMAN" (role sistem teknisi); jabatannya dibedakan untuk tampilan.
+const jabatanOf = (rawRole, role) => (role === 'teknisi' ? (/FOREMAN|GROUP\s*LEADER|\bGL\b/i.test(String(rawRole || '')) ? 'foreman' : 'mekanik') : role);
+const normalize = user => {
+  const role = normalizeUserRole(user.role);
+  return { ...user, rfidUid: user.rfid_uid || '', role, jabatan: jabatanOf(user.role, role) };
+};
+const landingTab = role => (role === 'teknisi' ? 'izin-loto' : role === 'fuelman' ? 'profil-tab' : 'dashboard');
 export function AuthProvider({ children }) {
   const [sessionUser, setSessionUser] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -19,7 +25,7 @@ export function AuthProvider({ children }) {
         setCsrfToken(data.csrfToken);
         const user = normalize(data.data);
         setSessionUser(user);
-        setActiveTab(user.role === 'teknisi' ? 'riwayat-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
+        setActiveTab(landingTab(user.role));
       }
     }).catch(() => {});
     return () => { active = false; window.removeEventListener('eloto-session-expired', expire); };
@@ -32,7 +38,7 @@ export function AuthProvider({ children }) {
       const user = normalize(result.data);
       setCsrfToken(result.csrfToken);
       setSessionUser(user);
-      setActiveTab(user.role === 'teknisi' ? 'riwayat-tab' : user.role === 'fuelman' ? 'profil-tab' : 'dashboard');
+      setActiveTab(landingTab(user.role));
       toast(`Selamat Datang: ${user.nama}`, 'ok');
     } catch (error) {
       if (version !== getSessionVersion()) return;

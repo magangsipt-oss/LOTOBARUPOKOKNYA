@@ -1,6 +1,7 @@
 import pool from '../config/database.js';
 import { normalizeRole } from '../security/session.js';
 import { buildSessionDraft, mergeSessionPeople, parseDOPPayload } from '../domain/dopPlan.js';
+import { jabatanOf } from '../domain/personnel.js';
 
 const DOPPlanModel = {
   getAll: async () => {
@@ -55,7 +56,7 @@ export async function loadSessionPeople(c, idBox, session) {
   const seen = new Set();
   return rows
     .filter(row => !seen.has(row.sid) && seen.add(row.sid))
-    .map(row => ({ sid: row.sid, nama: row.nama, role: normalizeRole(row.role) || String(row.role || '') }));
+    .map(row => ({ sid: row.sid, nama: row.nama, role: normalizeRole(row.role) || String(row.role || ''), jabatan: jabatanOf(row.role) }));
 }
 
 // Dipanggil di dalam transaksi telemetri (baris box sudah terkunci) setiap antrean sesi berubah.

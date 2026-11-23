@@ -196,7 +196,7 @@ test('the first tap of a box session creates one DOP draft for that session', as
   assert.equal(insert[1][3], 'BOX-1');
   assert.equal(insert[1][4], 4);
   const payload = JSON.parse(insert[1][2]);
-  assert.deepEqual(payload.personel, [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas' }]);
+  assert.deepEqual(payload.personel, [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas', jabatan: 'pengawas' }]);
 });
 
 test('later taps update the existing session draft instead of creating another', async () => {

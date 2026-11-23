@@ -15,6 +15,7 @@ const Users = lazy(() => import('./pages/Users'));
 const BleTagManager = lazy(() => import('./pages/BleTagManager'));
 const DOPPlan = lazy(() => import('./pages/DOPPlan'));
 const LotoPermit = lazy(() => import('./pages/LotoPermit'));
+const DaftarHadir = lazy(() => import('./pages/DaftarHadir'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -226,8 +227,10 @@ function AppContent() {
             </div>
           )}
 
-          {/* TAB: IZIN LOTO F-PLT-116 (admin / pengawas; safety hanya membaca) */}
-          {activeTab === 'izin-loto' && ['admin', 'pengawas', 'safety'].includes(sessionUser?.role) && <LotoPermit />}
+          {/* TAB: FORMULIR LAPANGAN — Izin LOTO F-PLT-116 dan Daftar Hadir F-HSE-105
+              (admin / pengawas / mekanik-foreman; safety hanya membaca; hak per formulir dari server) */}
+          {activeTab === 'izin-loto' && ['admin', 'pengawas', 'safety', 'teknisi'].includes(sessionUser?.role) && <LotoPermit />}
+          {activeTab === 'daftar-hadir' && ['admin', 'pengawas', 'safety', 'teknisi'].includes(sessionUser?.role) && <DaftarHadir />}
 
           {/* TAB: RIWAYAT LAPORAN */}
           {activeTab === 'riwayat-tab' && <Logs />}

@@ -61,14 +61,21 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
 
   // Profil dibuka lewat kartu "Pengguna aktif", bukan item menu.
   const navItems = [];
+  const formItems = [
+    { id: 'izin-loto', icon: 'fa-file-signature', label: 'Izin LOTO' },
+    { id: 'daftar-hadir', icon: 'fa-users-line', label: 'Daftar Hadir' }
+  ];
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
     navItems.push({ id: 'dop-plan', icon: 'fa-clipboard-list', label: 'DOP Plan' });
-    navItems.push({ id: 'izin-loto', icon: 'fa-file-signature', label: 'Izin LOTO' });
+    navItems.push(...formItems);
   } else if (sessionUser?.role === 'safety') {
-    // Safety hanya mengawasi status boks dan membaca izin LOTO.
+    // Safety hanya mengawasi status boks dan membaca formulir lapangan.
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
-    navItems.push({ id: 'izin-loto', icon: 'fa-file-signature', label: 'Izin LOTO' });
+    navItems.push(...formItems);
+  } else if (sessionUser?.role === 'teknisi') {
+    // Mekanik dan foreman mengisi formulir dari sesi box yang mereka ikuti.
+    navItems.push(...formItems);
   }
   navItems.push({ id: 'riwayat-tab', icon: 'fa-clock-rotate-left', label: 'Riwayat' });
   if (sessionUser?.role === 'admin') {

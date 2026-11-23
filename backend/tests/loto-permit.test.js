@@ -5,8 +5,10 @@ import authorization from '../middleware/authorization.js';
 import LotoPermitModel, { syncSessionPermit } from '../models/lotoPermitModel.js';
 import LotoPermitController from '../controllers/lotoPermitController.js';
 import {
-  activationGaps, buildPermitDraft, mergePermitPeople, resolvePermitStatus, stampClosing, validateLotoPermitPayload
+  activationGaps, approvalValid, approvePermit, buildPermitDraft, canSeePermit, mergePermitPeople, permitPermissions,
+  resolvePermitStatus, stampClosing, validateLotoPermitPayload
 } from '../domain/lotoPermit.js';
+import { jabatanOf } from '../domain/personnel.js';
 
 const originalMethods = { ...LotoPermitModel };
 afterEach(() => Object.assign(LotoPermitModel, originalMethods));
@@ -55,7 +57,13 @@ function closedPayload() {
   return p;
 }
 
-const status = (value, options) => resolvePermitStatus(validateLotoPermitPayload(value), options);
+const leader = { sid: 'GL1', nama: 'Gilang', role: 'teknisi', jabatan: 'foreman' };
+const mechanic = { sid: 'MEK1', nama: 'Andi', role: 'teknisi', jabatan: 'mekanik' };
+// Status setelah penanggung jawab menyetujui (bila isinya sudah lengkap).
+const status = (value, options) => {
+  const p = validateLotoPermitPayload(value);
+  return resolvePermitStatus(activationGaps(p).length ? p : approvePermit(p, leader), options);
+};
 
 test('validation rejects malformed fields and contradictory LOTO states', () => {
   assert.throws(() => validateLotoPermitPayload(null), { status: 400 });
@@ -91,7 +99,7 @@ test('the document header is filled per permit, starts from the current form rev
 
   const revised = validateLotoPermitPayload({ ...activePayload(), dokumen: { nomor: ' F-PLT-116 ', tanggalEfektif: '2026-01-05', revisi: '1', halaman: '1 dari 1' } });
   assert.deepEqual(revised.dokumen, { nomor: 'F-PLT-116', tanggalEfektif: '2026-01-05', revisi: '1', halaman: '1 dari 1' });
-  assert.equal(resolvePermitStatus(revised), 'AKTIF');
+  assert.equal(resolvePermitStatus(revised), 'MENUNGGU');
 
   const blank = validateLotoPermitPayload({ ...activePayload(), dokumen: { nomor: '', tanggalEfektif: '', revisi: '', halaman: '' } });
   assert.ok(activationGaps(blank).some(g => g.startsWith('kepala dokumen')));
@@ -101,7 +109,34 @@ test('the document header is filled per permit, starts from the current form rev
   assert.throws(() => validateLotoPermitPayload({ ...activePayload(), dokumen: 'F-PLT-116' }), /kepala dokumen/);
 });
 
-test('a permit stays DRAFT until isolation is complete, then becomes AKTIF', () => {
+test('a complete permit waits for the group leader, and changing the isolation cancels the approval', () => {
+  const complete = validateLotoPermitPayload(activePayload());
+  assert.equal(resolvePermitStatus(complete), 'MENUNGGU');
+  assert.throws(() => approvePermit(complete, mechanic), { status: 403 });
+  assert.throws(() => approvePermit(validateLotoPermitPayload({ ...activePayload(), lokasi: '' }), leader), /belum bisa disetujui/);
+
+  const approved = approvePermit(complete, leader, new Date('2026-11-23T00:20:00Z'));
+  assert.equal(resolvePermitStatus(approved), 'AKTIF');
+  assert.deepEqual({ ...approved.persetujuan, sidik: undefined }, { sid: 'GL1', nama: 'Gilang', jabatan: 'foreman', waktu: '2026-11-23T00:20:00.000Z', sidik: undefined });
+
+  // Releasing LOTO at the end of the job keeps the approval; editing what was isolated does not.
+  const pulled = { ...approved, titik: approved.titik.map(t => ({ ...t, ditarik: true })) };
+  assert.equal(approvalValid(pulled), true);
+  const changed = { ...approved, titik: [...approved.titik, { nama: 'Valve tambahan', dipasang: true, ditarik: false }] };
+  assert.equal(approvalValid(changed), false);
+  assert.equal(resolvePermitStatus(changed), 'MENUNGGU');
+
+  // The database stores JSON objects with its own key order; the approval must survive that round trip.
+  const reorder = value => (Array.isArray(value) ? value.map(reorder)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).reverse().map(([k, v]) => [k, reorder(v)])) : value);
+  assert.equal(approvalValid(reorder(approved)), true);
+  assert.equal(approvalValid(reorder(pulled)), true);
+
+  const closedUnapproved = validateLotoPermitPayload(closedPayload());
+  assert.throws(() => resolvePermitStatus(closedUnapproved), { status: 409, message: /belum disetujui/ });
+});
+
+test('a permit stays DRAFT until isolation is complete, then becomes AKTIF once approved', () => {
   assert.equal(status(activePayload()), 'AKTIF');
 
   const notPlaced = activePayload();
@@ -158,6 +193,49 @@ test('closing sign-off date and time default to the save time', () => {
   assert.equal(stamped.selesai.pjWaktu, '09:30');
 });
 
+test('closing through an account signs as Penanggung Jawab Teknis and names the mechanics who tapped', () => {
+  const value = closedPayload();
+  value.selesai = { ...value.selesai, teknisi: '', pjTeknis: '' };
+  const payload = { ...validateLotoPermitPayload(value), personel: [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas' }, mechanic, leader] };
+  const closed = stampClosing(payload, new Date('2026-11-23T03:00:00Z'), leader);
+  assert.equal(closed.selesai.pjTeknis, 'Gilang');
+  assert.equal(closed.selesai.teknisi, 'Andi');
+  assert.deepEqual(closed.penutupan, { sid: 'GL1', nama: 'Gilang', jabatan: 'foreman', waktu: '2026-11-23T03:00:00.000Z' });
+  assert.equal(resolvePermitStatus(approvePermit(closed, leader)), 'DITUTUP');
+});
+
+test('the group leader is the foreman who tapped; a supervisor only stands in until a foreman arrives', () => {
+  assert.equal(jabatanOf('MEKANIK FOREMAN'), 'foreman');
+  assert.equal(jabatanOf('MEKANIK'), 'mekanik');
+  assert.equal(jabatanOf('PENGAWAS'), 'pengawas');
+  const spv = { sid: 'SPV1', nama: 'Budi', role: 'pengawas', jabatan: 'pengawas' };
+  const draft = buildPermitDraft({ unit: 'U', people: [spv], now: new Date('2026-11-23T00:15:00Z') });
+  assert.equal(draft.shift.I.groupLeader, 'Budi');
+  const merged = mergePermitPeople(draft, [spv, mechanic, leader], true);
+  assert.equal(merged.shift.I.groupLeader, 'Gilang');
+  assert.equal(merged.shift.I.teknisi, 'Andi');
+
+  // A leader typed by hand is kept; the foreman who taps is added next to it.
+  const edited = { ...draft, shift: { ...draft.shift, I: { ...draft.shift.I, groupLeader: 'Hadi' } } };
+  assert.equal(mergePermitPeople(edited, [spv, leader], true).shift.I.groupLeader, 'Hadi, Gilang');
+});
+
+test('mechanics see and fill only the permits they took part in; only leaders approve and close', () => {
+  const payload = { personel: [mechanic, leader] };
+  const row = { created_by: 'SYSTEM', status: 'MENUNGGU' };
+  const outsider = { sid: 'MEK9', nama: 'Eko', role: 'teknisi', jabatan: 'mekanik' };
+  assert.equal(canSeePermit(row, payload, mechanic), true);
+  assert.equal(canSeePermit(row, payload, outsider), false);
+  assert.equal(canSeePermit(row, payload, { sid: 'S1', role: 'safety', jabatan: 'safety' }), true);
+  assert.equal(canSeePermit({ ...row, created_by: 'MEK9' }, { personel: [] }, outsider), true);
+
+  assert.deepEqual(permitPermissions(row, payload, mechanic), { ubah: true, setujui: false, tutup: false, hapus: false });
+  assert.deepEqual(permitPermissions(row, payload, leader), { ubah: true, setujui: true, tutup: true, hapus: false });
+  assert.deepEqual(permitPermissions(row, payload, { sid: 'S1', role: 'safety', jabatan: 'safety' }), { ubah: false, setujui: false, tutup: false, hapus: false });
+  assert.equal(permitPermissions({ ...row, status: 'DITUTUP' }, payload, leader).ubah, false);
+  assert.equal(permitPermissions({ ...row, status: 'DRAFT' }, payload, { sid: 'P1', role: 'pengawas', jabatan: 'pengawas' }).hapus, true);
+});
+
 const people = [
   { sid: 'SPV1', nama: 'Budi', role: 'pengawas' },
   { sid: 'MEK1', nama: 'Andi', role: 'teknisi' }
@@ -209,7 +287,7 @@ test('the first tap of a box session creates one permit draft; later taps update
   await syncSessionPermit(first, { idBox: 'BOX-1', session: 4, unit: 'BMO1-MTL-0009' });
   const insert = first.calls.find(([sql]) => sql.startsWith('INSERT INTO loto_permits'));
   assert.deepEqual(insert[1].slice(0, 2), ['BOX-1', 4]);
-  assert.deepEqual(JSON.parse(insert[1][3]).personel, [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas' }]);
+  assert.deepEqual(JSON.parse(insert[1][3]).personel, [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas', jabatan: 'pengawas' }]);
 
   const existing = [{ id: 9, status: 'DRAFT', payload: JSON.stringify(buildPermitDraft({ unit: 'U', people: [people[0]] })) }];
   const later = draftConnection({ queue: [{ sid: 'SPV1', nama: 'Budi', role: 'pengawas' }, { sid: 'MEK1', nama: 'Andi', role: 'mekanik' }], existing });
@@ -231,19 +309,26 @@ function authorize(method, path, role, body = {}) {
   return allowed;
 }
 
-test('permits are readable by admin, pengawas and safety, and writable only by admin and pengawas', () => {
-  for (const role of ['admin', 'pengawas', 'safety']) assert.equal(authorize('GET', '/loto-permits', role), true, role);
-  for (const role of ['teknisi', 'fuelman']) assert.equal(authorize('GET', '/loto-permits/3', role), false, role);
-  for (const role of ['admin', 'pengawas']) {
-    assert.equal(authorize('POST', '/loto-permits', role), true, role);
-    assert.equal(authorize('PUT', '/loto-permits/3', role), true, role);
-    assert.equal(authorize('DELETE', '/loto-permits/3', role), true, role);
+test('field forms are open to mechanics for filling and signing; deleting stays with pengawas and admin', () => {
+  for (const base of ['/loto-permits', '/briefings']) {
+    for (const role of ['admin', 'pengawas', 'safety', 'teknisi']) assert.equal(authorize('GET', `${base}/3`, role), true, `${base} ${role}`);
+    assert.equal(authorize('GET', base, 'fuelman'), false, base);
+    for (const role of ['admin', 'pengawas', 'teknisi']) {
+      assert.equal(authorize('POST', base, role), true, `${base} ${role}`);
+      assert.equal(authorize('PUT', `${base}/3`, role), true, `${base} ${role}`);
+    }
+    for (const role of ['safety', 'fuelman']) {
+      assert.equal(authorize('POST', base, role), false, `${base} ${role}`);
+      assert.equal(authorize('PUT', `${base}/3`, role), false, `${base} ${role}`);
+    }
+    for (const role of ['admin', 'pengawas']) assert.equal(authorize('DELETE', `${base}/3`, role), true, `${base} ${role}`);
+    assert.equal(authorize('DELETE', `${base}/3`, 'teknisi'), false, base);
+    assert.equal(authorize('PUT', `${base}/abc`, 'pengawas'), false, base);
   }
-  for (const role of ['safety', 'teknisi']) {
-    assert.equal(authorize('POST', '/loto-permits', role), false, role);
-    assert.equal(authorize('PUT', '/loto-permits/3', role), false, role);
-  }
-  assert.equal(authorize('PUT', '/loto-permits/abc', 'pengawas'), false);
+  assert.equal(authorize('POST', '/loto-permits/3/approve', 'teknisi'), true);
+  assert.equal(authorize('POST', '/loto-permits/3/approve', 'safety'), false);
+  assert.equal(authorize('POST', '/briefings/3/sign', 'pengawas'), true);
+  assert.equal(authorize('POST', '/briefings/3/sign', 'safety'), false);
 });
 
 test('update controller validates input, reports missing permits and surfaces safety conflicts', async () => {

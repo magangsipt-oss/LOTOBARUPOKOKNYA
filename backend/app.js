@@ -19,6 +19,7 @@ import streamRoutes from './routes/streamRoutes.js';
 import lotoComplianceRoutes from './routes/lotoComplianceRoutes.js';
 import dopPlanRoutes from './routes/dopPlanRoutes.js';
 import lotoPermitRoutes from './routes/lotoPermitRoutes.js';
+import briefingRoutes from './routes/briefingRoutes.js';
 import { testConnection } from './config/database.js';
 import authentication from './middleware/authentication.js';
 import authorization from './middleware/authorization.js';
@@ -137,6 +138,7 @@ export function createApp() {
   app.use('/api/loto', lotoComplianceRoutes);
   app.use('/api/dop-plans', dopPlanRoutes);
   app.use('/api/loto-permits', lotoPermitRoutes);
+  app.use('/api/briefings', briefingRoutes);
   app.use((_req, res) => res.status(404).json({ success: false, message: 'Endpoint tidak ditemukan.' }));
   app.use((error, _req, res, _next) => {
     if (res.headersSent) return res.destroy();

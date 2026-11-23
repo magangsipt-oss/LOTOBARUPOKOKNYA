@@ -1,10 +1,31 @@
 import pool from '../config/database.js';
 import { loadSessionPeople } from './dopPlanModel.js';
+import { loadSessionTaps } from './sessionTaps.js';
 import {
-  buildPermitDraft, mergePermitPeople, parsePermitPayload, resolvePermitStatus, stampClosing
+  approvalValid, approvePermit, buildPermitDraft, canSeePermit, mergePermitPeople, parsePermitPayload,
+  permitPermissions, resolvePermitStatus, stampClosing
 } from '../domain/lotoPermit.js';
+import { isLeader } from '../domain/personnel.js';
 
 const conflict = message => Object.assign(new Error(message), { status: 409 });
+const forbidden = message => Object.assign(new Error(message), { status: 403 });
+
+// Kolom yang dikelola server (dari box dan dari tanda tangan akun) tidak pernah diambil dari browser.
+function keepServerFields(payload, stored) {
+  const next = { ...payload };
+  for (const key of ['personel', 'shiftOtomatis', 'glOtomatis', 'persetujuan', 'penutupan']) {
+    if (stored[key] !== undefined) next[key] = stored[key];
+  }
+  if (next.persetujuan && !approvalValid(next)) delete next.persetujuan;
+  return next;
+}
+
+async function sessionIsActive(c, current) {
+  if (!current.id_box || current.session_id == null) return false;
+  // Status sesi box dibaca tanpa kunci agar urutan kunci tidak berlawanan dengan transaksi telemetri.
+  const [boxes] = await c.query('SELECT active_session_id FROM boxes WHERE id_box = ?', [current.id_box]);
+  return boxes.length > 0 && Number(boxes[0].active_session_id) === Number(current.session_id);
+}
 
 // session_active: sesi box milik izin ini masih terbuka (personel mungkin masih di dalam).
 const SELECT_PERMIT = `SELECT p.id, p.id_box, p.session_id, p.status, p.payload, p.created_by, p.updated_by,
@@ -25,8 +46,11 @@ const LotoPermitModel = {
 
   getById: async id => findById(pool, id),
 
+  sessionTaps: async rows => loadSessionTaps(pool, rows),
+
   // Izin manual (tanpa box), misalnya pekerjaan yang tidak memakai box E-LOTO.
   create: async ({ payload, createdBy }) => {
+    if (payload.selesai.status) throw conflict('Izin baru belum disetujui penanggung jawab, belum bisa ditutup.');
     const stamped = stampClosing(payload);
     const status = resolvePermitStatus(stamped);
     const [result] = await pool.query(
@@ -37,33 +61,55 @@ const LotoPermitModel = {
     return findById(pool, result.insertId);
   },
 
-  // Personel dari box dan kolom shift otomatis dipertahankan; izin yang sudah ditutup tidak bisa diubah.
-  update: async (id, payload, updatedBy) => {
+  // Izin yang sudah ditutup tidak bisa diubah. Mekanik hanya mengubah izin yang ia ikuti dan tidak
+  // bisa menutupnya; penutupan (bagian III) tercatat atas nama akun foreman/pengawas yang menutup.
+  update: async (id, payload, viewer) => {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      // Hanya baris izin yang dikunci; status sesi box dibaca tanpa kunci agar urutan kunci
-      // tidak berlawanan dengan transaksi telemetri (box dulu, lalu izin).
-      const [locked] = await c.query('SELECT id, status, payload, id_box, session_id FROM loto_permits WHERE id = ? FOR UPDATE', [id]);
+      // Hanya baris izin yang dikunci (urutan kunci telemetri: box dulu, lalu izin).
+      const [locked] = await c.query('SELECT id, status, payload, id_box, session_id, created_by FROM loto_permits WHERE id = ? FOR UPDATE', [id]);
       if (!locked.length) { await c.commit(); return null; }
       const current = locked[0];
-      if (current.status === 'DITUTUP') throw conflict('Izin LOTO sudah ditutup dan tidak bisa diubah.');
-      let sessionActive = false;
-      if (current.id_box && current.session_id != null) {
-        const [boxes] = await c.query('SELECT active_session_id FROM boxes WHERE id_box = ?', [current.id_box]);
-        sessionActive = boxes.length > 0 && Number(boxes[0].active_session_id) === Number(current.session_id);
-      }
       const stored = parsePermitPayload(current);
-      const merged = stampClosing({
-        ...payload,
-        ...(stored.personel ? { personel: stored.personel } : {}),
-        ...(stored.shiftOtomatis ? { shiftOtomatis: stored.shiftOtomatis } : {})
-      });
+      if (!canSeePermit(current, stored, viewer)) { await c.commit(); return null; }
+      if (current.status === 'DITUTUP') throw conflict('Izin LOTO sudah ditutup dan tidak bisa diubah.');
+      if (!permitPermissions(current, stored, viewer).ubah) throw forbidden('Anda tidak bisa mengubah izin LOTO ini.');
+      const closing = Boolean(payload.selesai.status) && payload.selesai.status !== (stored.selesai?.status || '');
+      if (closing && !isLeader(viewer)) throw forbidden('Penutupan izin (bagian III) dilakukan foreman/group leader atau pengawas.');
+      const sessionActive = await sessionIsActive(c, current);
+      const merged = stampClosing(keepServerFields(payload, stored), new Date(), closing ? viewer : null);
       const status = resolvePermitStatus(merged, { sessionActive });
       await c.query(
         'UPDATE loto_permits SET permit_date = ?, status = ?, payload = ?, updated_by = ?, updated_at = NOW() WHERE id = ?',
-        [merged.tanggalISO, status, JSON.stringify(merged), updatedBy, id]
+        [merged.tanggalISO, status, JSON.stringify(merged), viewer.sid, id]
       );
+      const row = await findById(c, id);
+      await c.commit();
+      return row;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  },
+
+  // Tanda tangan "Penanggung jawab" lewat akun: izin yang lengkap menjadi AKTIF.
+  approve: async (id, viewer) => {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [locked] = await c.query('SELECT id, status, payload, id_box, session_id, created_by FROM loto_permits WHERE id = ? FOR UPDATE', [id]);
+      if (!locked.length) { await c.commit(); return null; }
+      const current = locked[0];
+      const stored = parsePermitPayload(current);
+      if (!canSeePermit(current, stored, viewer)) { await c.commit(); return null; }
+      if (current.status === 'DITUTUP') throw conflict('Izin LOTO sudah ditutup.');
+      if (current.status === 'AKTIF' && approvalValid(stored)) throw conflict('Izin ini sudah disetujui.');
+      if (!permitPermissions({ ...current, status: 'MENUNGGU' }, stored, viewer).setujui) {
+        throw forbidden('Persetujuan izin dilakukan foreman/group leader atau pengawas.');
+      }
+      const approved = approvePermit(stored, viewer);
+      const status = resolvePermitStatus(approved, { sessionActive: await sessionIsActive(c, current) });
+      await c.query('UPDATE loto_permits SET status = ?, payload = ?, updated_by = ?, updated_at = NOW() WHERE id = ?',
+        [status, JSON.stringify(approved), viewer.sid, id]);
       const row = await findById(c, id);
       await c.commit();
       return row;
