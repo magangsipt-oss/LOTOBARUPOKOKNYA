@@ -25,6 +25,11 @@ const ALTERNATIF = [
 const inputCls = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/30 disabled:bg-slate-100 disabled:text-slate-500';
 const labelCls = 'mb-1 block text-xs font-semibold text-slate-700';
 const sectionCls = 'space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5';
+// Tabel layar meniru tabel formulir kertas; di layar sempit tabel digeser ke samping, bukan halamannya.
+const tableWrapCls = 'relative overflow-x-auto rounded-xl border border-slate-200';
+const thCls = 'border border-slate-200 bg-slate-50 px-2 py-2 text-center text-[11px] font-bold leading-tight text-slate-700';
+const tdCls = 'border border-slate-200 p-0 align-middle';
+const cellInputCls = 'block w-full min-h-11 resize-none border-0 bg-transparent px-2 py-2 text-sm text-slate-900 placeholder:text-slate-300 focus:bg-red-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-500/40 disabled:text-slate-500';
 
 const toast = (msg, type = 'ok') => window.dispatchEvent(new CustomEvent('eloto-toast', { detail: { msg, type } }));
 const errorMessage = error => error?.response?.data?.message || error?.message || 'Gagal berkomunikasi dengan server.';
@@ -71,6 +76,16 @@ function Check({ checked, onChange, disabled, label, title }) {
       <input type="checkbox" className="h-5 w-5 accent-red-600" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
       {label}
     </label>
+  );
+}
+
+function CellCheck({ checked, onChange, disabled, label, title }) {
+  return (
+    <td className={`${tdCls} text-center`}>
+      <label title={title} className={`flex min-h-11 items-center justify-center ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+        <input type="checkbox" aria-label={label} className="h-5 w-5 accent-red-600" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+      </label>
+    </td>
   );
 }
 
@@ -271,6 +286,7 @@ export default function LotoPermit() {
     setFormError('');
     requestAnimationFrame(() => topRef.current?.scrollIntoView({ block: 'start' }));
   };
+  const openNew = () => open({ id: null, status: 'DRAFT' });
   const close = () => {
     if (dirty && !window.confirm('Perubahan belum disimpan. Tetap keluar?')) return;
     setEditing(null);
@@ -341,8 +357,8 @@ export default function LotoPermit() {
             <p className="mt-1 text-xs text-slate-500">Formulir F-PLT-116. Draft dibuat otomatis saat pengawas tap di box; lengkapi titik isolasi sebelum pekerjaan dimulai.</p>
           </div>
           {canWrite && (
-            <button type="button" onClick={() => open({ id: null, status: 'DRAFT' })} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 text-xs font-bold text-red-700 hover:bg-red-50">
-              <i className="fa-solid fa-plus" aria-hidden="true"></i>Izin manual (tanpa box)
+            <button type="button" onClick={openNew} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 text-xs font-bold text-red-700 hover:bg-red-50">
+              <i className="fa-solid fa-plus" aria-hidden="true"></i>Isi formulir baru (manual)
             </button>
           )}
         </div>
@@ -367,7 +383,12 @@ export default function LotoPermit() {
                 <li><b>Setelah semua personel tap keluar</b> di box: centang <i>LOTO Ditarik</i> &amp; <i>Kembali Normal</i>, isi bagian III → status <b>Ditutup</b>.</li>
                 <li>Cetak formulir F-PLT-116 bila perlu tanda tangan basah.</li>
               </ol>
-              <p className="text-xs text-slate-500">Pekerjaan tanpa box: pakai tombol <b>Izin manual (tanpa box)</b>.</p>
+              <p className="text-xs text-slate-500">Tabel formulir (mesin, titik isolasi, shift, penutupan) tampil setelah izin dibuka. Untuk pekerjaan tanpa box, atau untuk melihat formulirnya sekarang, isi secara manual:</p>
+              {canWrite && (
+                <button type="button" onClick={openNew} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-red-600 px-5 text-xs font-bold text-white shadow-md shadow-red-500/20 hover:bg-red-700">
+                  <i className="fa-solid fa-file-pen" aria-hidden="true"></i>Buka formulir F-PLT-116
+                </button>
+              )}
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Tidak ada izin dengan status ini.</div>
@@ -469,16 +490,30 @@ export default function LotoPermit() {
 
         <section className={sectionCls}>
           <h2 className="text-sm font-bold text-slate-800">I. Mesin/alat/unit/instalasi yang akan diisolasi</h2>
-          {form.mesin.map((m, i) => (
-            <div key={i} className="grid grid-cols-1 items-center gap-1 border-b border-slate-100 pb-2 last:border-0 sm:grid-cols-[1fr_auto_auto_auto] sm:gap-3">
-              <input aria-label={`Mesin ${i + 1}`} placeholder={`${i + 1}. Nama mesin/unit`} className={inputCls} maxLength={100} value={m.nama} onChange={e => setRow('mesin', i, { nama: e.target.value })} />
-              <div className="flex flex-wrap items-center gap-x-3 sm:contents">
-              <Check checked={m.terisolasi} label="Terisolasi" onChange={v => setRow('mesin', i, v ? { terisolasi: true } : { terisolasi: false, kembaliNormal: false })} />
-              <Check checked={m.kembaliNormal} label="Kembali normal" disabled={!m.terisolasi || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('mesin', i, { kembaliNormal: v })} />
-              <button type="button" onClick={() => removeRow('mesin', i, blankMesin)} aria-label={`Hapus mesin ${i + 1}`} className="ml-auto min-h-10 rounded-lg px-3 text-slate-400 hover:text-red-600 sm:ml-0"><i className="fa-solid fa-trash" aria-hidden="true"></i></button>
-              </div>
-            </div>
-          ))}
+          <div className={tableWrapCls}>
+            <table className="w-full min-w-[300px] border-collapse">
+              <thead>
+                <tr>
+                  <th scope="col" className={`${thCls} w-8`}>No</th>
+                  <th scope="col" className={`${thCls} text-left`}>Mesin/alat/unit/instalasi</th>
+                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>Terisolasi</th>
+                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>Kembali normal</th>
+                  <th scope="col" className={`${thCls} w-9`}><span className="sr-only">Hapus baris</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {form.mesin.map((m, i) => (
+                  <tr key={i}>
+                    <td className={`${tdCls} text-center text-xs font-semibold text-slate-500`}>{i + 1}</td>
+                    <td className={tdCls}><input aria-label={`Mesin ${i + 1}`} placeholder="Nama mesin/unit" className={cellInputCls} maxLength={100} value={m.nama} onChange={e => setRow('mesin', i, { nama: e.target.value })} /></td>
+                    <CellCheck checked={m.terisolasi} label={`Mesin ${i + 1} terisolasi`} onChange={v => setRow('mesin', i, v ? { terisolasi: true } : { terisolasi: false, kembaliNormal: false })} />
+                    <CellCheck checked={m.kembaliNormal} label={`Mesin ${i + 1} kembali normal`} disabled={!m.terisolasi || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('mesin', i, { kembaliNormal: v })} />
+                    <td className={`${tdCls} text-center`}><button type="button" onClick={() => removeRow('mesin', i, blankMesin)} aria-label={`Hapus mesin ${i + 1}`} className="min-h-11 w-full text-slate-300 hover:text-red-600"><i className="fa-solid fa-trash" aria-hidden="true"></i></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {form.mesin.length < MAX_MESIN && <button type="button" onClick={() => addRow('mesin', blankMesin, MAX_MESIN)} className="min-h-10 text-xs font-bold text-red-600 hover:underline"><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah mesin</button>}
         </section>
 
@@ -486,16 +521,30 @@ export default function LotoPermit() {
           <h2 className="text-sm font-bold text-slate-800">II. Titik-titik isolasi</h2>
           <p className="text-xs text-slate-500">Setiap sumber energi yang dikunci: breaker, valve, disconnect, dan sebagainya.</p>
           {releaseLocked && <p className="rounded-lg bg-red-50 p-2 text-xs font-semibold text-red-700">{releaseHint}</p>}
-          {form.titik.map((t, i) => (
-            <div key={i} className="grid grid-cols-1 items-center gap-1 border-b border-slate-100 pb-2 last:border-0 sm:grid-cols-[1fr_auto_auto_auto] sm:gap-3">
-              <input aria-label={`Titik isolasi ${i + 1}`} placeholder={`${i + 1}. Titik isolasi`} className={inputCls} maxLength={150} value={t.nama} onChange={e => setRow('titik', i, { nama: e.target.value })} />
-              <div className="flex flex-wrap items-center gap-x-3 sm:contents">
-              <Check checked={t.dipasang} label="LOTO dipasang" disabled={t.ditarik && releaseLocked} onChange={v => setRow('titik', i, v ? { dipasang: true } : { dipasang: false, ditarik: false })} />
-              <Check checked={t.ditarik} label="LOTO ditarik" disabled={!t.dipasang || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('titik', i, { ditarik: v })} />
-              <button type="button" onClick={() => removeRow('titik', i, blankTitik)} aria-label={`Hapus titik isolasi ${i + 1}`} className="ml-auto min-h-10 rounded-lg px-3 text-slate-400 hover:text-red-600 sm:ml-0"><i className="fa-solid fa-trash" aria-hidden="true"></i></button>
-              </div>
-            </div>
-          ))}
+          <div className={tableWrapCls}>
+            <table className="w-full min-w-[300px] border-collapse">
+              <thead>
+                <tr>
+                  <th scope="col" className={`${thCls} w-8`}>No</th>
+                  <th scope="col" className={`${thCls} text-left`}>Titik isolasi</th>
+                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>LOTO dipasang</th>
+                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>LOTO ditarik</th>
+                  <th scope="col" className={`${thCls} w-9`}><span className="sr-only">Hapus baris</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {form.titik.map((t, i) => (
+                  <tr key={i}>
+                    <td className={`${tdCls} text-center text-xs font-semibold text-slate-500`}>{i + 1}</td>
+                    <td className={tdCls}><input aria-label={`Titik isolasi ${i + 1}`} placeholder="Breaker, valve, disconnect…" className={cellInputCls} maxLength={150} value={t.nama} onChange={e => setRow('titik', i, { nama: e.target.value })} /></td>
+                    <CellCheck checked={t.dipasang} label={`Titik ${i + 1} LOTO dipasang`} disabled={t.ditarik && releaseLocked} onChange={v => setRow('titik', i, v ? { dipasang: true } : { dipasang: false, ditarik: false })} />
+                    <CellCheck checked={t.ditarik} label={`Titik ${i + 1} LOTO ditarik`} disabled={!t.dipasang || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('titik', i, { ditarik: v })} />
+                    <td className={`${tdCls} text-center`}><button type="button" onClick={() => removeRow('titik', i, blankTitik)} aria-label={`Hapus titik isolasi ${i + 1}`} className="min-h-11 w-full text-slate-300 hover:text-red-600"><i className="fa-solid fa-trash" aria-hidden="true"></i></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {form.titik.length < MAX_TITIK && <button type="button" onClick={() => addRow('titik', blankTitik, MAX_TITIK)} className="min-h-10 text-xs font-bold text-red-600 hover:underline"><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah titik isolasi</button>}
           <div className="border-t border-slate-100 pt-3">
             <p className="text-xs font-semibold text-slate-700">Jika <i>lock</i> tidak dapat dilakukan, langkah tambahan:</p>
@@ -509,18 +558,34 @@ export default function LotoPermit() {
         <section className={sectionCls}>
           <h2 className="text-sm font-bold text-slate-800">Shift I, II, III: dilakukan oleh &amp; penanggung jawab</h2>
           <p className="text-xs text-slate-500">Kolom shift berjalan terisi otomatis dari tap kartu di box. Shift I = 06.00–17.59, Shift II = 18.00–05.59; Shift III untuk pekerjaan lanjutan.</p>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            {SHIFTS.map(s => (
-              <div key={s} className="space-y-2 rounded-xl border border-slate-200 p-3">
-                <p className="text-xs font-black text-red-600">Shift {s}</p>
-                <div><label className={labelCls} htmlFor={`lp-tek-${s}`}>Dilakukan oleh (teknisi)</label><input id={`lp-tek-${s}`} className={inputCls} maxLength={1000} value={form.shift[s].teknisi} onChange={e => setShift(s, 'teknisi', e.target.value)} /></div>
-                <div><label className={labelCls} htmlFor={`lp-gl-${s}`}>Penanggung jawab (group leader)</label><input id={`lp-gl-${s}`} className={inputCls} maxLength={1000} value={form.shift[s].groupLeader} onChange={e => setShift(s, 'groupLeader', e.target.value)} /></div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div><label className={labelCls} htmlFor={`lp-tgl-${s}`}>Tanggal</label><input id={`lp-tgl-${s}`} type="date" className={inputCls} value={form.shift[s].tanggal} onChange={e => setShift(s, 'tanggal', e.target.value)} /></div>
-                  <div><label className={labelCls} htmlFor={`lp-wkt-${s}`}>Waktu</label><input id={`lp-wkt-${s}`} type="time" className={inputCls} value={form.shift[s].waktu} onChange={e => setShift(s, 'waktu', e.target.value)} /></div>
-                </div>
-              </div>
-            ))}
+          <div className={tableWrapCls}>
+            <table className="w-full min-w-[620px] table-fixed border-collapse">
+              <thead>
+                <tr>
+                  <th scope="col" className={`${thCls} w-40 text-left`}><span className="sr-only">Isian</span></th>
+                  {SHIFTS.map(s => <th key={s} scope="col" className={thCls}>Shift {s}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ['teknisi', 'Dilakukan oleh (teknisi)', 'text'],
+                  ['groupLeader', 'Penanggung jawab (group leader)', 'text'],
+                  ['tanggal', 'Tanggal', 'date'],
+                  ['waktu', 'Waktu', 'time']
+                ].map(([field, label, type]) => (
+                  <tr key={field}>
+                    <th scope="row" className={`${thCls} text-left`}>{label}</th>
+                    {SHIFTS.map(s => (
+                      <td key={s} className={tdCls}>
+                        {type === 'text'
+                          ? <textarea aria-label={`${label}, shift ${s}`} rows={2} className={cellInputCls} maxLength={1000} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />
+                          : <input aria-label={`${label}, shift ${s}`} type={type} className={cellInputCls} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
           <div><label className={labelCls} htmlFor="lp-ket">Keterangan</label><textarea id="lp-ket" rows={2} className={inputCls} maxLength={500} value={form.keterangan} onChange={e => set('keterangan', e.target.value)} /></div>
           {latest?.personel?.length > 0 && (
@@ -547,18 +612,31 @@ export default function LotoPermit() {
               </label>
             ))}
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {[['teknisi', 'teknisiTanggal', 'teknisiWaktu', 'Teknisi'], ['pjTeknis', 'pjTanggal', 'pjWaktu', 'Penanggung jawab teknis']].map(([name, date, time, label]) => (
-                <div key={name} className="space-y-2 rounded-xl border border-slate-200 p-3">
-                  <div><label className={labelCls} htmlFor={`lp-${name}`}>{label}</label><input id={`lp-${name}`} className={inputCls} maxLength={100} value={form.selesai[name]} onChange={e => setSelesai(name, e.target.value)} /></div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><label className={labelCls} htmlFor={`lp-${date}`}>Tanggal</label><input id={`lp-${date}`} type="date" className={inputCls} value={form.selesai[date]} onChange={e => setSelesai(date, e.target.value)} /></div>
-                    <div><label className={labelCls} htmlFor={`lp-${time}`}>Waktu</label><input id={`lp-${time}`} type="time" className={inputCls} value={form.selesai[time]} onChange={e => setSelesai(time, e.target.value)} /></div>
-                  </div>
-                </div>
-              ))}
-              <p className="text-[11px] text-slate-500 sm:col-span-2">Diisi saat pekerjaan berhenti. Tanggal dan waktu yang dikosongkan diisi otomatis dengan waktu simpan. Setelah ditutup, izin tidak bisa diubah.</p>
+          <div className={tableWrapCls}>
+            <table className="w-full min-w-[680px] border-collapse">
+              <thead>
+                <tr>
+                  <th scope="col" className={`${thCls} w-40 text-left`}><span className="sr-only">Peran</span></th>
+                  <th scope="col" className={thCls}>Nama</th>
+                  <th scope="col" className={`${thCls} w-36`}>Tanggal</th>
+                  <th scope="col" className={`${thCls} w-28`}>Waktu</th>
+                  <th scope="col" className={`${thCls} w-28`}>Tanda tangan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[['teknisi', 'teknisiTanggal', 'teknisiWaktu', 'Teknisi'], ['pjTeknis', 'pjTanggal', 'pjWaktu', 'Penanggung jawab teknis']].map(([name, date, time, label]) => (
+                  <tr key={name}>
+                    <th scope="row" className={`${thCls} text-left`}>{label}</th>
+                    <td className={tdCls}><input aria-label={`Nama ${label.toLowerCase()}`} className={cellInputCls} maxLength={100} value={form.selesai[name]} onChange={e => setSelesai(name, e.target.value)} /></td>
+                    <td className={tdCls}><input aria-label={`Tanggal ${label.toLowerCase()}`} type="date" className={cellInputCls} value={form.selesai[date]} onChange={e => setSelesai(date, e.target.value)} /></td>
+                    <td className={tdCls}><input aria-label={`Waktu ${label.toLowerCase()}`} type="time" className={cellInputCls} value={form.selesai[time]} onChange={e => setSelesai(time, e.target.value)} /></td>
+                    <td className={`${tdCls} px-2 text-center text-[10px] italic text-slate-400`}>di hasil cetak</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+          <p className="text-[11px] text-slate-500">Diisi saat pekerjaan berhenti. Tanggal dan waktu yang dikosongkan diisi otomatis dengan waktu simpan. Setelah ditutup, izin tidak bisa diubah.</p>
         </section>
       </fieldset>
 
