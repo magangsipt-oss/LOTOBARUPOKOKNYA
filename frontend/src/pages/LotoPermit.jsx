@@ -23,13 +23,20 @@ const ALTERNATIF = [
 ];
 
 const inputCls = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/30 disabled:bg-slate-100 disabled:text-slate-500';
-const labelCls = 'mb-1 block text-xs font-semibold text-slate-700';
-const sectionCls = 'space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5';
-// Tabel layar meniru tabel formulir kertas; di layar sempit tabel digeser ke samping, bukan halamannya.
-const tableWrapCls = 'relative overflow-x-auto rounded-xl border border-slate-200';
-const thCls = 'border border-slate-200 bg-slate-50 px-2 py-2 text-center text-[11px] font-bold leading-tight text-slate-700';
-const tdCls = 'border border-slate-200 p-0 align-middle';
-const cellInputCls = 'block w-full min-h-11 resize-none border-0 bg-transparent px-2 py-2 text-sm text-slate-900 placeholder:text-slate-300 focus:bg-red-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-500/40 disabled:text-slate-500';
+// Lembar formulir di layar: garis tegas dan pita abu-abu seperti dokumen kertas F-PLT-116.
+const sheetCls = 'mx-auto w-full max-w-5xl bg-white p-2 shadow-md ring-1 ring-slate-300 sm:p-6';
+const edTable = 'w-full border-collapse text-slate-900';
+const edCell = 'border border-slate-500 p-0 align-middle';
+const edBand = 'border border-slate-500 bg-slate-300 px-2 py-1.5 text-center text-[11px] font-black uppercase tracking-wide';
+const edHead = 'border border-slate-500 bg-slate-100 px-2 py-1.5 text-center text-[11px] font-bold uppercase leading-tight';
+const edRowHead = 'border border-slate-500 bg-slate-50 px-2 py-1.5 text-left text-[11px] font-semibold leading-tight';
+const edLabel = 'shrink-0 pt-1.5 text-xs font-bold sm:pt-0';
+const edInput = 'block min-h-10 w-full min-w-0 resize-none border-0 bg-transparent px-2 py-1.5 text-sm text-slate-900 placeholder:text-slate-300 hover:bg-amber-50/50 focus:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-500/50 disabled:text-slate-600';
+const inlineLabelCls = 'flex flex-col pl-2 sm:flex-row sm:items-center sm:gap-1';
+const blockLabelCls = 'block pl-2 pt-1.5';
+const rowNoCls = 'w-7 shrink-0 pl-2 text-xs font-semibold text-slate-600';
+const rowDeleteCls = 'min-h-10 shrink-0 px-2.5 text-slate-300 hover:text-red-600 focus:text-red-600';
+const addRowCls = 'min-h-9 w-full px-2 text-left text-xs font-bold text-red-600 hover:bg-red-50';
 
 const toast = (msg, type = 'ok') => window.dispatchEvent(new CustomEvent('eloto-toast', { detail: { msg, type } }));
 const errorMessage = error => error?.response?.data?.message || error?.message || 'Gagal berkomunikasi dengan server.';
@@ -79,10 +86,10 @@ function Check({ checked, onChange, disabled, label, title }) {
   );
 }
 
-function CellCheck({ checked, onChange, disabled, label, title }) {
+function EdCheck({ checked, onChange, disabled, label, title }) {
   return (
-    <td className={`${tdCls} text-center`}>
-      <label title={title} className={`flex min-h-11 items-center justify-center ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+    <td className={`${edCell} text-center`}>
+      <label title={title} className={`flex min-h-10 items-center justify-center ${disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-amber-50/50'}`}>
         <input type="checkbox" aria-label={label} className="h-5 w-5 accent-red-600" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
       </label>
     </td>
@@ -458,195 +465,205 @@ export default function LotoPermit() {
       )}
       {editing.status === 'DITUTUP' && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Izin sudah ditutup dan tidak bisa diubah lagi.</p>}
 
-      <fieldset disabled={readOnly || saving} className="min-w-0 space-y-4">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] text-slate-600">
-          <p className="font-bold uppercase tracking-wide text-slate-800">Berau Coal Green Mining System · Mutiara Tanjung Lestari</p>
-          <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-5">
-            <span><b className="text-slate-800">Formulir</b> Lock Out &amp; Tag Out</span>
-            <span><b className="text-slate-800">No. Dokumen</b> F-PLT-116</span>
-            <span><b className="text-slate-800">Tanggal Efektif</b> 16 Nov 2017</span>
-            <span><b className="text-slate-800">Revisi</b> 0</span>
-            <span><b className="text-slate-800">Halaman</b> 1 dari 1</span>
-          </div>
-        </div>
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">Izin penguncian mesin, alat, unit/instalasi</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div><label className={labelCls} htmlFor="lp-project">Project No.</label><input id="lp-project" className={inputCls} maxLength={50} value={form.projectNo} onChange={e => set('projectNo', e.target.value)} /></div>
-            <div><label className={labelCls} htmlFor="lp-date">Tanggal</label><input id="lp-date" type="date" required className={inputCls} value={form.tanggalISO} onChange={e => set('tanggalISO', e.target.value)} /></div>
-          </div>
-          <div><label className={labelCls} htmlFor="lp-lokasi">Lokasi</label><input id="lp-lokasi" className={inputCls} maxLength={200} value={form.lokasi} onChange={e => set('lokasi', e.target.value)} /></div>
-          <div><label className={labelCls} htmlFor="lp-pekerjaan">Penjelasan pekerjaan</label><textarea id="lp-pekerjaan" rows={3} className={inputCls} maxLength={1000} value={form.pekerjaan} onChange={e => set('pekerjaan', e.target.value)} /></div>
-        </section>
+      {releaseLocked && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">{releaseHint} Kolom LOTO ditarik, kembali normal, dan bagian III terkunci sampai saat itu.</p>}
 
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">Inspeksi lapangan</h2>
-          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Hasil inspeksi lapangan">
-            {[['OK', 'OK'], ['NOT_OK', 'Not OK, lakukan perbaikan']].map(([value, label]) => (
-              <label key={value} className={`inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-xl border px-3 text-xs font-bold ${form.inspeksi === value ? 'border-red-500 bg-red-50 text-red-700' : 'border-slate-200 text-slate-600'}`}>
-                <input type="radio" name="lp-inspeksi" className="h-4 w-4 accent-red-600" checked={form.inspeksi === value} onChange={() => set('inspeksi', value)} />{label}
-              </label>
-            ))}
-          </div>
-          <div><label className={labelCls} htmlFor="lp-defisiensi">Penjelasan defisiensi <span className="font-normal text-slate-400">(wajib bila Not OK)</span></label><textarea id="lp-defisiensi" rows={3} className={inputCls} maxLength={2000} value={form.defisiensi} onChange={e => set('defisiensi', e.target.value)} /></div>
-          <Check checked={form.diperbaiki} onChange={v => set('diperbaiki', v)} label="Diperbaiki" />
-        </section>
+      <fieldset disabled={readOnly || saving} className="min-w-0">
+        {/* Lembar formulir: tata letak dan urutan mengikuti dokumen kertas F-PLT-116. */}
+        <div className={sheetCls}>
+          <table className={`${edTable} table-fixed text-[10px] sm:text-xs`}>
+            <colgroup><col className="w-[22%]" /><col className="w-[40%]" /><col className="w-[20%]" /><col className="w-[18%]" /></colgroup>
+            <tbody>
+              <tr>
+                <td rowSpan={4} className={`${edCell} px-1 text-center font-black leading-tight`}>MUTIARA<br />TANJUNG LESTARI</td>
+                <td className={`${edCell} px-2 py-1 text-center font-bold`}>BERAU COAL GREEN MINING SYSTEM</td>
+                <td className={`${edCell} px-2 py-1`}>No. Dokumen</td>
+                <td className={`${edCell} px-2 py-1`}>F-PLT-116</td>
+              </tr>
+              <tr>
+                <td className={`${edCell} px-2 py-1 text-center font-bold`}>FORMULIR</td>
+                <td className={`${edCell} px-2 py-1`}>Tanggal Efektif</td>
+                <td className={`${edCell} px-2 py-1`}>16 Nov 2017</td>
+              </tr>
+              <tr>
+                <td rowSpan={2} className={`${edCell} px-2 py-1 text-center font-bold italic`}>Lock Out &amp; Tag Out</td>
+                <td className={`${edCell} px-2 py-1`}>Revisi</td>
+                <td className={`${edCell} px-2 py-1`}>0</td>
+              </tr>
+              <tr>
+                <td className={`${edCell} px-2 py-1`}>Halaman</td>
+                <td className={`${edCell} px-2 py-1`}>1 dari 1</td>
+              </tr>
+            </tbody>
+          </table>
 
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">I. Mesin/alat/unit/instalasi yang akan diisolasi</h2>
-          <div className={tableWrapCls}>
-            <table className="w-full min-w-[300px] border-collapse">
-              <thead>
-                <tr>
-                  <th scope="col" className={`${thCls} w-8`}>No</th>
-                  <th scope="col" className={`${thCls} text-left`}>Mesin/alat/unit/instalasi</th>
-                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>Terisolasi</th>
-                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>Kembali normal</th>
-                  <th scope="col" className={`${thCls} w-9`}><span className="sr-only">Hapus baris</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {form.mesin.map((m, i) => (
-                  <tr key={i}>
-                    <td className={`${tdCls} text-center text-xs font-semibold text-slate-500`}>{i + 1}</td>
-                    <td className={tdCls}><input aria-label={`Mesin ${i + 1}`} placeholder="Nama mesin/unit" className={cellInputCls} maxLength={100} value={m.nama} onChange={e => setRow('mesin', i, { nama: e.target.value })} /></td>
-                    <CellCheck checked={m.terisolasi} label={`Mesin ${i + 1} terisolasi`} onChange={v => setRow('mesin', i, v ? { terisolasi: true } : { terisolasi: false, kembaliNormal: false })} />
-                    <CellCheck checked={m.kembaliNormal} label={`Mesin ${i + 1} kembali normal`} disabled={!m.terisolasi || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('mesin', i, { kembaliNormal: v })} />
-                    <td className={`${tdCls} text-center`}><button type="button" onClick={() => removeRow('mesin', i, blankMesin)} aria-label={`Hapus mesin ${i + 1}`} className="min-h-11 w-full text-slate-300 hover:text-red-600"><i className="fa-solid fa-trash" aria-hidden="true"></i></button></td>
-                  </tr>
+          <table className={`${edTable} mt-3 table-fixed`}>
+            <colgroup><col /><col className="w-20 sm:w-36" /><col className="w-20 sm:w-36" /></colgroup>
+            <tbody>
+              <tr><th colSpan={3} className={edBand}>Izin penguncian mesin, alat, unit/instalasi</th></tr>
+              <tr>
+                <td className={edCell}><label className={inlineLabelCls}><span className={edLabel}>Project No. :</span><input id="lp-project" className={edInput} maxLength={50} value={form.projectNo} onChange={e => set('projectNo', e.target.value)} /></label></td>
+                <td colSpan={2} className={edCell}><label className={inlineLabelCls}><span className={edLabel}>Tanggal :</span><input id="lp-date" type="date" required className={edInput} value={form.tanggalISO} onChange={e => set('tanggalISO', e.target.value)} /></label></td>
+              </tr>
+              <tr>
+                <td colSpan={3} className={edCell}><label className={inlineLabelCls}><span className={edLabel}>Lokasi :</span><input id="lp-lokasi" className={edInput} maxLength={200} value={form.lokasi} onChange={e => set('lokasi', e.target.value)} /></label></td>
+              </tr>
+              <tr>
+                <td colSpan={3} className={edCell}><label className={blockLabelCls}><span className={edLabel}>Penjelasan Pekerjaan :</span><textarea id="lp-pekerjaan" rows={2} className={edInput} maxLength={1000} value={form.pekerjaan} onChange={e => set('pekerjaan', e.target.value)} /></label></td>
+              </tr>
+              <tr>
+                <td className={`${edCell} px-2 py-2 text-xs font-bold`}>Inspeksi Lapangan</td>
+                {[['OK', 'OK'], ['NOT_OK', 'Not OK, lakukan perbaikan']].map(([value, label]) => (
+                  <td key={value} className={edCell}>
+                    <label className="flex min-h-10 cursor-pointer flex-col items-start justify-center gap-1 px-2 py-1 text-[11px] font-bold leading-tight sm:flex-row sm:items-center sm:justify-start sm:gap-2 sm:text-xs">
+                      <input type="radio" name="lp-inspeksi" className="h-4 w-4 shrink-0 accent-red-600" checked={form.inspeksi === value} onChange={() => set('inspeksi', value)} />{label}
+                    </label>
+                  </td>
                 ))}
-              </tbody>
-            </table>
-          </div>
-          {form.mesin.length < MAX_MESIN && <button type="button" onClick={() => addRow('mesin', blankMesin, MAX_MESIN)} className="min-h-10 text-xs font-bold text-red-600 hover:underline"><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah mesin</button>}
-        </section>
+              </tr>
+              <tr>
+                <td colSpan={3} className={edCell}>
+                  <label className={blockLabelCls}><span className={edLabel}>Penjelasan Defisiensi : <span className="font-normal text-slate-500">(wajib bila Not OK)</span></span><textarea id="lp-defisiensi" rows={3} className={edInput} maxLength={2000} value={form.defisiensi} onChange={e => set('defisiensi', e.target.value)} /></label>
+                  <div className="px-1"><Check checked={form.diperbaiki} onChange={v => set('diperbaiki', v)} label="Diperbaiki" /></div>
+                </td>
+              </tr>
 
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">II. Titik-titik isolasi</h2>
-          <p className="text-xs text-slate-500">Setiap sumber energi yang dikunci: breaker, valve, disconnect, dan sebagainya.</p>
-          {releaseLocked && <p className="rounded-lg bg-red-50 p-2 text-xs font-semibold text-red-700">{releaseHint}</p>}
-          <div className={tableWrapCls}>
-            <table className="w-full min-w-[300px] border-collapse">
+              <tr>
+                <th scope="col" className={`${edHead} text-left`}>I. Mesin/alat/unit/instalasi yang akan diisolasi</th>
+                <th scope="col" className={edHead}>Terisolasi</th>
+                <th scope="col" className={edHead}>Kembali Normal</th>
+              </tr>
+              {form.mesin.map((m, i) => (
+                <tr key={`m${i}`}>
+                  <td className={edCell}>
+                    <div className="flex items-center">
+                      <span className={rowNoCls}>{i + 1}.</span>
+                      <input aria-label={`Mesin ${i + 1}`} className={edInput} maxLength={100} value={m.nama} onChange={e => setRow('mesin', i, { nama: e.target.value })} />
+                      {!readOnly && <button type="button" onClick={() => removeRow('mesin', i, blankMesin)} aria-label={`Hapus mesin ${i + 1}`} className={rowDeleteCls}><i className="fa-solid fa-xmark" aria-hidden="true"></i></button>}
+                    </div>
+                  </td>
+                  <EdCheck checked={m.terisolasi} label={`Mesin ${i + 1} terisolasi`} onChange={v => setRow('mesin', i, v ? { terisolasi: true } : { terisolasi: false, kembaliNormal: false })} />
+                  <EdCheck checked={m.kembaliNormal} label={`Mesin ${i + 1} kembali normal`} disabled={!m.terisolasi || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('mesin', i, { kembaliNormal: v })} />
+                </tr>
+              ))}
+              {!readOnly && form.mesin.length < MAX_MESIN && (
+                <tr><td colSpan={3} className={edCell}><button type="button" onClick={() => addRow('mesin', blankMesin, MAX_MESIN)} className={addRowCls}><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah baris mesin</button></td></tr>
+              )}
+
+              <tr>
+                <th scope="col" className={`${edHead} text-left`}>II. Titik-titik isolasi</th>
+                <th scope="col" className={edHead}>LOTO Dipasang</th>
+                <th scope="col" className={edHead}>LOTO Ditarik</th>
+              </tr>
+              {form.titik.map((t, i) => (
+                <tr key={`t${i}`}>
+                  <td className={edCell}>
+                    <div className="flex items-center">
+                      <span className={rowNoCls}>{i + 1}.</span>
+                      <input aria-label={`Titik isolasi ${i + 1}`} className={edInput} maxLength={150} value={t.nama} onChange={e => setRow('titik', i, { nama: e.target.value })} />
+                      {!readOnly && <button type="button" onClick={() => removeRow('titik', i, blankTitik)} aria-label={`Hapus titik isolasi ${i + 1}`} className={rowDeleteCls}><i className="fa-solid fa-xmark" aria-hidden="true"></i></button>}
+                    </div>
+                  </td>
+                  <EdCheck checked={t.dipasang} label={`Titik ${i + 1} LOTO dipasang`} disabled={t.ditarik && releaseLocked} onChange={v => setRow('titik', i, v ? { dipasang: true } : { dipasang: false, ditarik: false })} />
+                  <EdCheck checked={t.ditarik} label={`Titik ${i + 1} LOTO ditarik`} disabled={!t.dipasang || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('titik', i, { ditarik: v })} />
+                </tr>
+              ))}
+              {!readOnly && form.titik.length < MAX_TITIK && (
+                <tr><td colSpan={3} className={edCell}><button type="button" onClick={() => addRow('titik', blankTitik, MAX_TITIK)} className={addRowCls}><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah baris titik isolasi</button></td></tr>
+              )}
+              <tr>
+                <td colSpan={3} className={`${edCell} px-2 py-1.5`}>
+                  <p className="text-[11px] text-slate-800">Jika <i>lock</i> tidak dapat dilakukan, sebutkan langkah tambahan yang perlu dilakukan</p>
+                  <div className="flex flex-wrap gap-x-4">
+                    {ALTERNATIF.map(([key, label]) => <Check key={key} checked={form.alternatif[key]} label={<i>{label}</i>} onChange={v => setAlt(key, v)} />)}
+                  </div>
+                  {form.alternatif.lainnya && <input aria-label="Keterangan langkah lainnya" placeholder="Sebutkan langkah lainnya" className={`${inputCls} mb-1`} maxLength={200} value={form.alternatif.lainnyaKet} onChange={e => setAlt('lainnyaKet', e.target.value)} />}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="relative mt-3 overflow-x-auto">
+            <table className={`${edTable} min-w-[680px] table-fixed`}>
+              <colgroup><col className="w-[16%]" /><col className="w-[22%]" /><col className="w-[22%]" /><col className="w-[22%]" /><col className="w-[18%]" /></colgroup>
               <thead>
                 <tr>
-                  <th scope="col" className={`${thCls} w-8`}>No</th>
-                  <th scope="col" className={`${thCls} text-left`}>Titik isolasi</th>
-                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>LOTO dipasang</th>
-                  <th scope="col" className={`${thCls} w-16 sm:w-24`}>LOTO ditarik</th>
-                  <th scope="col" className={`${thCls} w-9`}><span className="sr-only">Hapus baris</span></th>
+                  <th scope="col" className={`${edHead} text-left`}>Shift</th>
+                  {SHIFTS.map(s => <th key={s} scope="col" className={edHead}>{s}</th>)}
+                  <th scope="col" className={edHead}>Keterangan</th>
                 </tr>
               </thead>
               <tbody>
-                {form.titik.map((t, i) => (
-                  <tr key={i}>
-                    <td className={`${tdCls} text-center text-xs font-semibold text-slate-500`}>{i + 1}</td>
-                    <td className={tdCls}><input aria-label={`Titik isolasi ${i + 1}`} placeholder="Breaker, valve, disconnect…" className={cellInputCls} maxLength={150} value={t.nama} onChange={e => setRow('titik', i, { nama: e.target.value })} /></td>
-                    <CellCheck checked={t.dipasang} label={`Titik ${i + 1} LOTO dipasang`} disabled={t.ditarik && releaseLocked} onChange={v => setRow('titik', i, v ? { dipasang: true } : { dipasang: false, ditarik: false })} />
-                    <CellCheck checked={t.ditarik} label={`Titik ${i + 1} LOTO ditarik`} disabled={!t.dipasang || releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setRow('titik', i, { ditarik: v })} />
-                    <td className={`${tdCls} text-center`}><button type="button" onClick={() => removeRow('titik', i, blankTitik)} aria-label={`Hapus titik isolasi ${i + 1}`} className="min-h-11 w-full text-slate-300 hover:text-red-600"><i className="fa-solid fa-trash" aria-hidden="true"></i></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {form.titik.length < MAX_TITIK && <button type="button" onClick={() => addRow('titik', blankTitik, MAX_TITIK)} className="min-h-10 text-xs font-bold text-red-600 hover:underline"><i className="fa-solid fa-plus mr-1" aria-hidden="true"></i>Tambah titik isolasi</button>}
-          <div className="border-t border-slate-100 pt-3">
-            <p className="text-xs font-semibold text-slate-700">Jika <i>lock</i> tidak dapat dilakukan, langkah tambahan:</p>
-            <div className="mt-1 flex flex-wrap gap-x-4">
-              {ALTERNATIF.map(([key, label]) => <Check key={key} checked={form.alternatif[key]} label={label} onChange={v => setAlt(key, v)} />)}
-            </div>
-            {form.alternatif.lainnya && <input aria-label="Keterangan langkah lainnya" placeholder="Sebutkan langkah lainnya" className={`${inputCls} mt-2`} maxLength={200} value={form.alternatif.lainnyaKet} onChange={e => setAlt('lainnyaKet', e.target.value)} />}
-          </div>
-        </section>
-
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">Shift I, II, III: dilakukan oleh &amp; penanggung jawab</h2>
-          <p className="text-xs text-slate-500">Kolom shift berjalan terisi otomatis dari tap kartu di box. Shift I = 06.00–17.59, Shift II = 18.00–05.59; Shift III untuk pekerjaan lanjutan.</p>
-          <div className={tableWrapCls}>
-            <table className="w-full min-w-[780px] table-fixed border-collapse">
-              <thead>
-                <tr>
-                  <th scope="col" className={`${thCls} w-40 text-left`}><span className="sr-only">Isian</span></th>
-                  {SHIFTS.map(s => <th key={s} scope="col" className={thCls}>Shift {s}</th>)}
-                  <th scope="col" className={thCls}>Keterangan</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  ['teknisi', 'Dilakukan oleh (teknisi)', 'text'],
-                  ['groupLeader', 'Penanggung jawab (group leader)', 'text'],
-                  ['tanggal', 'Tanggal', 'date'],
-                  ['waktu', 'Waktu', 'time']
-                ].map(([field, label, type], row) => (
+                {[['teknisi', 'Dilakukan oleh', 'Teknisi', 'Dilakukan oleh (teknisi)'], ['groupLeader', 'Penanggung jawab', 'Group Leader', 'Penanggung jawab (group leader)']].map(([field, head, caption, aria], row) => (
                   <tr key={field}>
-                    <th scope="row" className={`${thCls} text-left`}>{label}</th>
+                    <th scope="row" className={edRowHead}>{head}/<br />Tanda tangan</th>
                     {SHIFTS.map(s => (
-                      <td key={s} className={tdCls}>
-                        {type === 'text'
-                          ? <textarea aria-label={`${label}, shift ${s}`} rows={2} className={cellInputCls} maxLength={1000} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />
-                          : <input aria-label={`${label}, shift ${s}`} type={type} className={cellInputCls} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />}
+                      <td key={s} className={`${edCell} align-bottom`}>
+                        <textarea aria-label={`${aria}, shift ${s}`} rows={2} className={edInput} maxLength={1000} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} />
+                        <p className="mx-2 border-t border-slate-400 py-0.5 text-center text-[10px] text-slate-600">{caption}</p>
                       </td>
                     ))}
                     {row === 0 && (
-                      <td rowSpan={4} className={`${tdCls} relative`}>
-                        <textarea id="lp-ket" aria-label="Keterangan" className={`${cellInputCls} absolute inset-0 h-full`} maxLength={500} value={form.keterangan} onChange={e => set('keterangan', e.target.value)} />
+                      <td rowSpan={4} className={`${edCell} relative`}>
+                        <textarea id="lp-ket" aria-label="Keterangan" className={`${edInput} absolute inset-0 h-full`} maxLength={500} value={form.keterangan} onChange={e => set('keterangan', e.target.value)} />
                       </td>
                     )}
                   </tr>
                 ))}
-              </tbody>
-            </table>
-          </div>
-          {latest?.personel?.length > 0 && (
-            <div>
-              <p className={labelCls}>Personel yang tap di box</p>
-              <ul className="flex flex-wrap gap-1.5">
-                {latest.personel.map(x => <li key={x.sid} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700">{x.nama} <span className="text-slate-400">· {x.role}</span></li>)}
-              </ul>
-            </div>
-          )}
-        </section>
-
-        <section className={sectionCls}>
-          <h2 className="text-sm font-bold text-slate-800">III. Pekerjaan selesai (pembukaan kunci)</h2>
-          {releaseLocked && <p className="rounded-lg bg-red-50 p-2 text-xs font-semibold text-red-700">{releaseHint}</p>}
-          <div className="space-y-2" role="radiogroup" aria-label="Status pekerjaan">
-            {[
-              ['', 'Pekerjaan masih berjalan (izin belum ditutup)'],
-              ['SELESAI', 'Pekerjaan TELAH selesai dan tidak ada lagi personil di area isolasi. Mesin/alat siap dioperasikan kembali.'],
-              ['BELUM', 'Pekerjaan BELUM selesai dan akan dilanjutkan di lain waktu dengan membuat izin LOTO ulang.']
-            ].map(([value, label]) => (
-              <label key={value || 'open'} className={`flex min-h-10 cursor-pointer items-start gap-2 rounded-xl border p-3 text-xs font-semibold ${form.selesai.status === value ? 'border-red-500 bg-red-50 text-red-800' : 'border-slate-200 text-slate-600'}`}>
-                <input type="radio" name="lp-selesai" className="mt-0.5 h-4 w-4 accent-red-600" checked={form.selesai.status === value} disabled={value !== '' && releaseLocked} onChange={() => setSelesai('status', value)} />{label}
-              </label>
-            ))}
-          </div>
-          <div className={tableWrapCls}>
-            <table className="w-full min-w-[680px] border-collapse">
-              <thead>
-                <tr>
-                  <th scope="col" className={`${thCls} w-40 text-left`}><span className="sr-only">Peran</span></th>
-                  <th scope="col" className={thCls}>Nama</th>
-                  <th scope="col" className={`${thCls} w-36`}>Tanggal</th>
-                  <th scope="col" className={`${thCls} w-28`}>Waktu</th>
-                  <th scope="col" className={`${thCls} w-28`}>Tanda tangan</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[['teknisi', 'teknisiTanggal', 'teknisiWaktu', 'Teknisi'], ['pjTeknis', 'pjTanggal', 'pjWaktu', 'Penanggung jawab teknis']].map(([name, date, time, label]) => (
-                  <tr key={name}>
-                    <th scope="row" className={`${thCls} text-left`}>{label}</th>
-                    <td className={tdCls}><input aria-label={`Nama ${label.toLowerCase()}`} className={cellInputCls} maxLength={100} value={form.selesai[name]} onChange={e => setSelesai(name, e.target.value)} /></td>
-                    <td className={tdCls}><input aria-label={`Tanggal ${label.toLowerCase()}`} type="date" className={cellInputCls} value={form.selesai[date]} onChange={e => setSelesai(date, e.target.value)} /></td>
-                    <td className={tdCls}><input aria-label={`Waktu ${label.toLowerCase()}`} type="time" className={cellInputCls} value={form.selesai[time]} onChange={e => setSelesai(time, e.target.value)} /></td>
-                    <td className={`${tdCls} px-2 text-center text-[10px] italic text-slate-400`}>di hasil cetak</td>
+                {[['tanggal', 'Tanggal', 'date'], ['waktu', 'Waktu', 'time']].map(([field, label, type]) => (
+                  <tr key={field}>
+                    <th scope="row" className={edRowHead}>{label}</th>
+                    {SHIFTS.map(s => (
+                      <td key={s} className={edCell}><input aria-label={`${label}, shift ${s}`} type={type} className={edInput} value={form.shift[s][field]} onChange={e => setShift(s, field, e.target.value)} /></td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="text-[11px] text-slate-500">Diisi saat pekerjaan berhenti. Tanggal dan waktu yang dikosongkan diisi otomatis dengan waktu simpan. Setelah ditutup, izin tidak bisa diubah.</p>
-        </section>
+
+          <table className={`${edTable} mt-3 table-fixed`}>
+            <colgroup><col /><col className="w-16 sm:w-24" /></colgroup>
+            <tbody>
+              <tr><th colSpan={2} className={`${edBand} text-left`}>III. Pekerjaan selesai (pembukaan kunci)</th></tr>
+              {[
+                ['SELESAI', 'Pekerjaan TELAH selesai dan tidak ada lagi personil yang melakukan pekerjaan di area isolasi. Mesin/ alat siap dioperasikan kembali.', 'Pekerjaan telah selesai'],
+                ['BELUM', 'Pekerjaan BELUM selesai dan akan dilanjutkan di lain waktu dengan membuat izin LOTO ulang', 'Pekerjaan belum selesai']
+              ].map(([value, text, aria]) => (
+                <tr key={value}>
+                  <td className={`${edCell} px-2 py-2 text-xs leading-snug sm:text-sm`}>{text}</td>
+                  <EdCheck checked={form.selesai.status === value} label={aria} disabled={releaseLocked} title={releaseLocked ? releaseHint : undefined} onChange={v => setSelesai('status', v ? value : '')} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <table className={`${edTable} -mt-px table-fixed`}>
+            <tbody>
+              <tr>
+                {[['teknisi', 'teknisiTanggal', 'teknisiWaktu', 'Teknisi'], ['pjTeknis', 'pjTanggal', 'pjWaktu', 'Penanggung Jawab Teknis']].map(([name, date, time, label]) => (
+                  <td key={name} className={`${edCell} w-1/2 align-top`}>
+                    <p className="px-2 pt-1.5 text-xs font-bold">{label}</p>
+                    <input aria-label={`Nama ${label.toLowerCase()}`} placeholder="Nama" className={edInput} maxLength={100} value={form.selesai[name]} onChange={e => setSelesai(name, e.target.value)} />
+                    <p className="px-2 text-[10px] italic text-slate-400">Tanda tangan di hasil cetak</p>
+                    <label className={inlineLabelCls}><span className={`${edLabel} font-normal sm:w-16`}>Tanggal :</span><input aria-label={`Tanggal ${label.toLowerCase()}`} type="date" className={edInput} value={form.selesai[date]} onChange={e => setSelesai(date, e.target.value)} /></label>
+                    <label className={`${inlineLabelCls} pb-1`}><span className={`${edLabel} font-normal sm:w-16`}>Waktu :</span><input aria-label={`Waktu ${label.toLowerCase()}`} type="time" className={edInput} value={form.selesai[time]} onChange={e => setSelesai(time, e.target.value)} /></label>
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mx-auto mt-3 max-w-5xl space-y-2 text-[11px] text-slate-500">
+          <p>Kolom shift terisi otomatis dari tap kartu di box (Shift I = 06.00–17.59, Shift II = 18.00–05.59, Shift III untuk lanjutan). Bagian III: biarkan kedua kotak kosong selama pekerjaan berjalan; tanggal dan waktu yang kosong diisi otomatis saat izin ditutup, dan izin yang ditutup tidak bisa diubah.</p>
+          {latest?.personel?.length > 0 && (
+            <div>
+              <p className="mb-1 font-semibold text-slate-700">Personel yang tap di box</p>
+              <ul className="flex flex-wrap gap-1.5">
+                {latest.personel.map(x => <li key={x.sid} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700">{x.nama} <span className="text-slate-400">· {x.role}</span></li>)}
+              </ul>
+            </div>
+          )}
+        </div>
       </fieldset>
 
       <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
