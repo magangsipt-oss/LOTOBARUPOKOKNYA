@@ -2,6 +2,7 @@ import BriefingModel from '../models/briefingModel.js';
 import { tapsFor } from '../models/sessionTaps.js';
 import { canSeeBriefing, formatBriefing, parseBriefingPayload, validateBriefingPayload } from '../domain/briefing.js';
 import { viewerOf } from '../domain/personnel.js';
+import { dateRange } from '../domain/formFields.js';
 
 const errorResponse = (res, error, operation) => {
   const status = [400, 403, 404, 409].includes(error.status) ? error.status : 500;
@@ -34,8 +35,8 @@ const handle = (operation, work) => async (req, res) => {
 };
 
 const BriefingController = {
-  getAll: handle('getAllBriefings', async (_req, res, viewer) =>
-    res.status(200).json({ success: true, data: await present(await BriefingModel.getAll(), viewer) })),
+  getAll: handle('getAllBriefings', async (req, res, viewer) =>
+    res.status(200).json({ success: true, data: await present(await BriefingModel.getAll(dateRange(req.query)), viewer) })),
 
   getById: handle('getBriefing', async (req, res, viewer) => {
     const row = await BriefingModel.getById(parseId(req.params.id));

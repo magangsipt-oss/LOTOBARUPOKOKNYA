@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useAuth } from '../context/useAuth';
 import Avatar from './Avatar';
+import { useTasks } from '../context/useTasks';
 
 export default function Sidebar({ isOpen, onOpen, onClose }) {
   const { sessionUser, activeTab, setActiveTab, handleLogout: doLogout } = useAuth();
@@ -59,20 +60,24 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
     });
   };
 
+  // Angka merah: tugas formulir yang menunggu pengguna ini (lihat backend domain/tasks.js).
+  const { tasks } = useTasks();
+  const badges = { 'izin-loto': tasks.filter(t => t.jenis === 'izin').length, 'daftar-hadir': tasks.filter(t => t.jenis === 'hadir').length };
   // Profil dibuka lewat kartu "Pengguna aktif", bukan item menu.
   const navItems = [];
   const formItems = [
     { id: 'izin-loto', icon: 'fa-file-signature', label: 'Izin LOTO' },
     { id: 'daftar-hadir', icon: 'fa-users-line', label: 'Daftar Hadir' }
   ];
+  const reportItem = { id: 'rekap-laporan', icon: 'fa-chart-column', label: 'Rekap Laporan' };
   if (sessionUser?.role === 'admin' || sessionUser?.role === 'pengawas') {
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
     navItems.push({ id: 'dop-plan', icon: 'fa-clipboard-list', label: 'DOP Plan' });
-    navItems.push(...formItems);
+    navItems.push(...formItems, reportItem);
   } else if (sessionUser?.role === 'safety') {
-    // Safety hanya mengawasi status boks dan membaca formulir lapangan.
+    // Safety hanya mengawasi status boks dan membaca formulir lapangan; rekap untuk laporan HSE.
     navItems.push({ id: 'dashboard', icon: 'fa-house', label: 'Dashboard' });
-    navItems.push(...formItems);
+    navItems.push(...formItems, reportItem);
   } else if (sessionUser?.role === 'teknisi') {
     // Mekanik dan foreman mengisi formulir dari sesi box yang mereka ikuti.
     navItems.push(...formItems);
@@ -96,6 +101,7 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
       <header className="mobile-app-header md:hidden" inert={isOpen ? true : undefined}>
         <button ref={menuButtonRef} type="button" onClick={onOpen} aria-label="Buka menu navigasi" aria-expanded={isOpen} aria-controls="app-sidebar" className="mobile-menu-button">
           <i className="fa-solid fa-bars" aria-hidden="true"></i>
+          {tasks.length > 0 && <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-red-600 px-1 text-center text-[10px] font-black leading-5 text-white" aria-label={`${tasks.length} tugas`}>{tasks.length}</span>}
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white shadow-sm shadow-red-200">
@@ -146,6 +152,9 @@ export default function Sidebar({ isOpen, onOpen, onClose }) {
                 <button key={item.id} type="button" onClick={() => navigate(item)} aria-current={activeTab === item.id ? 'page' : undefined} className={`flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition-colors md:min-h-11 md:text-xs ${activeTab === item.id ? 'bg-red-600 text-white shadow-md shadow-red-500/20' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}>
                   <i className={`fa-solid ${item.icon} w-5 text-center text-base md:text-sm`} aria-hidden="true"></i>
                   <span className="flex-1">{item.label}</span>
+                  {badges[item.id] > 0 && (
+                    <span className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-black leading-5 ${activeTab === item.id ? 'bg-white text-red-600' : 'bg-red-600 text-white'}`} aria-label={`${badges[item.id]} tugas`}>{badges[item.id]}</span>
+                  )}
                   {activeTab === item.id && <i className="fa-solid fa-chevron-right text-[10px] opacity-70" aria-hidden="true"></i>}
                 </button>
               ))}

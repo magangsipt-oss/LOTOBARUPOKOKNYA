@@ -46,8 +46,10 @@ async function inTransaction(work) {
 }
 
 const BriefingModel = {
-  getAll: async () => {
-    const [rows] = await pool.query(`${SELECT_BRIEFING} ORDER BY a.briefing_date DESC, a.id DESC LIMIT 500`);
+  getAll: async (range = null) => {
+    const [rows] = range
+      ? await pool.query(`${SELECT_BRIEFING} WHERE a.briefing_date BETWEEN ? AND ? ORDER BY a.briefing_date DESC, a.id DESC LIMIT 5000`, [range.dari, range.sampai])
+      : await pool.query(`${SELECT_BRIEFING} ORDER BY a.briefing_date DESC, a.id DESC LIMIT 500`);
     return rows;
   },
 

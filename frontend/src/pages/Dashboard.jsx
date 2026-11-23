@@ -5,6 +5,10 @@ import { livePoll } from '../services/live';
 import { boxCoordinates, DEFAULT_CENTER } from '../utils/mapCoordinates.js';
 import 'leaflet/dist/leaflet.css';
 import { useApp } from '../context/useApp';
+import { useAuth } from '../context/useAuth';
+import { useTasks } from '../context/useTasks';
+import { TaskPanel } from '../components/FieldForm';
+import { openTaskTarget } from '../utils/fieldForm';
 import Avatar from '../components/Avatar';
 import BoxCard from '../components/BoxCard';
 import { escapeHtml, STATE_DESC, formatWaktuDowntime, resolveUserPhotoUrl, getInitialAvatar } from '../utils/helpers';
@@ -34,6 +38,8 @@ export default function Dashboard() {
     handleHapusRiwayatTapping,
     lotoCompliance, lotoComplianceHistory,
   } = useApp();
+  const { setActiveTab } = useAuth();
+  const { tasks } = useTasks();
 
   const isLiveTapPhotoVisible = isHwOnline &&
     !isSystemUid(hwData.last_uid) &&
@@ -276,6 +282,8 @@ export default function Dashboard() {
           {boxes.length} boks terdaftar
         </span>
       </div>
+      {/* TUGAS FORMULIR LAPANGAN: izin menunggu persetujuan, tanda tangan, peringatan kurang tidur */}
+      <TaskPanel tasks={tasks} onOpen={task => openTaskTarget(task, setActiveTab)} />
       {/* KARTU METRIK */}
       <div className="dashboard-metrics grid grid-cols-2 sm:grid-cols-3 2xl:grid-cols-6 gap-3">
         <div onClick={() => bukaModalUmum('Waktu Penguncian & Downtime Operasional', 'fa-stopwatch', <div className="overflow-x-auto border border-gray-200 rounded-xl"><table className="w-full text-left border-collapse text-xs font-mono-tech"><thead><tr className="bg-gray-100 text-slate-800 border-b border-gray-200"><th className="p-3 w-1/3 border-r border-gray-200">Parameter</th><th className="p-3">Keterangan</th></tr></thead><tbody className="divide-y divide-gray-100"><tr><td className="p-3 bg-gray-50 font-bold border-r">Unit Terfokus</td><td className="p-3 font-bold text-red-600">{selectedBox ? `${selectedBox.id} (${selectedBox.unit})` : '—'}</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Durasi Penguncian</td><td className="p-3 font-bold text-amber-600 text-sm">{formatWaktuDowntime(downtimeSeconds)} ({downtimeSeconds} detik)</td></tr><tr><td className="p-3 bg-gray-50 font-bold border-r">Status Timer</td><td className="p-3">{isTrackingDowntime ? <span className="text-amber-600 font-bold">Sedang Berjalan (Terkunci)</span> : <span className="text-green-600 font-bold">Standby (Nol)</span>}</td></tr></tbody></table></div>)} className="bg-white border border-red-200 p-3.5 rounded-xl flex items-center justify-between shadow-sm cursor-pointer hover:border-red-500 hover:shadow-md transition-all active:scale-[0.98]">

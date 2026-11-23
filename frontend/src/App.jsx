@@ -3,6 +3,7 @@ import 'cropperjs/dist/cropper.css';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
 import { AppProvider } from './context/AppContext';
+import { TasksProvider } from './context/TasksContext';
 import { useApp } from './context/useApp';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
@@ -16,6 +17,7 @@ const BleTagManager = lazy(() => import('./pages/BleTagManager'));
 const DOPPlan = lazy(() => import('./pages/DOPPlan'));
 const LotoPermit = lazy(() => import('./pages/LotoPermit'));
 const DaftarHadir = lazy(() => import('./pages/DaftarHadir'));
+const Rekap = lazy(() => import('./pages/Rekap'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -231,6 +233,8 @@ function AppContent() {
               (admin / pengawas / mekanik-foreman; safety hanya membaca; hak per formulir dari server) */}
           {activeTab === 'izin-loto' && ['admin', 'pengawas', 'safety', 'teknisi'].includes(sessionUser?.role) && <LotoPermit />}
           {activeTab === 'daftar-hadir' && ['admin', 'pengawas', 'safety', 'teknisi'].includes(sessionUser?.role) && <DaftarHadir />}
+          {/* TAB: REKAP LAPORAN — tujuan akhir formulir lapangan (admin / pengawas / safety) */}
+          {activeTab === 'rekap-laporan' && ['admin', 'pengawas', 'safety'].includes(sessionUser?.role) && <Rekap />}
 
           {/* TAB: RIWAYAT LAPORAN */}
           {activeTab === 'riwayat-tab' && <Logs />}
@@ -283,5 +287,5 @@ export default function App() {
 
 function SessionApp() {
   const { sessionUser } = useAuth();
-  return <AppProvider key={sessionUser?.sid || 'anonymous'}><AppContent /></AppProvider>;
+  return <AppProvider key={sessionUser?.sid || 'anonymous'}><TasksProvider><AppContent /></TasksProvider></AppProvider>;
 }

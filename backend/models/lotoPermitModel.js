@@ -39,8 +39,11 @@ async function findById(c, id) {
 }
 
 const LotoPermitModel = {
-  getAll: async () => {
-    const [rows] = await pool.query(`${SELECT_PERMIT} ORDER BY p.permit_date DESC, p.id DESC LIMIT 500`);
+  // Tanpa rentang: 500 izin terbaru (layar kerja). Dengan rentang: semua izin pada periode itu (rekap).
+  getAll: async (range = null) => {
+    const [rows] = range
+      ? await pool.query(`${SELECT_PERMIT} WHERE p.permit_date BETWEEN ? AND ? ORDER BY p.permit_date DESC, p.id DESC LIMIT 5000`, [range.dari, range.sampai])
+      : await pool.query(`${SELECT_PERMIT} ORDER BY p.permit_date DESC, p.id DESC LIMIT 500`);
     return rows;
   },
 

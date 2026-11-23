@@ -2,6 +2,7 @@ import LotoPermitModel from '../models/lotoPermitModel.js';
 import { tapsFor } from '../models/sessionTaps.js';
 import { canSeePermit, formatPermit, parsePermitPayload, validateLotoPermitPayload } from '../domain/lotoPermit.js';
 import { viewerOf } from '../domain/personnel.js';
+import { dateRange } from '../domain/formFields.js';
 
 const errorResponse = (res, error, operation) => {
   const status = [400, 403, 404, 409].includes(error.status) ? error.status : 500;
@@ -32,7 +33,7 @@ async function present(rows, viewer) {
 const LotoPermitController = {
   getAll: async (req, res) => {
     try {
-      const data = await present(await LotoPermitModel.getAll(), viewerOf(req.auth));
+      const data = await present(await LotoPermitModel.getAll(dateRange(req.query)), viewerOf(req.auth));
       return res.status(200).json({ success: true, data });
     } catch (error) {
       return errorResponse(res, error, 'getAllLotoPermits');

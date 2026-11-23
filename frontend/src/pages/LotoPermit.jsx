@@ -4,10 +4,12 @@ import { useAuth } from '../context/useAuth';
 import lotoPermitService from '../services/lotoPermitService';
 import { livePoll } from '../services/live';
 import logoMtl from '../assets/logo-mtl.png';
-import { EdCheck, SignChip } from '../components/FieldForm';
+import { EdCheck, SignChip, TaskPanel } from '../components/FieldForm';
+import { useTasks } from '../context/useTasks';
 import {
   JABATAN, addRowCls, blockLabelCls, docInputCls, edBand, edCell, edHead, edInput, edLabel, edRowHead,
-  edTable, inlineLabelCls, jam, requestOpen, rowDeleteCls, rowNoCls, sheetCls, shiftOf, takePendingOpen, tglJam, tglJamPendek
+  edTable, inlineLabelCls, jam, matchesTarget, openTaskTarget, requestOpen, rowDeleteCls, rowNoCls, sheetCls, shiftOf, takePendingOpen,
+  tglJam, tglJamPendek
 } from '../utils/fieldForm';
 
 // Izin LOTO digital: pengganti formulir kertas F-PLT-116 "Izin Penguncian Mesin, Alat, Unit/Instalasi".
@@ -261,6 +263,7 @@ function PermitPrint({ permit }) {
 /* ------------------------------------------------------------------ */
 export default function LotoPermit() {
   const { sessionUser, setActiveTab } = useAuth();
+  const { tasks, refreshTasks } = useTasks();
   const role = sessionUser?.role;
   // Mekanik mengisi izin; foreman/pengawas menyetujui dan menutup; safety hanya membaca.
   const canCreate = ['admin', 'pengawas', 'teknisi'].includes(role);
@@ -331,11 +334,19 @@ export default function LotoPermit() {
   useEffect(() => {
     if (loading || editing) return;
     const target = takePendingOpen('izin');
-    const match = target && permits.find(x => x.idBox === target.idBox && Number(x.sessionId) === Number(target.sessionId));
+    const match = target && permits.find(x => matchesTarget(target, x));
     if (match) open(match);
+    else if (target) toast('Izin LOTO tersebut tidak ditemukan di daftar Anda.', 'fail');
     // open() hanya mengubah state halaman ini.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, permits, editing]);
+
+  const openTask = task => {
+    if (task.jenis !== 'izin') { openTaskTarget(task, setActiveTab); return; }
+    const match = permits.find(x => x.id === task.formId);
+    if (match) open(match);
+    else toast('Izin LOTO tersebut tidak ditemukan di daftar Anda.', 'fail');
+  };
 
   const openBriefing = () => {
     if (dirty && !window.confirm('Perubahan belum disimpan. Tetap pindah ke daftar hadir?')) return;
@@ -354,6 +365,7 @@ export default function LotoPermit() {
       setForm(toForm(saved));
       toast('Izin disetujui: LOTO aktif, pekerjaan boleh dimulai.');
       load();
+      refreshTasks();
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -384,6 +396,7 @@ export default function LotoPermit() {
       const saved = result.data;
       setEditing(saved);
       setForm(toForm(saved));
+      refreshTasks();
       toast(saved.status === 'DITUTUP' ? 'Izin LOTO ditutup.' : saved.status === 'AKTIF' ? 'Izin LOTO aktif: LOTO terpasang.' : saved.status === 'MENUNGGU' ? 'Izin lengkap, menunggu persetujuan penanggung jawab.' : 'Draft izin LOTO disimpan.');
       load();
     } catch (error) {
@@ -399,6 +412,7 @@ export default function LotoPermit() {
     try {
       await lotoPermitService.delete(editing.id);
       toast('Izin LOTO dihapus.');
+      refreshTasks();
       setEditing(null);
       setForm(null);
       load();
@@ -432,6 +446,8 @@ export default function LotoPermit() {
             </button>
           )}
         </div>
+
+        <TaskPanel tasks={tasks} onOpen={openTask} />
 
         <div className="flex flex-wrap gap-2" role="group" aria-label="Saring status izin">
           {['SEMUA', 'DRAFT', 'MENUNGGU', 'AKTIF', 'DITUTUP'].map(key => (

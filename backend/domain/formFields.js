@@ -33,6 +33,16 @@ export function clock(value, field) {
   return v;
 }
 
+// Rentang tanggal untuk rekap (?dari=YYYY-MM-DD&sampai=YYYY-MM-DD); tanpa rentang berarti data terbaru.
+export function dateRange(query = {}) {
+  const dari = isoDate(query.dari, 'tanggal awal');
+  const sampai = isoDate(query.sampai, 'tanggal akhir');
+  if (!dari && !sampai) return null;
+  if (!dari || !sampai) fail('Isi tanggal awal dan tanggal akhir rekap.');
+  if (dari > sampai) fail('Tanggal awal rekap harus sebelum tanggal akhir.');
+  return { dari, sampai };
+}
+
 export function object(value, field) {
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`Kolom ${field} tidak valid.`);

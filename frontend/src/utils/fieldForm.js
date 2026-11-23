@@ -39,3 +39,13 @@ export const takePendingOpen = kind => {
   pendingOpen = null;
   return target;
 };
+
+// Membuka formulir dari kotak tugas: halaman tujuan mengambil permintaan ini setelah datanya dimuat.
+export const TAB_OF = { izin: 'izin-loto', hadir: 'daftar-hadir' };
+export function openTaskTarget(task, setActiveTab) {
+  pendingOpen = { kind: task.jenis, formId: task.formId };
+  setActiveTab(TAB_OF[task.jenis]);
+}
+export const matchesTarget = (target, form) => (target.formId
+  ? Number(form.id) === Number(target.formId)
+  : form.idBox === target.idBox && Number(form.sessionId) === Number(target.sessionId));

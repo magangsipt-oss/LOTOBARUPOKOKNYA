@@ -4,9 +4,10 @@ import { useAuth } from '../context/useAuth';
 import briefingService from '../services/briefingService';
 import { livePoll } from '../services/live';
 import logoMtl from '../assets/logo-mtl.png';
-import { SignChip } from '../components/FieldForm';
+import { SignChip, TaskPanel } from '../components/FieldForm';
+import { useTasks } from '../context/useTasks';
 import {
-  addRowCls, docInputCls, edCell, edHead, edInput, edLabel, edRowHead, edTable, jam, requestOpen,
+  addRowCls, docInputCls, edCell, edHead, edInput, edLabel, edRowHead, edTable, jam, matchesTarget, openTaskTarget, requestOpen,
   rowDeleteCls, sheetCls, takePendingOpen, tglJam
 } from '../utils/fieldForm';
 
@@ -151,6 +152,7 @@ function BriefingPrint({ briefing }) {
 /* ------------------------------------------------------------------ */
 export default function DaftarHadir() {
   const { sessionUser, setActiveTab } = useAuth();
+  const { tasks, refreshTasks } = useTasks();
   const role = sessionUser?.role;
   // Daftar hadir manual dibuat oleh yang memimpin sosialisasi: foreman atau pengawas.
   const canCreate = ['admin', 'pengawas'].includes(role) || sessionUser?.jabatan === 'foreman';
@@ -222,12 +224,19 @@ export default function DaftarHadir() {
     if (loading || editing) return;
     const target = takePendingOpen('hadir');
     if (!target) return;
-    const match = list.find(b => b.idBox === target.idBox && Number(b.sessionId) === Number(target.sessionId));
+    const match = list.find(b => matchesTarget(target, b));
     if (match) open(match);
-    else toast('Daftar hadir untuk sesi box ini belum ada (belum ada mekanik/foreman yang tap).', 'fail');
+    else toast(target.formId ? 'Daftar hadir tersebut tidak ditemukan di daftar Anda.' : 'Daftar hadir untuk sesi box ini belum ada (belum ada mekanik/foreman yang tap).', 'fail');
     // open() hanya mengubah state halaman ini.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, list, editing]);
+
+  const openTask = task => {
+    if (task.jenis !== 'hadir') { openTaskTarget(task, setActiveTab); return; }
+    const match = list.find(b => b.id === task.formId);
+    if (match) open(match);
+    else toast('Daftar hadir tersebut tidak ditemukan di daftar Anda.', 'fail');
+  };
 
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
   const setDok = (key, value) => setForm(f => ({ ...f, dokumen: { ...f.dokumen, [key]: value } }));
@@ -247,6 +256,7 @@ export default function DaftarHadir() {
       setForm(toForm(saved));
       toast(saved.status === 'LENGKAP' ? 'Daftar hadir lengkap dan sudah ditandatangani.' : 'Daftar hadir disimpan.');
       load();
+      refreshTasks();
       return saved;
     } catch (error) {
       setFormError(errorMessage(error));
@@ -269,6 +279,7 @@ export default function DaftarHadir() {
       setForm(toForm(saved));
       toast('Tanda tangan tersimpan.');
       load();
+      refreshTasks();
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -281,6 +292,7 @@ export default function DaftarHadir() {
     try {
       await briefingService.delete(editing.id);
       toast('Daftar hadir dihapus.');
+      refreshTasks();
       setEditing(null);
       setForm(null);
       load();
@@ -320,6 +332,8 @@ export default function DaftarHadir() {
             </button>
           )}
         </div>
+
+        <TaskPanel tasks={tasks} onOpen={openTask} />
 
         <div className="flex flex-wrap gap-2" role="group" aria-label="Saring status daftar hadir">
           {['SEMUA', 'DRAFT', 'LENGKAP'].map(key => (
