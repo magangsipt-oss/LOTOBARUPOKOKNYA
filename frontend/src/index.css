@@ -221,3 +221,140 @@ textarea,
     color: black !important;
   }
 }
+
+/* Cetak izin LOTO (F-PLT-116). Lapisan cetak dirender di luar #root lewat portal. */
+.loto-print {
+  display: none;
+}
+@media print {
+  body[data-print="loto"] #root {
+    display: none !important;
+  }
+  body[data-print="loto"] .loto-print {
+    display: block !important;
+  }
+}
+@page {
+  size: A4;
+  margin: 10mm;
+}
+.loto-print {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 10pt;
+  color: #000;
+  background: #fff;
+}
+.loto-print .lp-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-top: -1px;
+}
+.loto-print .lp-table td,
+.loto-print .lp-table th {
+  border: 1px solid #000;
+  padding: 2px 5px;
+  vertical-align: middle;
+  text-align: left;
+  font-weight: normal;
+  word-wrap: break-word;
+}
+.loto-print .lp-head {
+  margin-bottom: 8px;
+}
+.loto-print .lp-company {
+  width: 18%;
+  text-align: center !important;
+  font-weight: bold !important;
+  font-size: 9pt;
+}
+.loto-print .lp-head td:nth-last-child(2) {
+  width: 15%;
+}
+.loto-print .lp-head td:last-child {
+  width: 15%;
+}
+.loto-print .lp-center {
+  text-align: center !important;
+}
+.loto-print .lp-bold,
+.loto-print .lp-table th,
+.loto-print .lp-sub th {
+  font-weight: bold !important;
+}
+.loto-print .lp-band {
+  background: #d9d9d9 !important;
+  text-align: center !important;
+  font-size: 9pt;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.loto-print .lp-left {
+  text-align: left !important;
+}
+.loto-print .lp-sub th:not(:first-child) {
+  text-align: center !important;
+}
+.loto-print .lp-tall {
+  height: 70px;
+  vertical-align: top !important;
+  position: relative;
+}
+.loto-print .lp-bottom {
+  margin-top: 28px;
+}
+.loto-print .lp-small {
+  font-size: 8.5pt;
+}
+.loto-print .lp-alt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 24px;
+}
+.loto-print .lp-box {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1px solid #000;
+  line-height: 10px;
+  font-size: 9pt;
+  text-align: center;
+  vertical-align: -1px;
+  font-family: 'DejaVu Sans', Arial, sans-serif;
+}
+.loto-print .lp-shift {
+  margin-top: 6px;
+}
+.loto-print .lp-shift th {
+  text-align: center !important;
+}
+.loto-print .lp-sign {
+  height: 58px;
+  vertical-align: bottom !important;
+  text-align: center !important;
+}
+.loto-print .lp-name {
+  font-size: 8.5pt;
+  margin-bottom: 14px;
+}
+.loto-print .lp-role {
+  border-top: 1px solid #000;
+  font-size: 8.5pt;
+}
+.loto-print .lp-top {
+  vertical-align: top !important;
+}
+.loto-print .lp-half {
+  width: 50%;
+  vertical-align: top !important;
+  height: 90px;
+}
+.loto-print .lp-signature {
+  min-height: 34px;
+  padding-top: 6px;
+}
+.loto-print .lp-foot {
+  margin-top: 6px;
+  font-size: 7.5pt;
+  color: #444;
+}

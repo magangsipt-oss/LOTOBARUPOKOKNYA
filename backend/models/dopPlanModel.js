@@ -44,8 +44,8 @@ const DOPPlanModel = {
   }
 };
 
-// Dipanggil di dalam transaksi telemetri (baris box sudah terkunci) setiap antrean sesi berubah.
-export async function syncSessionDraft(c, { idBox, session, unit }) {
+// Personel sesi box (urut tap, tanpa duplikat). Dipakai draft DOP dan draft izin LOTO.
+export async function loadSessionPeople(c, idBox, session) {
   const [rows] = await c.query(
     `SELECT u.sid, u.nama, u.role FROM queue q
      JOIN users u ON u.rfid_uid = q.rfid_uid OR u.sid = q.rfid_uid
@@ -53,9 +53,14 @@ export async function syncSessionDraft(c, { idBox, session, unit }) {
     [idBox, session]
   );
   const seen = new Set();
-  const people = rows
+  return rows
     .filter(row => !seen.has(row.sid) && seen.add(row.sid))
     .map(row => ({ sid: row.sid, nama: row.nama, role: normalizeRole(row.role) || String(row.role || '') }));
+}
+
+// Dipanggil di dalam transaksi telemetri (baris box sudah terkunci) setiap antrean sesi berubah.
+export async function syncSessionDraft(c, { idBox, session, unit }) {
+  const people = await loadSessionPeople(c, idBox, session);
   if (!people.length) return;
 
   const [existing] = await c.query(

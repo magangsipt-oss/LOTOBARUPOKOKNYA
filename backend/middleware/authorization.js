@@ -22,6 +22,9 @@ export default function authorization(req, res, next) {
     return deny(res);
   }
   if (route === '/dop-plans' && read && !['admin', 'pengawas'].includes(req.auth.role)) return deny(res);
+  // Izin LOTO: dibaca admin, pengawas, dan safety; diubah admin dan pengawas.
+  if ((route === '/loto-permits' || route.startsWith('/loto-permits/')) && read &&
+      !['admin', 'pengawas', 'safety'].includes(req.auth.role)) return deny(res);
   if (read) return next();
   const { role, user } = req.auth;
   // Kata sandi hanya dikelola admin (ganti sendiri maupun reset pengguna lain).
@@ -31,7 +34,9 @@ export default function authorization(req, res, next) {
   if (role === 'admin') return next();
   if (role === 'pengawas' && (
     (route === '/dop-plans' && req.method === 'POST') ||
-    (/^\/dop-plans\/[1-9]\d*$/.test(route) && ['PUT', 'DELETE'].includes(req.method))
+    (/^\/dop-plans\/[1-9]\d*$/.test(route) && ['PUT', 'DELETE'].includes(req.method)) ||
+    (route === '/loto-permits' && req.method === 'POST') ||
+    (/^\/loto-permits\/[1-9]\d*$/.test(route) && ['PUT', 'DELETE'].includes(req.method))
   )) return next();
   if (req.method === 'PUT' && route === `/users/${user.sid}`) {
     // Profile edits cannot assign roles, badges or fingerprints.

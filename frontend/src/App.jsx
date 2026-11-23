@@ -14,6 +14,7 @@ const Logs = lazy(() => import('./pages/Logs'));
 const Users = lazy(() => import('./pages/Users'));
 const BleTagManager = lazy(() => import('./pages/BleTagManager'));
 const DOPPlan = lazy(() => import('./pages/DOPPlan'));
+const LotoPermit = lazy(() => import('./pages/LotoPermit'));
 
 /* ------------------------------------------------------------------ */
 /*  Login Form                                                         */
@@ -224,6 +225,9 @@ function AppContent() {
               <DOPPlan />
             </div>
           )}
+
+          {/* TAB: IZIN LOTO F-PLT-116 (admin / pengawas; safety hanya membaca) */}
+          {activeTab === 'izin-loto' && ['admin', 'pengawas', 'safety'].includes(sessionUser?.role) && <LotoPermit />}
 
           {/* TAB: FORM LAPORAN SERVIS (teknisi) */}
           {activeTab === 'teknisi-tab' && (sessionUser?.role === 'admin' || sessionUser?.role === 'teknisi' || sessionUser?.role === 'mekanik') && <Logs />}

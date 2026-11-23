@@ -1,6 +1,7 @@
 import pool from '../config/database.js';
 import { normalizeState, eventType, isTap, replayOccurredAt } from '../domain/telemetry.js';
 import { syncSessionDraft } from './dopPlanModel.js';
+import { syncSessionPermit } from './lotoPermitModel.js';
 
 // Tap masuk BBM ganda dalam jeda ini dihitung satu kali (box baru juga menolak tap keluar secepat ini).
 export const REFUEL_DOUBLE_TAP_SECONDS = 60;
@@ -139,6 +140,13 @@ export async function recordTelemetry(idBox, body) {
           catch (error) {
             await c.query('ROLLBACK TO SAVEPOINT dop_draft');
             console.error('DOP draft sync failed:', error.code || error.message);
+          }
+          // Draft izin LOTO (F-PLT-116) mengikuti aturan yang sama: gagal tidak menggagalkan telemetri.
+          await c.query('SAVEPOINT loto_permit_draft');
+          try { await syncSessionPermit(c, { idBox, session, unit: box.unit }); }
+          catch (error) {
+            await c.query('ROLLBACK TO SAVEPOINT loto_permit_draft');
+            console.error('LOTO permit draft sync failed:', error.code || error.message);
           }
         }
       }
