@@ -666,6 +666,14 @@ unsigned long gpsLastValidResponseMillis = 0;
 unsigned long gpsLastRecoveryMillis = 0;
 uint8_t gpsSatellitesInView = 0;
 uint8_t gpsSatellitesUsed = 0;
+// Sensor baterai opsional (diatur di config SD). Tanpa rangkaian, header menampilkan "--" (tidak menebak).
+int batteryAdcPin = -1;            // GPIO ADC1: 32, 35, 36, atau 39 lewat pembagi tegangan
+float batteryDividerRatio = 2.0f;  // Vbaterai / Vpin, mis. 100k:100k = 2.0
+int chargeDetectPin = -1;          // status charger, mis. pin CHRG TP4056 (open-drain, aktif LOW)
+bool chargeActiveLow = true;
+int batteryPercent = -1;           // -1 = tidak diketahui
+bool batteryCharging = false;
+float batteryVoltageFiltered = 0.0f;
 float gpsHdop = 99.9f;
 bool gpsHdopValid = false;
 bool gpsSatellitesVisibleValid = false;
@@ -736,6 +744,9 @@ extern int geoCount;
 extern bool geoHealthy;
 void drawTftHeader();
 void drawBleBadge(bool isConnected);
+void drawHeaderStatus();
+void setupBatteryMonitor();
+void serviceBattery();
 void drawBluetoothIcon(int16_t cx, int16_t cy, uint16_t color);
 void drawTftFooter(const String &leftText, const String &rightText);
 void drawTftFooterSingle(const String &btnText);
@@ -997,6 +1008,17 @@ void loadConfigFromSD() {
                     wifi_ssid = value;
                 } else if (key == "PASS") {
                     wifi_password = value;
+                } else if (key == "BATTERY_ADC_PIN") {
+                    int pin = value.toInt();
+                    batteryAdcPin = (pin == 32 || pin == 35 || pin == 36 || pin == 39) ? pin : -1;
+                } else if (key == "BATTERY_DIVIDER") {
+                    float ratio = value.toFloat();
+                    if (ratio >= 1.0f && ratio <= 10.0f) batteryDividerRatio = ratio;
+                } else if (key == "CHARGE_PIN") {
+                    int pin = value.toInt();
+                    chargeDetectPin = (pin == 32 || pin == 35 || pin == 36 || pin == 39) ? pin : -1;
+                } else if (key == "CHARGE_ACTIVE") {
+                    chargeActiveLow = !value.equalsIgnoreCase("HIGH");
                 } else {
                     size_t slot = 0;
                     eloto::WifiConfigField field = eloto::WIFI_CONFIG_NONE;
@@ -1192,19 +1214,112 @@ void drawBluetoothIcon(int16_t cx, int16_t cy, uint16_t color) {
     tft.drawLine(cx + 4, cy + 3, cx, cy + 7, color);
 }
 
-// Tampilkan jumlah tag BLE pada header.
+// Tata letak header 480x42: [GPS][Bluetooth][SD] ... jam ... [WiFi ON/OFF][baterai %].
+// Ikon putih di atas merah; warna RGB eksplisit karena TFT_GREEN/TFT_YELLOW dipetakan ke tema merah-putih.
+const int16_t HEADER_CLOCK_X = 108;
+const int16_t HEADER_CLOCK_W = 228;
+const uint16_t HEADER_INK = ELOTO_BG;
+const uint16_t HEADER_PAPER = ELOTO_HEADER;
+const uint16_t COLOR_PURE_BLACK = 0x0000;
+
+// Tanda silang kecil (lingkaran putih, X merah) untuk status belum siap.
+void drawHeaderCross(int16_t cx, int16_t cy) {
+    tft.fillCircle(cx, cy, 6, HEADER_INK);
+    tft.drawLine(cx - 3, cy - 3, cx + 3, cy + 3, HEADER_PAPER);
+    tft.drawLine(cx - 2, cy - 3, cx + 3, cy + 2, HEADER_PAPER);
+    tft.drawLine(cx + 3, cy - 3, cx - 3, cy + 3, HEADER_PAPER);
+    tft.drawLine(cx + 2, cy - 3, cx - 3, cy + 2, HEADER_PAPER);
+}
+
+// Ikon sinyal GPS: empat batang naik; terisi penuh saat posisi terkunci, kosong + silang bila belum.
+void drawGpsSignalIcon(int16_t x, int16_t baseY, bool hasFix) {
+    tft.fillRect(x - 2, 4, 40, 34, HEADER_PAPER);
+    for (uint8_t i = 0; i < 4; i++) {
+        int16_t h = 6 + i * 5;
+        int16_t bx = x + i * 6;
+        if (hasFix) tft.fillRect(bx, baseY - h, 4, h, HEADER_INK);
+        else tft.drawRect(bx, baseY - h, 4, h, HEADER_INK);
+    }
+    if (!hasFix) drawHeaderCross(x + 23, baseY - 3);
+}
+
+// Ikon kartu SD dengan sudut terpotong; silang bila kartu tidak terbaca.
+void drawSdCardIcon(int16_t x, int16_t y, bool mounted) {
+    tft.fillRect(x - 2, 4, 26, 34, HEADER_PAPER);
+    tft.fillRect(x + 4, y, 10, 20, HEADER_INK);
+    tft.fillRect(x, y + 4, 14, 16, HEADER_INK);
+    tft.fillTriangle(x, y + 4, x + 4, y, x + 4, y + 4, HEADER_INK);
+    for (uint8_t i = 0; i < 3; i++) tft.fillRect(x + 4 + i * 3, y + 2, 2, 5, HEADER_PAPER);
+    if (!mounted) drawHeaderCross(x + 15, y + 17);
+}
+
+// Status Wi-Fi: ikon gelombang dan teks ON/OFF.
+void drawWifiStatus(int16_t x, bool connected) {
+    tft.fillRect(x - 2, 4, 58, 34, HEADER_PAPER);
+    int16_t cx = x + 8, cy = 28;
+    tft.fillCircle(cx, cy, 2, HEADER_INK);
+    tft.drawArc(cx, cy, 8, 6, 135, 225, HEADER_INK, HEADER_PAPER);
+    tft.drawArc(cx, cy, 14, 12, 135, 225, HEADER_INK, HEADER_PAPER);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(HEADER_INK, HEADER_PAPER);
+    setStoryFont(9);
+    tft.drawString(connected ? "ON" : "OFF", x + 22, 21);
+}
+
+// Warna isi baterai mengikuti tingkat: hijau, hijau muda, kuning, oranye, merah.
+uint16_t batteryLevelColor(int percent) {
+    if (percent >= 80) return tft.color565(19, 176, 9);
+    if (percent >= 60) return tft.color565(154, 205, 50);
+    if (percent >= 40) return tft.color565(255, 214, 10);
+    if (percent > 20) return tft.color565(255, 140, 0);
+    return tft.color565(225, 29, 29);
+}
+
+// Ikon petir: tanda sedang diisi daya, atau peringatan "isi daya" saat baterai <= 20%.
+void drawChargeBolt(int16_t cx, int16_t cy, uint16_t color) {
+    tft.fillTriangle(cx + 2, cy - 6, cx - 4, cy + 1, cx + 1, cy + 1, color);
+    tft.fillTriangle(cx - 1, cy - 1, cx + 4, cy - 1, cx - 2, cy + 6, color);
+}
+
+// Baterai di paling kanan: isi berwarna sesuai persen, angka persen, dan petir saat mengisi / lemah.
+void drawBatteryIndicator(int16_t x, int percent, bool charging, bool blinkOn) {
+    tft.fillRect(x - 2, 4, 480 - x + 2, 34, HEADER_PAPER);
+    const int16_t y = 13, w = 28, h = 16;
+    tft.fillRect(x, y, w, h, HEADER_INK);
+    tft.fillRect(x + w, y + 5, 3, h - 10, HEADER_INK);
+    if (percent >= 0) {
+        int16_t fill = (int16_t)((w - 4) * constrain(percent, 0, 100) / 100);
+        if (percent > 0 && fill < 2) fill = 2;
+        tft.fillRect(x + 2, y + 2, fill, h - 4, batteryLevelColor(percent));
+    }
+    bool lowWarning = percent >= 0 && percent <= 20 && !charging;
+    if (charging || (lowWarning && blinkOn)) drawChargeBolt(x + w / 2, y + h / 2, COLOR_PURE_BLACK);
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(HEADER_INK, HEADER_PAPER);
+    setStoryFont(9);
+    tft.drawString(percent >= 0 ? String(percent) + "%" : String("--"), 477, 21);
+}
+
+// Tampilkan jumlah tag BLE pada header: ikon Bluetooth dan jumlah tag ("--" bila pemindai bermasalah).
 void drawBleBadge(bool isConnected) {
-    uint16_t bg = isConnected ? TFT_GREEN : (geoHealthy ? TFT_YELLOW : TFT_RED);
-    uint16_t fg = TFT_BLACK;
-
-    tft.fillRoundRect(246, 8, 60, 25, 4, bg);
-    drawBluetoothIcon(259, 20, fg);
-
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(fg, bg);
+    (void)isConnected;
+    tft.fillRect(40, 4, 40, 34, HEADER_PAPER);
+    drawBluetoothIcon(46, 21, HEADER_INK);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(HEADER_INK, HEADER_PAPER);
     setStoryFont(9);
     String bleText = geoCount > 0 ? String(geoCount) : (geoHealthy ? "0" : "--");
-    tft.drawString(bleText, 285, 21);
+    tft.drawString(bleText, 54, 21);
+}
+
+// Gambar semua ikon status header (GPS, BLE, SD, Wi-Fi, baterai).
+void drawHeaderStatus() {
+    drawGpsSignalIcon(8, 31, hasValidGpsFix());
+    drawBleBadge(geoHealthy && (geoCount > 0));
+    drawSdCardIcon(84, 11, sdCardMounted);
+    bool wifiReady = WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0";
+    drawWifiStatus(340, wifiReady);
+    drawBatteryIndicator(400, batteryPercent, batteryCharging, (millis() / 1000) % 2 == 0);
 }
 
 // Format angka waktu minimal dua digit.
@@ -1219,11 +1334,11 @@ void updateHeaderClock(bool forceRedraw) {
         String powerText = formatPowerOnTime(powerOnSeconds());
         if (!forceRedraw && powerText == lastClockText) return;
         lastClockText = powerText;
-        tft.fillRect(76, 4, 164, 34, TFT_NAVY);
+        tft.fillRect(HEADER_CLOCK_X, 4, HEADER_CLOCK_W, 34, TFT_NAVY);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
         setStoryFont(9);
-        tft.drawString(powerText, 185, 21);
+        tft.drawString(powerText, HEADER_CLOCK_X + HEADER_CLOCK_W / 2, 21);
         return;
     }
 
@@ -1235,53 +1350,82 @@ void updateHeaderClock(bool forceRedraw) {
     if (!forceRedraw && clockText == lastClockText) return;
     lastClockText = clockText;
 
-    tft.fillRect(76, 4, 164, 34, TFT_NAVY);
+    tft.fillRect(HEADER_CLOCK_X, 4, HEADER_CLOCK_W, 34, TFT_NAVY);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
     setStoryFont(9);
-    tft.drawString(clockText, 185, 21);
+    tft.drawString(clockText, HEADER_CLOCK_X + HEADER_CLOCK_W / 2, 21);
 }
 
-// Gambar header status BLE, GPS, SD, dan Wi-Fi.
+// Perkiraan isi baterai Li-ion 1 sel dari tegangan istirahat. Saat mengisi, tegangan naik sehingga
+// persentase terbaca sedikit lebih tinggi; saat beban berat sedikit lebih rendah.
+int liIonPercentFromVoltage(float volts) {
+    static const float table[][2] = {
+        {4.20f, 100}, {4.15f, 95}, {4.11f, 90}, {4.08f, 85}, {4.02f, 80}, {3.98f, 75}, {3.95f, 70},
+        {3.91f, 65}, {3.87f, 60}, {3.85f, 55}, {3.84f, 50}, {3.82f, 45}, {3.80f, 40}, {3.79f, 35},
+        {3.77f, 30}, {3.75f, 25}, {3.73f, 20}, {3.71f, 15}, {3.69f, 10}, {3.61f, 5}, {3.27f, 0}
+    };
+    const size_t rows = sizeof(table) / sizeof(table[0]);
+    if (volts >= table[0][0]) return 100;
+    if (volts <= table[rows - 1][0]) return 0;
+    for (size_t i = 1; i < rows; i++) {
+        if (volts >= table[i][0]) {
+            float span = table[i - 1][0] - table[i][0];
+            float t = (volts - table[i][0]) / span;
+            return (int)lroundf(table[i][1] + t * (table[i - 1][1] - table[i][1]));
+        }
+    }
+    return 0;
+}
+
+// Siapkan pin sensor baterai/charger dari config SD. Aman dipanggil lebih dari sekali.
+void setupBatteryMonitor() {
+    if (batteryAdcPin >= 0) {
+        pinMode(batteryAdcPin, INPUT);
+        analogSetPinAttenuation(batteryAdcPin, ADC_11db);
+    }
+    // Aktif LOW (pin CHRG open-drain): pin 32 memakai pull-up internal; GPIO 35/36/39 perlu pull-up 10k ke 3V3.
+    // Aktif HIGH (5V USB lewat pembagi 10k/20k): tanpa pull-up agar tegangan saat charger dicabut tetap 0 V.
+    if (chargeDetectPin >= 0) {
+        bool usePullUp = chargeActiveLow && chargeDetectPin == 32;
+        pinMode(chargeDetectPin, usePullUp ? INPUT_PULLUP : INPUT);
+    }
+    Serial.printf("[BATT] adc_pin=%d divider=%.2f charge_pin=%d active_%s\n",
+        batteryAdcPin, batteryDividerRatio, chargeDetectPin, chargeActiveLow ? "low" : "high");
+}
+
+// Baca tegangan baterai (rata-rata + perataan) dan status charger; dipanggil tiap detik.
+void serviceBattery() {
+    static uint8_t chargeVotes = 0;
+    if (chargeDetectPin >= 0) {
+        bool level = digitalRead(chargeDetectPin) == HIGH;
+        bool chargingNow = chargeActiveLow ? !level : level;
+        // Dua pembacaan berturut-turut sama agar ikon tidak berkedip saat kontak goyang.
+        chargeVotes = chargingNow ? min<uint8_t>(chargeVotes + 1, 2) : (chargeVotes > 0 ? chargeVotes - 1 : 0);
+        if (chargeVotes == 2) batteryCharging = true;
+        else if (chargeVotes == 0) batteryCharging = false;
+    } else {
+        batteryCharging = false;
+    }
+
+    if (batteryAdcPin < 0) { batteryPercent = -1; return; }
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < 8; i++) sum += analogReadMilliVolts(batteryAdcPin);
+    float volts = (sum / 8.0f) / 1000.0f * batteryDividerRatio;
+    // Di luar rentang sel Li-ion berarti rangkaian belum terpasang atau rasio salah: jangan menebak.
+    if (volts < 2.5f || volts > 4.5f) { batteryPercent = -1; batteryVoltageFiltered = 0.0f; return; }
+    batteryVoltageFiltered = batteryVoltageFiltered <= 0.0f ? volts : batteryVoltageFiltered * 0.8f + volts * 0.2f;
+    int percent = liIonPercentFromVoltage(batteryVoltageFiltered);
+    // Histeresis 2% agar angka tidak naik-turun tiap detik.
+    if (batteryPercent < 0 || abs(percent - batteryPercent) >= 2 || percent == 0 || percent == 100) batteryPercent = percent;
+}
+
+// Gambar header: ikon status di kiri dan kanan, jam sesi / lama menyala di tengah.
 void drawTftHeader() {
     tft.fillRect(0, 0, 480, 42, TFT_NAVY);
     tft.drawFastHLine(0, 41, 480, ELOTO_BG);
-    
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(ELOTO_BG, ELOTO_HEADER);
-    setStoryFont(9);
-    tft.drawString("E-LOTO", 8, 21);
-    
     updateHeaderClock(true);
-    bool wifiReady = WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0";
-    uint16_t networkColor = wifiReady ? TFT_GREEN : TFT_RED;
-    
-    // 1. Badge BLE di sebelah kiri GPS (X: 246)
-    bool bleConnected = geoHealthy && (geoCount > 0);
-    drawBleBadge(bleConnected);
-
-    // 2. Badge GPS (X: 312)
-    bool gpsNow = hasValidGpsFix();
-    bool gpsHasHistory = (!gpsNow && currentLatitude != 0.0 && currentLongitude != 0.0);
-    uint16_t gpsColor = gpsNow ? TFT_GREEN : (gpsHasHistory ? TFT_YELLOW : TFT_RED);
-    String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
-
-    tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_BLACK, gpsColor);
-    setStoryFont(9);
-    tft.drawString(gpsText, 342, 21);
-    
-    // 3. Badge SD (X: 378)
-    tft.fillRoundRect(378, 8, 60, 25, 4, sdCardMounted ? TFT_GREEN : TFT_RED);
-    tft.setTextColor(TFT_BLACK, sdCardMounted ? TFT_GREEN : TFT_RED);
-    tft.drawString(sdCardMounted ? "SD OK" : "SD --", 408, 21);
-    
-    // 4. Badge WiFi (X: 444)
-    tft.fillRoundRect(444, 8, 28, 25, 4, networkColor);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_BLACK, networkColor);
-    tft.drawString(wifiReady ? "ON" : "--", 458, 21);
+    drawHeaderStatus();
 }
 
 // Gambar tombol navigasi bawah TFT.
@@ -6751,6 +6895,7 @@ void setup() {
         sdCardMounted = false;
         loadConfigFromSD();
     }
+    setupBatteryMonitor();
 
     tft.init();
     tft.setRotation(1);
@@ -6960,46 +7105,29 @@ void loop() {
     if (millis() - lastClockUpdateMillis >= 1000) {
         lastClockUpdateMillis = millis();
         updateHeaderClock();
+        serviceBattery();
         bool wifiNow = WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() != "0.0.0.0";
         bool gpsNow = hasValidGpsFix();
-        bool gpsHasHistory = (!gpsNow && currentLatitude != 0.0 && currentLongitude != 0.0);
         bool sdNow = sdCardMounted;
         bool bleNow = geoHealthy && (geoCount > 0);
+        // Peringatan baterai lemah (<= 20%, tidak sedang mengisi) membuat ikon petir berkedip tiap detik.
+        bool batteryBlink = batteryPercent >= 0 && batteryPercent <= 20 && !batteryCharging;
 
         static bool lastGpsState = false;
         static bool lastSdState = false;
         static bool lastWifiState = false;
-        static bool lastGpsHistory = false;
         static bool lastBleState = false;
         static bool lastBleHealthy = false;
         static int lastGeoCount = -1;
-        
-        if (gpsNow != lastGpsState || sdNow != lastSdState || wifiNow != lastWifiState || gpsHasHistory != lastGpsHistory || bleNow != lastBleState || geoHealthy != lastBleHealthy || geoCount != lastGeoCount) {
-            lastGpsState = gpsNow; lastSdState = sdNow; lastWifiState = wifiNow; lastGpsHistory = gpsHasHistory; lastBleState = bleNow; lastGeoCount = geoCount;
+        static int lastBatteryPercent = -2;
+        static bool lastCharging = false;
+
+        if (gpsNow != lastGpsState || sdNow != lastSdState || wifiNow != lastWifiState || bleNow != lastBleState || geoHealthy != lastBleHealthy || geoCount != lastGeoCount ||
+            batteryPercent != lastBatteryPercent || batteryCharging != lastCharging || batteryBlink) {
+            lastGpsState = gpsNow; lastSdState = sdNow; lastWifiState = wifiNow; lastBleState = bleNow; lastGeoCount = geoCount;
             lastBleHealthy = geoHealthy;
-
-            // 1. Badge BLE
-            drawBleBadge(bleNow);
-
-            // 2. Badge GPS
-            uint16_t gpsColor = gpsNow ? TFT_GREEN : (gpsHasHistory ? TFT_YELLOW : TFT_RED);
-            tft.fillRoundRect(312, 8, 60, 25, 4, gpsColor);
-            tft.setTextDatum(MC_DATUM);
-            tft.setTextColor(TFT_BLACK, gpsColor);
-            setStoryFont(9);
-            String gpsText = gpsNow ? "GPS OK" : (gpsHasHistory ? "GPS LAST" : "GPS --");
-            tft.drawString(gpsText, 342, 21);
-
-            // 3. Badge SD
-            tft.fillRoundRect(378, 8, 60, 25, 4, sdNow ? TFT_GREEN : TFT_RED);
-            tft.setTextColor(TFT_BLACK, sdNow ? TFT_GREEN : TFT_RED);
-            tft.drawString(sdNow ? "SD OK" : "SD --", 408, 21);
-
-            // 4. Badge WiFi
-            tft.fillRoundRect(444, 8, 28, 25, 4, wifiNow ? TFT_GREEN : TFT_RED);
-            tft.setTextDatum(MC_DATUM);
-            tft.setTextColor(TFT_BLACK, wifiNow ? TFT_GREEN : TFT_RED);
-            tft.drawString(wifiNow ? "ON" : "--", 458, 21);
+            lastBatteryPercent = batteryPercent; lastCharging = batteryCharging;
+            drawHeaderStatus();
         }
     }
     

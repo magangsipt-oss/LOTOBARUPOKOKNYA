@@ -11,3 +11,18 @@ WIFI_2_PASS=replace-with-fallback-password
 
 # Optional: override the API base URL. Use HTTPS in production.
 # SERVER=https://your-server.example
+
+# Optional battery indicator on the header (needs extra wiring, see below).
+# Without these lines the header shows the battery icon with "--" instead of guessing.
+# BATTERY_ADC_PIN: free ADC1 pin wired to the battery through a voltage divider (32, 35, 36 or 39).
+# BATTERY_DIVIDER: battery voltage / pin voltage, e.g. 100k (battery side) + 100k (to GND) = 2.0.
+#   Keep the pin below ~3.1 V: a 1-cell Li-ion (4.2 V max) with 2.0 gives 2.1 V.
+# CHARGE_PIN: charger status pin, e.g. TP4056 "CHRG" (open-drain, LOW while charging).
+#   Pin 32 uses the internal pull-up; pins 35/36/39 need a 10k pull-up resistor to 3V3.
+# CHARGE_ACTIVE: LOW (default, TP4056 CHRG) or HIGH.
+#   Modules without a CHRG pad (USB-C charge + boost boards): take 5V from the USB input
+#   through 10k (to 5V) + 20k (to GND) into the pin and set CHARGE_ACTIVE=HIGH.
+# BATTERY_ADC_PIN=35
+# BATTERY_DIVIDER=2.0
+# CHARGE_PIN=32
+# CHARGE_ACTIVE=LOW
